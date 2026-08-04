@@ -26,6 +26,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **System configuration** — `env` manages persistent environment variables (`/etc/webunix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/webunix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
 - **Service management** — `service` manages named background services declaratively on top of `spawn`/`ps`/`kill` and the port registry: definitions live in `/etc/webunix.services` (`name|command|port`, `#` comments, `${PORT}` placeholder resolved from `preview-port`), with `start`/`stop`/`status`/`enable`/`disable`. `enable` records the service in `/etc/webunix.autostart` and boot pulls it up declaratively — a declarative restart, not a daemon (no crash self-healing).
 - **System log (journald-style)** — a persistent log written to `/var/log/webunix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
+- **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures.
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -105,6 +106,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `settings`     | View / set / reset (`settings reset KEY`) system settings, persisted in `/etc/webunix.settings` |
 | `service`      | List services (state + port); `start` / `stop` / `status` / `enable` / `disable <name>` manage them. Definitions in `/etc/webunix.services`, boot autostart in `/etc/webunix.autostart` (declarative restart, not a daemon) |
 | `log`          | Show recent system-log entries (last 20) from `/var/log/webunix.log`; `log -n <count>` last N, `log boot` BOOT-only, `log clear` empties the file |
+| `pkg`          | Package management: `pkg list` (lifo + npm merged with `SOURCE`), `pkg search <term>` (both channels), `pkg install <name>` (lifo if `lifo-pkg-<name>` exists, else npm), `pkg remove <name>` (via the installed source), `pkg info <name>` |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -129,6 +131,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): the full 
 - Config: `env` set/get/delete lifecycle and `settings` write/reset persist to `/etc/webunix.*`.
 - Services: `service` lists the built-in tinbase definition; a temporary echo server can be started, observed `running` (process table + port registry), stopped, and removed with zero residue; `service enable`/`disable` write and remove the `/etc/webunix.autostart` file (deduped).
 - Logs: command executions are recorded with `exit`/`runtime`, boot events are recorded as `BOOT` entries, and `log clear` empties the log file (asserted by the self-test suite).
+- Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
 
 ## Known Boundaries
 
@@ -144,6 +147,8 @@ These are environmental constraints, not bugs:
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
 - **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
 - **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
+- **lifo packages are session-scoped; npm packages persist**: `lifo install` places packages in the Lifo runtime's in-memory global module directory, so they exist for the current host session and are recreated when the host restarts (a full refresh boots a fresh Lifo kernel). npm packages install into `/node_modules` on the shared filesystem and persist with the workspace snapshot. `pkg list` merges both; the source rule is "lifo if `lifo-pkg-<name>` exists on npm, otherwise npm; lifo wins on a name conflict".
+- **`pkg` installs need registry access**: `pkg install`/`search`/`info` hit the npm registry (via `lifo search` / real npm). When the registry is unreachable the command reports the reason and does not pretend to succeed.
 
 ## Project Structure
 
@@ -152,10 +157,11 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/...)
+  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/...)
   config.ts          # system configuration: /etc/webunix.env + /etc/webunix.settings I/O & defaults
   services.ts        # service management: /etc/webunix.services + /etc/webunix.autostart I/O, status/start/stop
   log.ts             # journald-style system log: /var/log/webunix.log append/read/clear/BOOT-filter
+  pkg.ts             # package management: pkg list/search/install/remove/info over lifo + npm channels
   terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
   host.ts            # TerminalExecutor daemon (runs inside WebContainer)

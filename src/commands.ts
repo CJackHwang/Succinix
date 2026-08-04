@@ -1,6 +1,6 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
 //   help / clear / sysinfo / ports / db start|status|stop / snapshot / free / top /
-//   reboot / shutdown / cache / workspace / env / settings / service / version / whoami
+//   reboot / shutdown / cache / workspace / env / settings / service / log / pkg / version / whoami
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
@@ -32,6 +32,16 @@ import {
   type ServiceContext,
 } from './services.js';
 import { readLog, readBootLog, clearLog, log } from './log.js';
+import {
+  listPackages,
+  formatPackageList,
+  searchPackages,
+  formatSearchResults,
+  installPackage,
+  removePackage,
+  packageInfo,
+  type PkgContext,
+} from './pkg.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -100,6 +110,7 @@ function printHelp(term: Terminal): void {
   term.writeln(`  settings     view / set / reset system settings (persisted in /etc/webunix.settings)`);
   term.writeln(`  service      list services; start/stop/status/enable/disable manage them (declarative autostart)`);
   term.writeln(`  log          show recent log entries (last 20); log -n <count> / log clear / log boot`);
+  term.writeln(`  pkg          package management: list / search <term> / install <name> / remove <name> / info <name>`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -885,6 +896,92 @@ async function logCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln('usage: log | log -n <count> | log clear | log boot');
 }
 
+// ─── 包管理（TASK13）：pkg 命令族，统一 lifo + npm 两通道 ───
+// 实现细节在 src/pkg.ts：来源判定（lifo-pkg-<name> 存在 → lifo，否则 npm；同名冲突优先 lifo）、
+// 已装列表合并去重、搜索合并。这里只做命令分发与呈现（含真实命令 stdout 尾部回显）。
+const PKG_USAGE_LINES = [
+  'usage: pkg <command> [args]',
+  '  list                   list installed packages (lifo + npm merged, source-annotated)',
+  '  search <term>          search packages (lifo search + npm search, merged)',
+  '  install <name>         install a package (lifo if lifo-pkg-<name> exists, else npm)',
+  '  remove <name>          remove an installed package (via its source channel)',
+  '  info <name>            show package info (source / version / description)',
+];
+
+async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const pctx: PkgContext = { wc: ctx.wc, client: ctx.client };
+  const sub = args[0] ?? '';
+
+  if (sub === '' || sub === '--help' || sub === '-h') {
+    for (const line of PKG_USAGE_LINES) term.writeln(line);
+    return;
+  }
+
+  if (sub === 'list') {
+    const entries = await listPackages(pctx);
+    for (const line of formatPackageList(entries)) term.writeln(line);
+    return;
+  }
+
+  if (sub === 'search') {
+    const termName = args.slice(1).join(' ').trim();
+    if (!termName) {
+      term.writeln('usage: pkg search <term>');
+      return;
+    }
+    const outcome = await searchPackages(pctx, termName);
+    for (const line of formatSearchResults(termName, outcome.entries)) term.writeln(line);
+    for (const note of outcome.notes) term.writeln(`  ${GRAY}${note}${RESET}`);
+    return;
+  }
+
+  if (sub === 'install') {
+    const name = args.slice(1).join(' ').trim();
+    if (!name) {
+      term.writeln('usage: pkg install <name>');
+      return;
+    }
+    const r = await installPackage(pctx, name);
+    if (r.outputTail) term.writeln(`${GRAY}${r.outputTail}${RESET}`);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'remove') {
+    const name = args.slice(1).join(' ').trim();
+    if (!name) {
+      term.writeln('usage: pkg remove <name>');
+      return;
+    }
+    const r = await removePackage(pctx, name);
+    if (r.outputTail) term.writeln(`${GRAY}${r.outputTail}${RESET}`);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'info') {
+    const name = args.slice(1).join(' ').trim();
+    if (!name) {
+      term.writeln('usage: pkg info <name>');
+      return;
+    }
+    const r = await packageInfo(pctx, name);
+    if (!r.ok || !r.entry) {
+      term.writeln(`${RED}${r.message}${RESET}`);
+      return;
+    }
+    const e = r.entry;
+    term.writeln(`Package: ${e.name}`);
+    term.writeln(`  source      ${e.source}`);
+    term.writeln(`  version     ${e.version}`);
+    term.writeln(`  description ${e.description || '--'}`);
+    return;
+  }
+
+  term.writeln('usage: pkg list | pkg search <term> | pkg install <name> | pkg remove <name> | pkg info <name>');
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -956,6 +1053,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'log': {
       await logCmd(ctx, rest);
+      return true;
+    }
+    case 'pkg': {
+      await pkgCmd(ctx, rest);
       return true;
     }
     default:

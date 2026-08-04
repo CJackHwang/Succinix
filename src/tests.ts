@@ -187,6 +187,16 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     verdict(term, 'Process table', 'spawn/kill lifecycle', killedOk, `killed=${k2.killed} status=${afterKill ? afterKill.status : 'no longer in table'}`);
   }
 
+  // ─── 内存（Memory）：浏览器报告设备内存或 JS heap 统计（任一存在即可）───
+  const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+  const perfMem = (performance as unknown as { memory?: unknown }).memory;
+  if (devMem !== undefined || perfMem !== undefined) {
+    const detail = devMem !== undefined ? `${devMem} GB` : 'performance.memory present';
+    verdict(term, 'Memory', 'device memory reported', true, detail);
+  } else {
+    boundary(term, 'Memory', 'device memory reported', 'no device memory / heap stats in this browser');
+  }
+
   // ─── 已知边界（网络/生态，仅供参考，计入 skipped）───
   try {
     const b1 = await client.terminal('curl -s -m 12 https://example.com', undefined, 20000);

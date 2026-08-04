@@ -9,6 +9,7 @@ import { TerminalClient } from './terminal-client.js';
 import { loadSnapshot } from './persist.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
 import { ensureServicesFiles, readAutostart, startService } from './services.js';
+import { initLogger, log } from './log.js';
 
 export interface WebUnixServices {
   wc: WebContainer;
@@ -19,14 +20,17 @@ export interface WebUnixServices {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息（渲染到覆盖层日志区）
+// systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息（渲染到覆盖层日志区）。
+// TASK12：同步写 BOOT 级日志到 /var/log/webunix.log（initLogger 之后生效；之前为 no-op）。
 function ok(ui: BootUI, msg: string): void {
   ui.log(`[  OK  ] ${msg}`, 'ok');
+  void log('BOOT', msg);
 }
 
 // 灰色 [ .... ] 标记，用于中间过程的过渡说明
 function note(ui: BootUI, msg: string): void {
   ui.log(`[ .... ] ${msg}`, 'note');
+  void log('BOOT', msg);
 }
 
 // ─── 环境最小必要检测 ───
@@ -160,6 +164,10 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     ui.fail([`WebContainer runtime failed to start: ${String(e)}`]);
     return null;
   }
+  // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。放在快照恢复之前是安全的：
+  // loadSnapshot 写回旧 /var/log/webunix.log 时，最多覆盖到先写的一行 boot 日志
+  // （"Started WebContainer runtime"），旧日志内容绝不会丢——恢复后所有 boot/快照事件都落盘。
+  initLogger(wc.fs);
   ok(ui, 'Started WebContainer runtime');
 
   // 恢复持久化快照：先于 browser-wrote.txt 写入（那是自检用的测试文件，每次写，不影响恢复）。
@@ -232,11 +240,15 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     for (const name of autostart) {
       const r = await startService({ wc, client, ports }, name);
       if (r.ok) ok(ui, `Started service '${name}' (autostart)`);
-      else ui.log(`[ FAIL ] service '${name}' failed to start`, 'fail');
+      else {
+        ui.log(`[ FAIL ] service '${name}' failed to start`, 'fail');
+        void log('BOOT', `service '${name}' failed to start`);
+      }
     }
   } catch (e) {
     note(ui, `Autostart skipped (${String(e).slice(0, 80)})`);
   }
 
+  void log('BOOT', 'boot complete');
   return { wc, client, ports };
 }

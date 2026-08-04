@@ -32,6 +32,7 @@ import {
   disableAutostart,
   readAutostart,
 } from './services.js';
+import { readLog, readBootLog, clearLog, flushLogs } from './log.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -277,6 +278,31 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   const dis = await disableAutostart(wc.fs, SVC_TEST);
   const autoList2 = await readAutostart(wc.fs);
   verdict(term, 'Services', 'autostart disable removes', dis === true && !autoList2.includes(SVC_TEST), `removed=${dis}`);
+
+  // ─── 日志（Logs，TASK12）：journald 风格落盘 /var/log/webunix.log ───
+  // 命令执行记录：跑一条真实命令 → log 出现该命令记录（exit=0）。
+  const LOG_PROBE = 'echo "log-probe-selftest"';
+  const logProbe = await client.terminal(LOG_PROBE);
+  await flushLogs(); // 等排队中的日志落盘，再断言
+  const logText = await readLog(wc.fs, 200);
+  verdict(
+    term,
+    'Logs',
+    'command execution recorded',
+    logProbe.ok && logText.includes(LOG_PROBE) && logText.includes('exit=0'),
+    `runtime=${logProbe.runtime ?? '?'} recorded=${logText.includes(LOG_PROBE)}`
+  );
+
+  // boot 事件：log 含 BOOT 级条目（boot 阶段 ok/note 已写入）。
+  await flushLogs();
+  const logBootText = await readBootLog(wc.fs, 200);
+  const bootCount = logBootText ? logBootText.split('\n').length : 0;
+  verdict(term, 'Logs', 'boot events recorded', bootCount > 0, `${bootCount} BOOT entries`);
+
+  // clear：log clear 后为空。
+  await clearLog(wc.fs);
+  const logAfterClear = await readLog(wc.fs, 10);
+  verdict(term, 'Logs', 'clear', logAfterClear.trim() === '', 'log empty after clear');
 
   // ─── TerminalExecutor 统一路由（Executor / Process table / Port registry）───
   const te1 = await client.terminal('node -e "console.log(21*2)"');

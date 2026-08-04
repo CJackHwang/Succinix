@@ -8,6 +8,7 @@ import '@fontsource/jetbrains-mono/700.css';
 import { bootWebUnix } from './boot.js';
 import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
+import { log } from './log.js';
 import { runTests } from './tests.js';
 import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
@@ -160,16 +161,31 @@ function printProtocolResponse(res: ExecResult): void {
 }
 
 // 执行一条命令：浏览器侧拦截 → 否则发 host；输出前空行分隔，stderr 红色，exit≠0 灰色标注。
+// TASK12：本地命令记录 runtime=browser（log clear 除外：它清空日志文件，记录会破坏"清空后为空"语义）；
+// host 命令由 TerminalClient 记录；exec 异常 / host 掉线记 ERROR。
 async function execute(cmd: string): Promise<void> {
   term.write('\r\n'); // 输出前空行分隔，可读性好
-  const handled = await tryHandleLocalCommand(ctx, cmd);
-  if (handled) return;
+  let handled: boolean;
+  try {
+    handled = await tryHandleLocalCommand(ctx, cmd);
+  } catch (e) {
+    term.write(`${RED}${String(e)}${RESET}`);
+    void log('ERROR', `cmd: ${cmd} error: ${String(e)}`);
+    return;
+  }
+  if (handled) {
+    if (!/^log\s+clear\b/.test(cmd.trim())) {
+      void log('INFO', `cmd: ${cmd} exit=0 runtime=browser`);
+    }
+    return;
+  }
 
   let res: ExecResult;
   try {
     res = await ctx.client.terminal(cmd, undefined, 60000);
   } catch (e) {
     term.write(`${RED}${String(e)}${RESET}`);
+    void log('ERROR', `cmd: ${cmd} error: ${String(e)}`);
     return;
   }
 

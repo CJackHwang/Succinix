@@ -6,6 +6,7 @@
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { getSetting } from './config.js';
+import { log } from './log.js';
 
 export const SERVICES_FILE = '/etc/webunix.services';
 export const AUTOSTART_FILE = '/etc/webunix.autostart';
@@ -174,17 +175,25 @@ async function writeAutostart(fs: FileSystemAPI, names: string[]): Promise<void>
 // 启用自启：写入清单并去重；返回是否新增。
 export async function enableAutostart(fs: FileSystemAPI, name: string): Promise<boolean> {
   const names = await readAutostart(fs);
-  if (names.includes(name)) return false;
+  if (names.includes(name)) {
+    void log('INFO', `service enable: ${name} already enabled`);
+    return false;
+  }
   names.push(name);
   await writeAutostart(fs, names);
+  void log('INFO', `service enable: ${name}`);
   return true;
 }
 
 // 取消自启：从清单移除；返回是否原本存在。
 export async function disableAutostart(fs: FileSystemAPI, name: string): Promise<boolean> {
   const names = await readAutostart(fs);
-  if (!names.includes(name)) return false;
+  if (!names.includes(name)) {
+    void log('INFO', `service disable: ${name} not enabled`);
+    return false;
+  }
   await writeAutostart(fs, names.filter((n) => n !== name));
+  void log('INFO', `service disable: ${name}`);
   return true;
 }
 
@@ -257,10 +266,14 @@ export async function listServiceStates(ctx: ServiceContext): Promise<ServiceSta
 export async function startService(ctx: ServiceContext, name: string): Promise<ServiceActionResult> {
   const defs = await readServices(ctx.wc.fs);
   const def = defs.find((d) => d.name === name);
-  if (!def) return { ok: false, message: `unknown service: ${name}` };
+  if (!def) {
+    void log('WARN', `service start failed: ${name} (unknown service)`);
+    return { ok: false, message: `unknown service: ${name}` };
+  }
 
   const existing = await findServiceProcess(ctx, def);
   if (existing) {
+    void log('INFO', `service start: ${name} already running (pid=${existing.pid})`);
     return { ok: true, message: `service '${name}' is already running (pid=${existing.pid})`, pid: existing.pid };
   }
 
@@ -269,14 +282,18 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   try {
     const r = await ctx.client.spawn(command, undefined, 8000);
     if (!r.ok || !r.pid) {
-      return { ok: false, message: `failed to start '${name}': ${r.error || r.stderr || 'spawn returned failure'}` };
+      const why = r.error || r.stderr || 'spawn returned failure';
+      void log('WARN', `service start failed: ${name} (${why})`);
+      return { ok: false, message: `failed to start '${name}': ${why}` };
     }
     pid = Number(r.pid);
   } catch (e) {
+    void log('WARN', `service start failed: ${name} (${String(e)})`);
     return { ok: false, message: `failed to start '${name}': ${String(e)}` };
   }
 
   if (def.port === null) {
+    void log('INFO', `service start: ${name} pid=${pid}`);
     return { ok: true, message: `service '${name}' started (pid=${pid})`, pid };
   }
 
@@ -284,14 +301,17 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   const deadline = Date.now() + PORT_WAIT_MS;
   while (Date.now() < deadline) {
     if (ctx.ports.has(def.port)) {
+      void log('INFO', `service start: ${name} pid=${pid} port=${def.port}`);
       return { ok: true, message: `service '${name}' started (pid=${pid}, port ${def.port})`, pid };
     }
     const alive = await findServiceProcess(ctx, def);
     if (!alive) {
+      void log('WARN', `service start failed: ${name} exited before port ${def.port} became ready`);
       return { ok: false, message: `service '${name}' exited before port ${def.port} became ready`, pid };
     }
     await sleep(500);
   }
+  void log('WARN', `service start: ${name} pid=${pid} port ${def.port} not ready within ${PORT_WAIT_MS / 1000}s`);
   return {
     ok: false,
     message: `service '${name}' process started (pid=${pid}) but port ${def.port} not ready within ${PORT_WAIT_MS / 1000}s`,
@@ -306,15 +326,23 @@ const EXIT_WAIT_MS = 5000;
 export async function stopService(ctx: ServiceContext, name: string): Promise<ServiceActionResult> {
   const defs = await readServices(ctx.wc.fs);
   const def = defs.find((d) => d.name === name);
-  if (!def) return { ok: false, message: `unknown service: ${name}` };
+  if (!def) {
+    void log('WARN', `service stop failed: ${name} (unknown service)`);
+    return { ok: false, message: `unknown service: ${name}` };
+  }
 
   const proc = await findServiceProcess(ctx, def);
-  if (!proc) return { ok: false, message: `service '${name}' is not running` };
+  if (!proc) {
+    void log('WARN', `service stop: ${name} not running`);
+    return { ok: false, message: `service '${name}' is not running` };
+  }
 
   try {
     const k = await ctx.client.terminal(`kill ${proc.pid}`);
     if (!k.ok || !k.killed) {
-      return { ok: false, message: `failed to stop '${name}': ${k.message ?? 'unknown reason'}` };
+      const why = k.message ?? 'unknown reason';
+      void log('WARN', `service stop failed: ${name} (${why})`);
+      return { ok: false, message: `failed to stop '${name}': ${why}` };
     }
     // 有界等待：SIGTERM 已发，轮询进程表直到该 pid 不再是 running（或超时兜底）。
     const deadline = Date.now() + EXIT_WAIT_MS;
@@ -325,8 +353,10 @@ export async function stopService(ctx: ServiceContext, name: string): Promise<Se
       if (!alive) break;
       await sleep(100);
     }
+    void log('INFO', `service stop: ${name} pid=${proc.pid}`);
     return { ok: true, message: `service '${name}' stopped (pid=${proc.pid})`, pid: proc.pid };
   } catch (e) {
+    void log('WARN', `service stop failed: ${name} (${String(e)})`);
     return { ok: false, message: `failed to stop '${name}': ${String(e)}` };
   }
 }

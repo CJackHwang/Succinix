@@ -5,6 +5,7 @@
 // POC 阶段文本为主：二进制文件跳过并计数（console.warn 报告），不做 base64。
 // 尺寸保护：超过 ~50MB 跳过本次写（README 注明）。
 import type { FileSystemAPI } from '@webcontainer/api';
+import { log } from './log.js';
 
 // 快照元数据：版本号固定 1，恢复时校验用。
 export interface SnapshotMeta {
@@ -194,6 +195,8 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
   }
   lastSavedMeta = record.meta;
   lastSignature = { fileCount: record.meta.fileCount, totalBytes: record.meta.totalBytes };
+  // TASK12：快照事件采集点（INFO）——恢复成功后记录（写回先完成，日志行追加在旧日志尾部）。
+  void log('INFO', `snapshot restored: ${record.meta.fileCount} files, ${record.meta.totalBytes} bytes`);
   return record.meta;
 }
 

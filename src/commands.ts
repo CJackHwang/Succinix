@@ -31,6 +31,7 @@ import {
   disableAutostart,
   type ServiceContext,
 } from './services.js';
+import { readLog, readBootLog, clearLog, log } from './log.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -98,6 +99,7 @@ function printHelp(term: Terminal): void {
   term.writeln(`  env          list / set / unset environment variables (persisted in /etc/webunix.env)`);
   term.writeln(`  settings     view / set / reset system settings (persisted in /etc/webunix.settings)`);
   term.writeln(`  service      list services; start/stop/status/enable/disable manage them (declarative autostart)`);
+  term.writeln(`  log          show recent log entries (last 20); log -n <count> / log clear / log boot`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -318,9 +320,11 @@ async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
     if (skipped) {
       // 超过 50MB 上限：persist 跳过本次写，明确输出 skipped，不伪装成成功。
       term.writeln('Snapshot skipped (over 50MB limit)');
+      void log('WARN', 'snapshot skipped: over 50MB limit');
       return;
     }
     term.writeln(`Snapshot saved: ${meta.fileCount} files, ${formatKB(meta.totalBytes)} (${new Date(meta.savedAt).toISOString()})`);
+    void log('INFO', `snapshot saved: ${meta.fileCount} files, ${meta.totalBytes} bytes`);
     return;
   }
   if (sub === 'clear') {
@@ -331,6 +335,7 @@ async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
     }
     await clearSnapshot();
     term.writeln('Snapshot cleared; next boot will initialize a fresh workspace.');
+    void log('WARN', 'snapshot cleared: next boot initializes a fresh workspace');
     return;
   }
   term.writeln('usage: snapshot | snapshot now | snapshot clear --yes');
@@ -833,6 +838,53 @@ async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln('usage: service | service start <name> | service stop <name> | service status <name> | service enable <name> | service disable <name>');
 }
 
+// ─── 日志（TASK12）：log 命令族，读取 /var/log/webunix.log（journald 风格）───
+//   log              最近 20 行（默认）
+//   log -n <count>   最近 N 行
+//   log boot         只看 BOOT 级
+//   log clear        清空日志文件
+//   log -f           不做（交互 stdin 边界，AGENTS.md）：明确提示改用 log / log -n
+const LOG_DEFAULT_LINES = 20;
+
+async function logCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term, wc } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === '') {
+    const lines = await readLog(wc.fs, LOG_DEFAULT_LINES);
+    term.writeln(lines ? lines : '(log is empty)');
+    return;
+  }
+  if (sub === '-n') {
+    const n = Number(args[1]);
+    if (!Number.isInteger(n) || n < 1) {
+      term.writeln('usage: log -n <count>');
+      return;
+    }
+    const lines = await readLog(wc.fs, n);
+    term.writeln(lines ? lines : '(log is empty)');
+    return;
+  }
+  if (sub === 'boot') {
+    const lines = await readBootLog(wc.fs, LOG_DEFAULT_LINES);
+    term.writeln(lines ? lines : '(no BOOT entries)');
+    return;
+  }
+  if (sub === 'clear') {
+    try {
+      await clearLog(wc.fs);
+      term.writeln('Log cleared.');
+    } catch (e) {
+      term.writeln(`${RED}log clear failed: ${String(e)}${RESET}`);
+    }
+    return;
+  }
+  if (sub === '-f') {
+    term.writeln(`${AMBER}log -f (tail -f) is not supported in this environment; use 'log' or 'log -n <count>'.${RESET}`);
+    return;
+  }
+  term.writeln('usage: log | log -n <count> | log clear | log boot');
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -900,6 +952,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'service': {
       await serviceCmd(ctx, rest);
+      return true;
+    }
+    case 'log': {
+      await logCmd(ctx, rest);
       return true;
     }
     default:

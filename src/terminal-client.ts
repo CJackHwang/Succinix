@@ -1,6 +1,7 @@
 // TerminalExecutor 客户端：浏览器侧单一入口，内部走文件型 RPC。
 // 通道与 host 保持一致：/cmd.json {id,cmd,opts} → /result-<id>.json（每请求独立结果文件）。
 import type { WebContainer } from '@webcontainer/api';
+import { log } from './log.js';
 
 // host 响应统一形状；具体字段依 cmd 而定（run/ps/kill/spawn/cwd/ping/exit）。
 export interface ExecResult {
@@ -30,19 +31,28 @@ export class TerminalClient {
   // 其余命令作为 run 发送，由 host 统一路由到真 Node 或 Lifo。
   async terminal(command: string, opts?: Record<string, unknown>, timeoutMs = 30000): Promise<ExecResult> {
     const trimmed = command.trim();
+    let res: ExecResult;
     if (trimmed === 'ps' || trimmed === 'cwd' || trimmed === 'ping' || trimmed === 'exit') {
-      return this.exec(trimmed, undefined, timeoutMs);
+      res = await this.exec(trimmed, undefined, timeoutMs);
+    } else {
+      const killMatch = /^kill\s+(\d+)$/.exec(trimmed);
+      if (killMatch) {
+        res = await this.exec('kill', { pid: Number(killMatch[1]) }, timeoutMs);
+      } else {
+        res = await this.exec('run', { command, ...opts }, timeoutMs);
+      }
     }
-    const killMatch = /^kill\s+(\d+)$/.exec(trimmed);
-    if (killMatch) {
-      return this.exec('kill', { pid: Number(killMatch[1]) }, timeoutMs);
-    }
-    return this.exec('run', { command, ...opts }, timeoutMs);
+    // TASK12：命令执行采集点（INFO）——cmd/exit/runtime。协议命令无 runtime 字段，标 protocol。
+    void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'protocol'}`);
+    return res;
   }
 
   // spawn：后台长驻进程（仅 node 系）。host 立即返回 { ok, pid }，输出持续收集进进程表。
   async spawn(command: string, opts?: Record<string, unknown>, timeoutMs = 5000): Promise<ExecResult> {
-    return this.exec('spawn', { command, ...opts }, timeoutMs);
+    const res = await this.exec('spawn', { command, ...opts }, timeoutMs);
+    // TASK12：spawn 后台进程同样记录（host 返回 runtime: 'node'，缺失时按 node 处理）。
+    void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'node'}`);
+    return res;
   }
 
   // 文件 RPC 核心：写 /cmd.json，轮询 /result-<id>.json，读到即删。

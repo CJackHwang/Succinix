@@ -553,6 +553,10 @@ export async function workspaceSwitch(fs: FileSystemAPI, name: string): Promise<
   } catch (e) {
     return { ok: false, message: `failed to switch workspace: ${String(e).slice(0, 120)}` };
   }
+  // H1 类盲区：等长工作区名切换（如 main→test 同为 4 字符）不改变文件数/总字节，
+  // persist 的内容盲签名会跳过自动快照写，重启即回滚 —— 写盘成功后强制落盘一次。
+  // 快照失败只记日志，不把已成功的切换报为失败（与 config/motd 的 forcePersist 降级一致）。
+  await saveSnapshot(fs, true).catch((e) => console.warn('[workspace] force snapshot after switch failed:', e));
   return { ok: true, message: `Switched to workspace '${name}'. Your files live in /ws/${name}. cd /ws/${name} to start working.` };
 }
 

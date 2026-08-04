@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Vercel deployment adaptation: root `vercel.json` serving `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: credentialless` on every path (`/(.*)` — including `assets/*` and `host.js`) with `framework: vite`, `buildCommand: npm run build`, `outputDirectory: dist`; `scripts/verify-deploy.mjs` — a local deploy-readiness gate (build → `vite preview` → COOP/COEP header assertion on `/`, `/host.js` and the JS bundle → `?test=1` self-test in headless Chrome, gate `>=51 passed` and `0 failed`); README **Deployment (Vercel)** section (one-click dashboard import, `vercel deploy` CLI, custom-domain hint, COOP/COEP rationale, per-origin IndexedDB data scoping) plus a Known Boundaries entry (deployment hosts must support custom response headers).
+
 ## [0.2.0] — 2026-08-05
 
 ### Added
@@ -56,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Result overwrite race in the file-RPC channel (asynchronous `close` writes could clobber newer responses) — fixed with per-request result files.
-- tinbase startup on WebContainer: requires `--engine wasm --memory` (no native binaries).
+- tinbase startup on WebContainer: requires `--engine wasm` (no native binaries).
 - `db start` install step: host-side timeout must be passed via `{ timeout: 120000 }`.
 
 ### Known boundaries

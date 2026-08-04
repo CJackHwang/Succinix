@@ -72,6 +72,7 @@ The page boots WebUnix: system self-checks, then a shell prompt. Type `help` for
 npx tsc -p tsconfig.json --noEmit   # type check (0 errors required)
 node scripts/build-host.mjs         # bundle the in-container host (host.js)
 npm run build                       # production build
+node scripts/verify-deploy.mjs      # deploy-readiness gate (build + preview + COOP/COEP + ?test=1)
 ```
 
 ### Dependencies & audit
@@ -89,6 +90,37 @@ Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluate
 ```
 
 Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports, config, services, logs, packages, smoke) inside the centered boot-splash overlay, then prints the summary into the terminal and drops you into the shell.
+
+### Deployment (Vercel)
+
+WebUnix is a **pure static site** (Vite → `dist/`): no backend and no server-side state — workspaces, files and database data live in the browser's IndexedDB and ride the snapshot. It deploys to any static host that can send custom response headers; the one-click path is Vercel.
+
+**Why COOP/COEP matters.** WebContainer requires cross-origin isolation. Without the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` headers the page fails the boot environment check and shows the error page instead of the terminal. `vercel.json` ships these headers for **every** path (including `assets/*` and `host.js`), matching the dev and preview servers. Skipping them is the #1 cause of a "white screen + environment error page" on deployment.
+
+**One-click deploy (Vercel):**
+
+1. Push this repository to GitHub / GitLab / Bitbucket.
+2. In the Vercel dashboard, **Import Project** → pick the repo. Vercel auto-detects Vite (`framework: vite`, `buildCommand: npm run build`, `outputDirectory: dist` from `vercel.json`).
+3. Deploy. Optionally add a custom domain, e.g. `webunix.alibicore.com` or a `cjack.me` subdomain.
+
+CLI equivalent (requires a Vercel account/token):
+
+```bash
+npm i -g vercel
+vercel login
+vercel --prod
+```
+
+**Local deploy-readiness verification** (no Vercel token needed). `vite preview` serves the built `dist/` the same way Vercel does, so this is the "static artifact is deployable" proof:
+
+```bash
+npm run build
+node scripts/verify-deploy.mjs
+# starts vite preview, asserts COOP/COEP on /, /host.js and the JS bundle,
+# then runs ?test=1 in headless Chrome — PASSED requires >=51 passed and 0 failed
+```
+
+**Data scoping.** IndexedDB is isolated **per origin**. Changing the deployment domain = starting a fresh system: workspaces, files and database data do **not** migrate between domains. Refresh on the same domain is safe (the snapshot restores); only a domain change resets the system. This also applies to Vercel preview deployments: each preview gets its own unique URL (a distinct origin), so every preview environment has its own separately-scoped IndexedDB — data does not carry over between preview deployments either.
 
 ## Usage
 
@@ -169,6 +201,7 @@ These are environmental constraints, not bugs:
 - **`pkg` installs need registry access**: `pkg install`/`search`/`info` hit the npm registry (via `lifo search` / real npm). When the registry is unreachable the command reports the reason and does not pretend to succeed.
 - **Single-user, no permission bits**: WebUnix is a single-user browser sandbox (`guest` is the only user); there is no multi-user login / isolation, and permission-bit management (`chmod` semantics) is not simulated — simulated modes would add no real value.
 - **Chromium-only**: WebContainers requires a Chromium-based browser (Chrome/Edge). Firefox, Safari, and mobile browsers are not supported; the environment-check error page explains the requirements instead of degrading.
+- **Deployment hosts must send custom response headers**: WebContainer's cross-origin isolation requires the COOP/COEP headers configured in `vercel.json`. Hosts that cannot set custom response headers (e.g. some object-storage/CDN static hosting) cannot run WebUnix. Vercel's free plan supports custom headers via `vercel.json`.
 
 ## Project Structure
 

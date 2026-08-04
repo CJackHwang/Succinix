@@ -72,7 +72,7 @@ See README for deployment requirements.
 
 ### 5. 保留项（不许改）
 
-- `vite.config.ts`（7892/COOP/COEP）、文件 RPC（`/cmd.json` → `/result-<id>.json`）、路由规则（node|npm|npx → 真 Node）、spawn/ps/kill 协议、tinbase `--engine wasm --memory`、db 安装超时、`scripts/build-host.mjs`
+- `vite.config.ts`（7892/COOP/COEP）、文件 RPC（`/cmd.json` → `/result-<id>.json`）、路由规则（node|npm|npx → 真 Node）、spawn/ps/kill 协议、tinbase `--engine wasm`、db 安装超时、`scripts/build-host.mjs`
 - 暗橙主题色值、全英文界面、禁 emoji（AGENTS.md）
 - 测试逻辑断言（只允许改输出呈现位置）
 

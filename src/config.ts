@@ -7,11 +7,10 @@ import { saveSnapshot } from './persist.js';
 
 // H1 修复：等长值修改（如 preview-port 3001→3002、env FOO=a→FOO=b）不改变文件数/总字节，
 // persist 的内容盲签名会跳过自动快照写，重启即回滚。因此写盘成功后强制落盘一次。
-// saveSnapshot 有 inflight 重入保护：若并发自动快照正在执行，force 调用会被复用而可能丢失本次内容；
-// 这里先等待可能存在的并发快照完成，再强制保存一次，保证本次写盘内容必被收录。
+// 单次 saveSnapshot(fs, true) 已足够：persist 的 inflight 重入保护里，force 调用若遇并发
+// 自动快照会先等其完成再重跑一次全量保存（saveSnapshot 内部逻辑），无需调用方重复保存。
 async function forcePersist(fs: FileSystemAPI): Promise<void> {
   try {
-    await saveSnapshot(fs, true);
     await saveSnapshot(fs, true);
   } catch (e) {
     // 文件已写盘成功，快照失败只记日志，不打断配置命令（与自动快照的降级一致）。

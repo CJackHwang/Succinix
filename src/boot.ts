@@ -63,11 +63,21 @@ export function detectSystemInfo(): string[] {
   const platform = uaData?.platform ?? (navigator as { platform?: string }).platform;
   if (platform) lines.push(`Platform: ${platform}`);
 
-  const chrome = /Chrome\/([\d.]+)/.exec(ua);
-  if (chrome) lines.push(`Browser: Chrome/${chrome[1]}`);
+  // Edge/Opera 的 UA 同时含 "Chrome/xx" 标记，必须先查 Edg/OPR 再回落 Chrome，
+  // 否则会被误报为 Chrome（sysinfo/启动画面品牌失真）。
+  const edge = /Edg\/([\d.]+)/.exec(ua);
+  if (edge) lines.push(`Browser: Edge/${edge[1]}`);
   else {
-    const other = /\b(Firefox|Safari|Edg|OPR)\/([\d.]+)/.exec(ua);
-    if (other) lines.push(`Browser: ${other[1]}/${other[2]}`);
+    const opera = /OPR\/([\d.]+)/.exec(ua);
+    if (opera) lines.push(`Browser: Opera/${opera[1]}`);
+    else {
+      const chrome = /Chrome\/([\d.]+)/.exec(ua);
+      if (chrome) lines.push(`Browser: Chrome/${chrome[1]}`);
+      else {
+        const other = /\b(Firefox|Safari)\/([\d.]+)/.exec(ua);
+        if (other) lines.push(`Browser: ${other[1]}/${other[2]}`);
+      }
+    }
   }
 
   if (navigator.hardwareConcurrency) lines.push(`CPU cores: ${navigator.hardwareConcurrency}`);

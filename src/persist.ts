@@ -80,7 +80,12 @@ function isLogFile(path: string): boolean {
 }
 
 async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
+  let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return EMPTY_COLLECT; // 目录被并发删除（如 workspace rm 与自动快照竞争）：跳过该分支而非整批 reject
+  }
   const parts = await Promise.all(
     entries.map(async (ent): Promise<Collected> => {
       const name = String(ent.name);
@@ -116,6 +121,56 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
     }),
     { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0 }
   );
+}
+
+// ─── 遍历前门控：目录列表签名（TASK22 复审 R6）───
+// 自动快照每 ~2.5s 全量遍历容器 FS（readdir + 逐文件 readFile），空闲时是无谓开销。
+// 这里加一道 readdir 层面的轻量签名：递归读目录树（路径 + name:type，排除规则命中即剪枝），
+// 签名与上次全量遍历一致则直接复用上次结果，跳过遍历与读文件 —— 消除每 2.5s 的全量读。
+// 覆盖范围说明：readdir 结果不含文件大小（WebContainer DirEnt 无 size/stat），签名只捕捉
+// 目录结构变化（增/删/改名）；纯内容级修改（含等长）由 force 保存收录（config/motd/workspace
+// 写盘、snapshot now、pagehide 兜底），与既有内容盲签名的 H1 语义一致，不引入新的丢数据窗口。
+let lastListingSig: string | null = null;
+let lastCollected: Collected | null = null;
+
+// 递归 readdir 树结构签名：每目录输出 "path=name:type,..."（name 排序），子目录递归展开。
+async function computeListingSignature(fs: FileSystemAPI, dir: string): Promise<string> {
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return `${dir}=ERR;`; // 并发删目录：标记该目录变化，门控不命中 → 走全量遍历（其内 try/catch 跳过）
+  }
+  const list: Array<{ name: string; path: string; isDir: boolean }> = [];
+  for (const ent of entries) {
+    const name = String(ent.name);
+    const path = dir === '/' ? `/${name}` : `${dir}/${name}`;
+    if (isExcludedPath(path)) continue;
+    list.push({ name, path, isDir: ent.isDirectory() });
+  }
+  list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const self = list.map((e) => `${e.name}:${e.isDir ? 'd' : 'f'}`).join(',');
+  const childSigs = await Promise.all(list.filter((e) => e.isDir).map((e) => computeListingSignature(fs, e.path)));
+  return `${dir}=${self};${childSigs.join('')}`;
+}
+
+// 带门控的收集：force 或目录列表签名变化时才全量遍历；签名一致则复用上次结果。
+// 存储的是遍历前计算的签名：若遍历期间 FS 又变，存储签名已过期，下次比对不命中 → 自动再全量遍历，
+// 不会复用可能错过最新变更的旧结果。
+async function collectWithGate(fs: FileSystemAPI, force: boolean): Promise<Collected> {
+  let sig: string | null;
+  try {
+    sig = await computeListingSignature(fs, '/');
+  } catch {
+    sig = null; // 签名计算异常：按"不可用"处理，本次与下次都走全量遍历兜底
+  }
+  if (!force && lastListingSig !== null && lastCollected && sig !== null && sig === lastListingSig) {
+    return lastCollected;
+  }
+  const collected = await collectDir(fs, '/');
+  lastListingSig = sig;
+  lastCollected = collected;
+  return collected;
 }
 
 // ─── IndexedDB：原生 API + 轻量 promise 封装（不新增依赖）───
@@ -176,7 +231,7 @@ export function saveSnapshot(fs: FileSystemAPI, force = false): Promise<SaveResu
 }
 
 async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
-  const collected = await collectDir(fs, '/');
+  const collected = await collectWithGate(fs, force);
   if (collected.totalBytes > MAX_SNAPSHOT_BYTES) {
     if (!overLimitWarned) {
       console.warn(`[persist] snapshot skipped: ${collected.totalBytes} bytes exceeds ${MAX_SNAPSHOT_BYTES} limit`);
@@ -223,6 +278,9 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
     fileCount: record.meta.sigFileCount ?? record.meta.fileCount,
     totalBytes: record.meta.sigTotalBytes ?? record.meta.totalBytes,
   };
+  // 恢复写回了整树：目录列表签名缓存已过期，置空让下一次保存重新全量遍历（避免复用恢复前的结果）。
+  lastListingSig = null;
+  lastCollected = null;
   // TASK12：快照事件采集点（INFO）——恢复成功后记录（写回先完成，日志行追加在旧日志尾部）。
   void log('INFO', `snapshot restored: ${record.meta.fileCount} files, ${record.meta.totalBytes} bytes`);
   return record.meta;
@@ -255,6 +313,8 @@ export async function clearSnapshot(): Promise<void> {
     await idbReq('readwrite', (s) => s.delete(KEY));
     lastSavedMeta = null;
     lastSignature = { fileCount: -1, totalBytes: -1 };
+    lastListingSig = null;
+    lastCollected = null;
     overLimitWarned = false;
   } finally {
     cleared = false;

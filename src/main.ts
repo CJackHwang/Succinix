@@ -6,39 +6,56 @@ const log = (s: string) => {
   outputEl.textContent += s + '\n';
   outputEl.scrollTop = outputEl.scrollHeight;
 };
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// ─── Lifo host client: auto-launches with the WebContainer ───
-// Uses file-based RPC over the shared filesystem (stdin was unreliable in the
-// test environment; FS channel is proven bidirectional).
-class LifoClient {
+// ─── TerminalExecutor 客户端：浏览器侧单一入口，内部仍走文件 RPC ───
+// 通道与 host 保持一致：/cmd.json → /result.json。
+class TerminalClient {
   private id = 0;
 
   constructor(private wc: WebContainer) {}
 
-  async exec(cmd: string, opts?: any, timeoutMs = 30000): Promise<any> {
+  // 统一终端入口：协议命令（ps / kill / cwd / ping / exit）直接命中；
+  // 其余命令作为 run 发送，由 host 统一路由到真 Node 或 Lifo。
+  async terminal(command: string, opts?: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
+    const trimmed = command.trim();
+    if (trimmed === 'ps' || trimmed === 'cwd' || trimmed === 'ping' || trimmed === 'exit') {
+      return this.exec(trimmed, undefined, timeoutMs);
+    }
+    const killMatch = /^kill\s+(\d+)$/.exec(trimmed);
+    if (killMatch) {
+      return this.exec('kill', { pid: Number(killMatch[1]) }, timeoutMs);
+    }
+    return this.exec('run', { command, ...opts }, timeoutMs);
+  }
+
+  async exec(cmd: string, opts?: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
     const id = ++this.id;
     await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd, opts }));
+    const resultFile = `/result-${id}.json`;
     const start = Date.now();
     for (;;) {
       try {
-        const raw = await this.wc.fs.readFile('/result.json', 'utf8');
+        const raw = await this.wc.fs.readFile(resultFile, 'utf8');
         const m = JSON.parse(raw);
-        if (m.id === id) return m;
+        // 读到即删：每个请求独立结果文件，避免与迟到的异步写入互相覆盖
+        try {
+          await this.wc.fs.rm(resultFile);
+        } catch {
+          /* 清理失败不影响 */
+        }
+        return m;
       } catch {
-        /* result not ready yet */
+        /* 结果未就绪 */
       }
       if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${cmd}`);
-      await new Promise((r) => setTimeout(r, 150));
+      await sleep(150);
     }
-  }
-
-  async close() {
-    await this.exec('__exit__', {}, 3000);
   }
 }
 
-async function ensureLifoHost(wc: WebContainer): Promise<LifoClient> {
-  // host.js is pre-bundled and served by Vite; write into the container if absent
+async function ensureTerminalHost(wc: WebContainer): Promise<TerminalClient> {
+  // host.js 由 Vite 预打包并提供；容器里没有就注入
   try {
     await wc.fs.readFile('/host.js');
   } catch {
@@ -48,15 +65,15 @@ async function ensureLifoHost(wc: WebContainer): Promise<LifoClient> {
   }
   log('→ 拉起常驻 host 进程 (node host.js)');
   await wc.spawn('node', ['host.js']);
-  const client = new LifoClient(wc);
+  const client = new TerminalClient(wc);
   for (let i = 0; i < 40; i++) {
     try {
-      const p = await client.exec('__ping__', {}, 2000);
+      const p = await client.exec('ping', undefined, 2000);
       if (p.kind === 'pong') return client;
     } catch {
-      /* not ready yet */
+      /* host 未就绪 */
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await sleep(300);
   }
   throw new Error('host 无响应');
 }
@@ -69,6 +86,9 @@ function verdict(name: string, ok: boolean, detail = '') {
   else fail++;
   log(`${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
+function section(title: string) {
+  log(`\n── ${title} ──`);
+}
 
 async function main() {
   try {
@@ -76,82 +96,126 @@ async function main() {
     const wc = await WebContainer.boot();
     log('✅ WebContainer booted');
 
-    // 浏览器先写一个"项目文件"
+    // 浏览器先写一个"项目文件"（TE3 / TE5 管道会用到）
     await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
     log('✅ wc.fs.writeFile(/browser-wrote.txt)');
 
-    // Lifo 随 WC 自动拉起
-    const lifo = await ensureLifoHost(wc);
+    const t = await ensureTerminalHost(wc);
     log('✅ host 就绪（自动拉起成功）\n');
 
-    // T1: 协议连通
-    const p1 = await lifo.exec('__ping__');
-    verdict('T1 持久协议 ping', p1.kind === 'pong');
+    // ─── 基础协议 ───
+    section('基础协议');
+    const p1 = await t.exec('ping');
+    verdict('P1 ping', p1.kind === 'pong');
 
-    // T2: 共享 FS（浏览器 → lifo）
-    const p2 = await lifo.exec('cat /workspace/browser-wrote.txt');
-    verdict('T2 lifo 读浏览器文件', p2.ok && p2.stdout.includes('hello from browser'), p2.stdout.trim().slice(0, 60));
+    const p2 = await t.exec('cwd');
+    const hostCwd = String(p2.cwd ?? '');
+    verdict('P2 cwd（统一 cwd = process.cwd()）', p2.ok && hostCwd.startsWith('/'), hostCwd);
 
-    // T3: 共享 FS（lifo → 浏览器）
-    const p3 = await lifo.exec('echo "persistent-host-write" > /workspace/lifo-wrote.txt');
-    const back = await wc.fs.readFile('/lifo-wrote.txt', 'utf-8');
-    verdict('T3 浏览器读回 lifo 写的文件', p3.ok && back.trim() === 'persistent-host-write', JSON.stringify(back.trim()));
+    // ─── 共享文件系统（已实测结论，回归验证）───
+    section('共享文件系统');
+    const fs1 = await t.terminal('cat /workspace/browser-wrote.txt');
+    verdict(
+      'FS1 lifo 读浏览器文件',
+      fs1.ok && fs1.runtime === 'lifo' && String(fs1.stdout ?? '').includes('hello from browser'),
+      String(fs1.stdout ?? '').trim().slice(0, 60)
+    );
 
-    // T4: cwd 跨命令持久
-    await lifo.exec('cd /workspace');
-    const p4 = await lifo.exec('pwd');
-    const p4b = await lifo.exec('pwd');
-    verdict('T4 cwd 跨命令持久', p4.ok && p4b.ok && p4b.stdout.trim() === '/workspace', p4b.stdout.trim());
+    const fs2 = await t.terminal('echo "persistent-host-write" > /workspace/lifo-wrote.txt');
+    const back = await wc.fs.readFile('/lifo-wrote.txt', 'utf8');
+    verdict('FS2 浏览器读回 lifo 写的文件', fs2.ok && back.trim() === 'persistent-host-write', JSON.stringify(back.trim()));
 
-    // T5: 管道
-    const p5 = await lifo.exec('cat /workspace/browser-wrote.txt | wc -c');
-    verdict('T5 管道 cat|wc', p5.ok && p5.stdout.trim() === '74', p5.stdout.trim());
+    const fs3 = await t.terminal('node -e "console.log(process.cwd())"');
+    verdict('FS3 node 子进程 cwd 与 host 统一', fs3.ok && String(fs3.stdout ?? '').trim() === hostCwd, String(fs3.stdout ?? '').trim());
 
-    // T6: ★ curl 直连普通网站（无 CORS 头）——CORS 行为测试
+    const fs4a = await t.terminal('cd /workspace');
+    const fs4b = await t.terminal('pwd');
+    verdict('FS4 lifo cwd 跨命令持久', fs4a.ok && fs4b.ok && String(fs4b.stdout ?? '').trim() === '/workspace', String(fs4b.stdout ?? '').trim());
+
+    // ─── TerminalExecutor 统一路由 ───
+    section('TerminalExecutor 统一路由');
+
+    // TE1: node 前缀 → 真 Node 子进程，参数数组从命令串解析
+    const te1 = await t.terminal('node -e "console.log(21*2)"');
+    verdict(
+      'TE1 node -e 21*2 → stdout=42 / runtime=node',
+      te1.ok && String(te1.stdout ?? '').trim() === '42' && te1.runtime === 'node',
+      `runtime=${te1.runtime} stdout=${String(te1.stdout ?? '').trim()}`
+    );
+
+    // TE2: npm 前缀 → 真 Node 子进程（PATH 解析）
+    const te2 = await t.terminal('npm --version');
+    verdict('TE2 npm --version → runtime=node', te2.ok && te2.runtime === 'node', `runtime=${te2.runtime} ${String(te2.stdout ?? '').trim().slice(0, 30)}`);
+
+    // TE3: 非 node 前缀 → Lifo Unix 工具
+    const te3 = await t.terminal('grep -i lifo /workspace/browser-wrote.txt');
+    verdict(
+      'TE3 grep -i lifo → runtime=lifo',
+      te3.ok && te3.runtime === 'lifo' && String(te3.stdout ?? '').toLowerCase().includes('lifo'),
+      `runtime=${te3.runtime} ${String(te3.stdout ?? '').trim().slice(0, 50)}`
+    );
+
+    // TE4: ps 进程表应列出刚才的 node 子进程
+    const te4 = await t.terminal('ps');
+    const procs: any[] = Array.isArray(te4.processes) ? te4.processes : [];
+    const nodeProc = procs.find((pr) => String(pr.cmd ?? '').startsWith('node'));
+    verdict('TE4 ps 列出 node 子进程', !!nodeProc && nodeProc.pid > 0, nodeProc ? `pid=${nodeProc.pid} "${nodeProc.cmd}" [${nodeProc.status}]` : '未找到 node 子进程');
+
+    // TE5: 管道仍走 Lifo
+    const te5 = await t.terminal('cat /workspace/browser-wrote.txt | wc -c');
+    verdict('TE5 管道 cat|wc → runtime=lifo / 74', te5.ok && te5.runtime === 'lifo' && String(te5.stdout ?? '').trim() === '74', `runtime=${te5.runtime} stdout=${String(te5.stdout ?? '').trim()}`);
+
+    // TE6: kill 长驻 node 子进程（先挂起，再 ps 找到 pid 并 kill）
     try {
-      const p6 = await lifo.exec('curl -s -m 15 https://example.com');
-      verdict('T6 curl 直连 example.com（无 CORS 头）', p6.ok && p6.stdout.includes('<title>Example Domain</title>'), `exit=${p6.exitCode} ${p6.stdout.slice(0, 60) || p6.stderr.slice(0, 60)}`);
-    } catch (e) {
-      verdict('T6 curl 直连 example.com', false, String(e).slice(0, 80));
+      await t.terminal('node -e "setInterval(()=>{},1000)"', undefined, 1500); // 预期超时：命令未结束
+    } catch {
+      /* 预期行为：浏览器侧先超时，host 子进程仍在进程表里 */
     }
-
-    // T7: curl 走 Jina（CORS 友好代理）
-    try {
-      const p7 = await lifo.exec('curl -s -m 20 https://r.jina.ai/https://example.com');
-      verdict('T7 curl 走 r.jina.ai 代理', p7.ok && p7.stdout.includes('Example Domain'), p7.stdout.slice(0, 60) || p7.stderr.slice(0, 60));
-    } catch (e) {
-      verdict('T7 curl 走 r.jina.ai', false, String(e).slice(0, 80));
-    }
-
-    // T8: node 兼容层
-    const p8 = await lifo.exec('node -e "console.log(6*7)"');
-    verdict('T8 lifo 的 node 兼容层', p8.ok && p8.stdout.trim() === '42', p8.stdout.trim() || p8.stderr.trim().slice(0, 60));
-
-    // T9: symlink 在 WC 虚拟 FS 上的表现（高级特性降级测试）
-    const p9 = await lifo.exec('ln -s browser-wrote.txt /workspace/mylink.txt && ls -la /workspace');
-    verdict('T9 symlink 创建', p9.ok && p9.stdout.includes('mylink'), p9.stdout.includes('mylink') ? 'link 已创建' : p9.stderr.slice(0, 80));
-
-    // T10: lifo pkg 生态（search 网络查询）
-    try {
-      const p10 = await lifo.exec('lifo search git', {}, 20000);
-      verdict('T10 lifo pkg search git', p10.ok && p10.stdout.toLowerCase().includes('lifo-pkg-git'), p10.stdout.slice(0, 60) || p10.stderr.slice(0, 60));
-    } catch (e) {
-      verdict('T10 lifo pkg search', false, String(e).slice(0, 80));
-    }
-
-    // T12-T14: ★ TerminalExecutor 前提 — host 拉起真 Node/npm 子进程
-    const p12 = await lifo.exec('__spawn_test__', {}, 40000);
-    if (p12.ok && p12.r1) {
-      verdict('T12 node 子进程（stdout/stderr/exit=3）', p12.r1.code === 3 && p12.r1.out === 'child-42', JSON.stringify(p12.r1));
+    const psAfterStart = await t.terminal('ps');
+    const longProc = (psAfterStart.processes ?? []).find(
+      (pr: any) => String(pr.cmd ?? '').startsWith('node') && pr.status === 'running'
+    );
+    if (longProc) {
+      const k = await t.terminal(`kill ${longProc.pid}`);
+      verdict('TE6 kill 长驻 node 子进程', k.ok && k.killed === true, `pid=${longProc.pid} ${k.message ?? ''}`);
+      await sleep(300);
+      const psAfterKill = await t.terminal('ps');
+      const after = (psAfterKill.processes ?? []).find((pr: any) => pr.pid === longProc.pid);
+      verdict('TE6b kill 后进程状态为 exited', !after || after.status === 'exited', JSON.stringify(after ?? `pid=${longProc.pid} 已不在表中`));
     } else {
-      verdict('T12 node 子进程', false, JSON.stringify(p12).slice(0, 150));
+      verdict('TE6 kill 长驻 node 子进程', false, 'ps 未找到长驻 node 子进程');
     }
-    verdict('T13 npm --version 子进程（PATH 解析）', !!p12.r2 && !p12.r2.error && p12.r2.code === 0, JSON.stringify(p12.r2 || p12).slice(0, 120));
-    verdict('T14 spawnSync node', !!p12.r3 && p12.r3.code === 0 && p12.r3.out === 'sync-ok', JSON.stringify(p12.r3 || p12).slice(0, 120));
 
-    // T11: 优雅退出
-    const p11 = await lifo.exec('__exit__');
-    verdict('T11 优雅退出协议', p11.kind === 'bye');
+    // ─── 已知边界（网络/生态，慢且可能受环境限制，仅供参考，不计入 PASS/FAIL）───
+    section('已知边界（仅供参考）');
+    try {
+      const b1 = await t.terminal('curl -s -m 12 https://example.com', undefined, 20000);
+      log(`ℹ️ B1 curl 直连 example.com → exit=${b1.exitCode} ok=${b1.ok} ${String(b1.stdout || b1.stderr || '').slice(0, 60)}`);
+    } catch (e) {
+      log(`ℹ️ B1 curl 直连 example.com → ${String(e).slice(0, 80)}`);
+    }
+    try {
+      const b2 = await t.terminal('curl -s -m 20 https://r.jina.ai/https://example.com', undefined, 25000);
+      log(`ℹ️ B2 curl 走 r.jina.ai → ok=${b2.ok} ${String(b2.stdout || b2.stderr || '').slice(0, 60)}`);
+    } catch (e) {
+      log(`ℹ️ B2 curl 走 r.jina.ai → ${String(e).slice(0, 80)}`);
+    }
+    try {
+      const b3 = await t.terminal('lifo search git', undefined, 20000);
+      log(`ℹ️ B3 lifo search git → ok=${b3.ok} ${String(b3.stdout || b3.stderr || '').slice(0, 60)}`);
+    } catch (e) {
+      log(`ℹ️ B3 lifo search git → ${String(e).slice(0, 80)}`);
+    }
+    try {
+      const b4 = await t.terminal('ln -s /workspace/browser-wrote.txt /workspace/mylink.txt && ls -la /workspace');
+      log(`ℹ️ B4 symlink 降级 → ok=${b4.ok} ${String(b4.stdout || b4.stderr || '').slice(0, 80)}`);
+    } catch (e) {
+      log(`ℹ️ B4 symlink 降级 → ${String(e).slice(0, 80)}`);
+    }
+
+    // ─── 优雅退出 ───
+    const pEnd = await t.terminal('exit');
+    verdict('P3 exit 握手', pEnd.kind === 'bye');
 
     statusEl.innerHTML = `完成 — <span class="${fail ? 'fail' : 'ok'}">PASS ${pass} / FAIL ${fail}</span>`;
   } catch (e) {

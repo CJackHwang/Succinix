@@ -9,6 +9,7 @@ import { bootWebUnix } from './boot.js';
 import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { runTests } from './tests.js';
+import { saveSnapshot } from './persist.js';
 import type { ExecResult } from './terminal-client.js';
 
 const AMBER = '\x1b[33m';
@@ -198,6 +199,19 @@ async function runCommand(cmd: string): Promise<void> {
   }
 }
 
+// 自动快照：每 ~2.5s 保存一次容器 FS 快照到 IndexedDB（persist 内部做"内容变化"去重，
+// 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前尽力保存一次。
+function startAutoSnapshot(ctx: CommandContext): void {
+  setInterval(() => {
+    void saveSnapshot(ctx.wc.fs).catch((e) => console.warn('[persist] auto snapshot failed:', e));
+  }, 2500);
+  const flush = () => {
+    void saveSnapshot(ctx.wc.fs).catch(() => {});
+  };
+  window.addEventListener('pagehide', flush);
+  window.addEventListener('beforeunload', flush);
+}
+
 // ─── 主流程 ───
 async function main(): Promise<void> {
   const ui = createBootUI();
@@ -219,6 +233,9 @@ async function main(): Promise<void> {
     await ui.complete();
     fitAddon.fit();
     term.writeln(WELCOME_BANNER);
+
+    // 持久化主循环：此后每 ~2.5s 自动快照（内容未变不写 IDB）。
+    startAutoSnapshot(ctx);
 
     // 容器里任何服务就绪都实时打印暗橙预览提示（覆盖层已移除，走终端）。
     services.wc.on('server-ready', (port, url) => {

@@ -3,6 +3,7 @@
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
+import { saveSnapshot, loadSnapshot } from './persist.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -82,6 +83,16 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   const fs4a = await client.terminal('cd /workspace');
   const fs4b = await client.terminal('pwd');
   verdict(term, 'Filesystem', 'lifo cwd persists across commands', fs4a.ok && fs4b.ok && String(fs4b.stdout ?? '').trim() === '/workspace', String(fs4b.stdout ?? '').trim());
+
+  // ─── 持久化（Persistence）───
+  // 自检会真实写入快照 —— 这是特性（自检也验证了持久化）。断言放 Filesystem 区。
+  const pers1 = await saveSnapshot(wc.fs);
+  verdict(term, 'Persistence', 'snapshot saved', pers1.fileCount > 0, `${pers1.fileCount} files`);
+
+  const pers2 = await loadSnapshot(wc.fs);
+  const restoredText = pers2 ? await wc.fs.readFile('/browser-wrote.txt', 'utf8') : '';
+  const loadable = !!pers2 && pers2.fileCount === pers1.fileCount && restoredText.includes('hello from browser');
+  verdict(term, 'Persistence', 'snapshot loadable', loadable, pers2 ? `restored ${pers2.fileCount} files` : 'no snapshot to restore');
 
   // ─── TerminalExecutor 统一路由（Executor / Process table / Port registry）───
   const te1 = await client.terminal('node -e "console.log(21*2)"');

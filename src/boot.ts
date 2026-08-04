@@ -5,6 +5,7 @@
 import { WebContainer } from '@webcontainer/api';
 import type { BootUI } from './boot-ui.js';
 import { TerminalClient } from './terminal-client.js';
+import { loadSnapshot } from './persist.js';
 
 export interface WebUnixServices {
   wc: WebContainer;
@@ -130,6 +131,20 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     return null;
   }
   ok(ui, 'Started WebContainer runtime');
+
+  // 恢复持久化快照：先于 browser-wrote.txt 写入（那是自检用的测试文件，每次写，不影响恢复）。
+  // 恢复必须在 ensureTerminalHost 之前 —— host 挂载的就是恢复后的 FS。
+  try {
+    const restored = await loadSnapshot(wc.fs);
+    if (restored) {
+      ok(ui, `Restored workspace from persistent storage (${restored.fileCount} files, ${Math.round(restored.totalBytes / 1024)} KB)`);
+    } else {
+      ok(ui, 'Initialized fresh workspace');
+    }
+  } catch (e) {
+    note(ui, `Persistent restore failed (${String(e).slice(0, 80)}); continuing with current filesystem`);
+    ok(ui, 'Initialized fresh workspace');
+  }
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。

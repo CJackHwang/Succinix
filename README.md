@@ -20,6 +20,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Process management** — `ps` / `kill` over a unified process table (real child processes + tracked state), including background `spawn`.
 - **Port management** — services are detected via WebContainer `server-ready` events and listed by `ports` with their preview URLs.
 - **Database** — `db start` boots a real Postgres (tinbase, PGlite/WASM engine) inside the container; `db status` / `db stop` manage it.
+- **Persistence** — the workspace (files + database data) is snapshotted to IndexedDB and restored on boot; refresh never loses data. `snapshot` command for status / manual save / reset.
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -88,6 +89,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `db stop`      | Stop the database                                       |
 | `version`      | Show version                                            |
 | `whoami`       | Show current user (`guest`)                              |
+| `snapshot`     | Persistence status; `snapshot now` saves, `snapshot clear --yes` resets |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -144,7 +146,7 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] Product shell: full-screen terminal, boot sequence, ports, tinbase
 - [x] Production-grade interface: English UI, dark-amber theme, JetBrains Mono, system self-checks
 - [x] Boot splash: centered DOM overlay, responsive layout, graceful environment-exit
-- [ ] Persistence layer: files/state persisted to OPFS/IndexedDB, restored on boot (no data loss on refresh)
+- [x] Persistence layer: files/state persisted to IndexedDB, restored on boot (no data loss on refresh)
 - [ ] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
 - [ ] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor

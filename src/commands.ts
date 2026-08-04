@@ -1,10 +1,11 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
-//   help / clear / sysinfo / ports / db start|status|stop / version / whoami
+//   help / clear / sysinfo / ports / db start|status|stop / snapshot / version / whoami
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { detectSystemInfo } from './boot.js';
+import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -33,7 +34,10 @@ function printHelp(term: Terminal): void {
   term.writeln(`  ports        list service ports that are ready`);
   term.writeln(`  db start     start the tinbase database (auto-installs in-container when missing)`);
   term.writeln(`  db status    show tinbase status`);
-  term.writeln(`  db stop      stop tinbase`);
+  term.writeln(`  db stop      stop tinbase (data persists in workspace)`);
+  term.writeln(`  snapshot     show persistent storage status`);
+  term.writeln(`  snapshot now  save a snapshot immediately (auto-saves every ~2.5s)`);
+  term.writeln(`  snapshot clear  clear snapshot (= reset system, next boot fresh)`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -101,11 +105,12 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   }
 
   // 3. spawn 后台启动（端口选 3001，避免常见冲突）
-  //    --engine wasm: WebContainer 无原生二进制，必须 PGlite/WASM 引擎；--memory: 不落盘，POC 够用
-  term.writeln('Starting npx tinbase start --port 3001 --engine wasm --memory (background process)...');
+  //    --engine wasm: WebContainer 无原生二进制，必须 PGlite/WASM 引擎；
+  //    去 --memory：data-dir 落容器 FS，随快照持久化（TASK5）。
+  term.writeln('Starting npx tinbase start --port 3001 --engine wasm (background process)...');
   let pid: number | undefined;
   try {
-    const r = await client.spawn('npx tinbase start --port 3001 --engine wasm --memory', undefined, 8000);
+    const r = await client.spawn('npx tinbase start --port 3001 --engine wasm', undefined, 8000);
     if (!r.ok || !r.pid) {
       term.writeln(`${RED}tinbase: failed to start (engine wasm): ${r.error || r.stderr || 'spawn returned failure'}${RESET}`);
       term.writeln(`${RED}tinbase: failed to start (engine wasm): check container compatibility.${RESET}`);
@@ -126,6 +131,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     if (url) {
       term.writeln(`${AMBER}Database ready: ${url}${RESET}`);
       term.writeln(`Open ${url} in the browser, or curl ${url} through Lifo.`);
+      term.writeln('Database data persists in the workspace (.tinbase) and survives refresh via snapshots.');
       return;
     }
     await sleep(500);
@@ -176,11 +182,53 @@ async function dbStop(ctx: CommandContext): Promise<void> {
   const pid = Number(proc.pid);
   const k = await ctx.client.terminal(`kill ${pid}`);
   if (k.ok && k.killed) {
-    term.writeln(`tinbase stopped (pid=${pid})`);
+    term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
     ctx.ports.delete(DB_PORT);
   } else {
     term.writeln(`${RED}failed to stop: ${k.message ?? 'unknown reason'}${RESET}`);
   }
+}
+
+// snapshot 命令：查看持久化状态 / 立即保存 / 清除（重置系统）。
+function formatKB(n: number): string {
+  return `${Math.round(n / 1024)} KB`;
+}
+
+async function snapshotStatus(term: Terminal): Promise<void> {
+  const meta = await getSnapshotMeta();
+  if (!meta || meta.savedAt === 0) {
+    term.writeln('Persistent storage: no snapshot yet (fresh workspace)');
+    return;
+  }
+  term.writeln('Persistent storage: snapshot found');
+  term.writeln(`  saved at:  ${new Date(meta.savedAt).toISOString()}`);
+  term.writeln(`  files:     ${meta.fileCount}`);
+  term.writeln(`  bytes:     ${meta.totalBytes} (${formatKB(meta.totalBytes)})`);
+}
+
+async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === '') {
+    await snapshotStatus(term);
+    return;
+  }
+  if (sub === 'now') {
+    const meta = await saveSnapshot(ctx.wc.fs, true);
+    term.writeln(`Snapshot saved: ${meta.fileCount} files, ${formatKB(meta.totalBytes)} (${new Date(meta.savedAt).toISOString()})`);
+    return;
+  }
+  if (sub === 'clear') {
+    if (args[1] !== '--yes') {
+      term.writeln('This will clear the persisted snapshot; the next boot starts fresh.');
+      term.writeln('Confirm with: snapshot clear --yes');
+      return;
+    }
+    await clearSnapshot();
+    term.writeln('Snapshot cleared; next boot will initialize a fresh workspace.');
+    return;
+  }
+  term.writeln('usage: snapshot | snapshot now | snapshot clear --yes');
 }
 
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
@@ -214,6 +262,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
       else if (sub === 'status') await dbStatus(ctx);
       else if (sub === 'stop') await dbStop(ctx);
       else term.writeln('usage: db start | db status | db stop');
+      return true;
+    }
+    case 'snapshot': {
+      await snapshotCmd(ctx, rest);
       return true;
     }
     default:

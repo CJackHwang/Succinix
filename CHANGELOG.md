@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Port management: `server-ready` registry and `ports` command.
 - Database: `db start|status|stop` for tinbase (PGlite/WASM engine).
 - Self-test suite accessible via `?test=1`.
+- Persistence layer: workspace snapshotted to IndexedDB (auto-save every ~2.5s + `pagehide` fallback), restored on boot; `snapshot` command; tinbase data persists with the workspace.
 - Open-source scaffolding: README, CONTRIBUTING, MIT license.
 
 ### Fixed

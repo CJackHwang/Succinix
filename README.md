@@ -23,6 +23,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Persistence** — the workspace (files + database data) is snapshotted to IndexedDB and restored on boot; refresh never loses data. `snapshot` command for status / manual save / reset.
 - **Memory management** — `free` / `top` give a memory overview (device + JS heap; sandbox estimates are honestly labeled), `reboot` restarts the system with a browser reload (persisted data survives), `shutdown` powers off, and `cache` / `cache clear` report and clean rebuildable caches without touching `/workspace`.
 - **Workspace split** — `workspace` manages multiple isolated workspaces: each lives in its own `/ws/<name>` directory with its own files and state; `create` / `switch` / `rm` manage them, and the current workspace is recorded in `/ws/.current` (persists across refreshes). The default `main` workspace is initialized on first boot.
+- **System configuration** — `env` manages persistent environment variables (`/etc/webunix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/webunix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -98,6 +99,8 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `shutdown`     | Power off (you can close this tab)                                       |
 | `cache`        | Show cache usage; `cache clear` cleans rebuildable caches                |
 | `workspace`    | List workspaces; `create` / `switch` / `rm` manage isolated workspaces  |
+| `env`          | List / set (`env KEY=value`) / unset (`env -u KEY`) environment variables, persisted in `/etc/webunix.env` |
+| `settings`     | View / set / reset (`settings reset KEY`) system settings, persisted in `/etc/webunix.settings` |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -111,7 +114,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **27 passed / 1 known boundary**.
+Result of the browser runtime verification suite (see `src/tests.ts`): the full diagnostics pass, now including the system-config lifecycle (`env` set/get/delete and `settings` write/reset).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -119,6 +122,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): **27 pass
 - Port registry: `server-ready` events surface preview URLs.
 - Database: tinbase (PGlite/WASM) boots and serves.
 - Memory: device memory / JS heap stats reported by the browser (`free` can render).
+- Config: `env` set/get/delete lifecycle and `settings` write/reset persist to `/etc/webunix.*`.
 
 ## Known Boundaries
 
@@ -138,7 +142,8 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/...)
+  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/...)
+  config.ts          # system configuration: /etc/webunix.env + /etc/webunix.settings I/O & defaults
   terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
   host.ts            # TerminalExecutor daemon (runs inside WebContainer)

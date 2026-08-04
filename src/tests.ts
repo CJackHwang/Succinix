@@ -12,6 +12,15 @@ import {
   workspaceSwitch,
   workspaceRemove,
 } from './commands.js';
+import {
+  readEnvFile,
+  getEnvVar,
+  setEnvVar,
+  unsetEnvVar,
+  getSetting,
+  setSetting,
+  resetSetting,
+} from './config.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -138,6 +147,43 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     'remove workspace + cleanup',
     wsR.ok && !wsAfterRm.includes(WS_TEST) && wsFinalCurrent === wsOriginal,
     wsR.message
+  );
+
+  // ─── 系统配置（Config，TASK10）：env 与 settings 生命周期 ───
+  // env: set TEST_VAR → 读回（内存 + 落盘 /etc/webunix.env）→ delete，无残留。
+  const cfgEnvKey = 'TEST_VAR';
+  await setEnvVar(wc.fs, cfgEnvKey, 'selftest-value');
+  const cfgEnvRead = await getEnvVar(wc.fs, cfgEnvKey);
+  const cfgEnvFile = (await readEnvFile(wc.fs)).get(cfgEnvKey);
+  verdict(
+    term,
+    'Config',
+    'env set/get lifecycle',
+    cfgEnvRead === 'selftest-value' && cfgEnvFile === 'selftest-value',
+    `TEST_VAR=${cfgEnvRead}`
+  );
+  const cfgEnvDel = await unsetEnvVar(wc.fs, cfgEnvKey);
+  const cfgEnvAfter = await getEnvVar(wc.fs, cfgEnvKey);
+  verdict(
+    term,
+    'Config',
+    'env delete lifecycle',
+    cfgEnvDel === true && cfgEnvAfter === undefined,
+    `removed=${cfgEnvDel}`
+  );
+
+  // settings: 设 preview-port 9999 → 读回 → reset 回默认 3001。
+  await setSetting(wc.fs, 'preview-port', '9999');
+  const cfgPortSet = await getSetting(wc.fs, 'preview-port');
+  verdict(term, 'Config', 'settings read/write', cfgPortSet === '9999', `preview-port=${cfgPortSet}`);
+  const cfgPortReset = await resetSetting(wc.fs, 'preview-port');
+  const cfgPortAfter = await getSetting(wc.fs, 'preview-port');
+  verdict(
+    term,
+    'Config',
+    'settings reset restores default',
+    cfgPortReset === true && cfgPortAfter === '3001',
+    `preview-port=${cfgPortAfter}`
   );
 
   // ─── TerminalExecutor 统一路由（Executor / Process table / Port registry）───

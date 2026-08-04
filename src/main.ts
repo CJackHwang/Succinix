@@ -10,6 +10,7 @@ import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { runTests } from './tests.js';
 import { saveSnapshot } from './persist.js';
+import { getSetting } from './config.js';
 import type { ExecResult } from './terminal-client.js';
 
 const AMBER = '\x1b[33m';
@@ -219,7 +220,13 @@ async function main(): Promise<void> {
     const services = await bootWebUnix(ui);
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
     if (!services) return;
-    ctx = { wc: services.wc, client: services.client, ports: services.ports, term };
+    ctx = { wc: services.wc, client: services.client, ports: services.ports, term, fit: () => fitAddon.fit() };
+
+    // 应用持久化设置（TASK10）：font-size 在终端显示前生效（xterm options 动态可改）。
+    const fontSizeNum = Number(await getSetting(services.wc.fs, 'font-size'));
+    if (Number.isInteger(fontSizeNum) && fontSizeNum >= 8 && fontSizeNum <= 72) {
+      term.options.fontSize = fontSizeNum;
+    }
 
     if (testMode) {
       // 自检期间把用户输入排队，避免与断言互相干扰；自检输出走覆盖层日志区。

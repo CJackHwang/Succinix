@@ -63,6 +63,34 @@ function pruneStaleResults(): void {
   }
 }
 
+// ─── /etc/webunix.env 合并（TASK10）───
+// env 命令把环境变量持久化到 /etc/webunix.env（浏览器侧 wc.fs 写入，随快照保留）。
+// host 是常驻进程，启动后无法更新自身 process.env —— 改为 spawn 子进程时
+// 解析该文件并合并进 env 选项，使 node/npm/npx 子进程能读到配置的变量。
+const ENV_FILE = '/etc/webunix.env';
+
+function loadEnvFile(): Record<string, string> {
+  try {
+    const text = fs.readFileSync(ENV_FILE, 'utf8');
+    const env: Record<string, string> = {};
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const idx = line.indexOf('=');
+      if (idx <= 0) continue;
+      env[line.slice(0, idx).trim()] = line.slice(idx + 1);
+    }
+    return env;
+  } catch {
+    return {}; // 文件不存在 / 不可读：空合并，不影响 spawn
+  }
+}
+
+// 子进程环境 = host 自身环境 + env 文件覆盖（文件是配置的权威来源）。
+function mergedEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ...loadEnvFile() };
+}
+
 // 统一命令入口：各分支自行写 result-<id>.json。
 // node 子进程的 run 会立即返回（结果异步写回），保证 ps/kill 在长命令期间仍可用。
 async function handleCommand(req: CommandRequest): Promise<void> {
@@ -111,7 +139,7 @@ async function dispatchRun(req: CommandRequest): Promise<void> {
 // 结果带 runtime: 'node'。进程登记进进程表，可被 ps / kill 管理。
 function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: number): void {
   const [prog, ...args] = tokenize(command);
-  const child = spawn(prog, args, { cwd: process.cwd() });
+  const child = spawn(prog, args, { cwd: process.cwd(), env: mergedEnv() });
   registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
 
   let stdout = '';
@@ -165,7 +193,7 @@ function dispatchSpawn(req: CommandRequest): void {
     return;
   }
   const [prog, ...args] = tokenize(command);
-  const child = spawn(prog, args, { cwd: process.cwd() });
+  const child = spawn(prog, args, { cwd: process.cwd(), env: mergedEnv() });
   const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
   child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));

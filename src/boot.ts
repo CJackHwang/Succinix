@@ -7,6 +7,7 @@ import type { FileSystemAPI } from '@webcontainer/api';
 import type { BootUI } from './boot-ui.js';
 import { TerminalClient } from './terminal-client.js';
 import { loadSnapshot } from './persist.js';
+import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
 
 export interface WebUnixServices {
   wc: WebContainer;
@@ -80,8 +81,8 @@ export function detectSystemInfo(): string[] {
 // ─── 工作区初始化（TASK7）───
 
 // 默认工作区初始化：恢复快照后调用。/ws/.current 存在 → 报告当前工作区；
-// 不存在（全新系统）→ 建 /ws/main/ 并写 .current=main。状态随快照持久，host 零改动。
-async function initWorkspace(ui: BootUI, fs: FileSystemAPI): Promise<void> {
+// 不存在（全新系统）→ 用配置的默认工作区名建目录并写 .current，状态随快照持久，host 零改动。
+async function initWorkspace(ui: BootUI, fs: FileSystemAPI, defaultWorkspace: string): Promise<void> {
   let current: string | null = null;
   try {
     const raw = await fs.readFile('/ws/.current', 'utf8');
@@ -94,13 +95,13 @@ async function initWorkspace(ui: BootUI, fs: FileSystemAPI): Promise<void> {
     return;
   }
   try {
-    await fs.mkdir('/ws/main', { recursive: true });
-    await fs.writeFile('/ws/.current', 'main');
+    await fs.mkdir(`/ws/${defaultWorkspace}`, { recursive: true });
+    await fs.writeFile('/ws/.current', defaultWorkspace);
   } catch (e) {
     note(ui, `Default workspace init failed (${String(e).slice(0, 80)})`);
     return;
   }
-  ok(ui, `Initialized default workspace 'main'`);
+  ok(ui, `Initialized default workspace '${defaultWorkspace}'`);
 }
 
 // ─── host 拉起 ───
@@ -173,9 +174,22 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     ok(ui, 'Initialized fresh workspace');
   }
 
+  // 系统配置（TASK10）：settings 决定全新系统的默认工作区名；env 文件统计加载数。
+  // 读取失败 / 值被手改非法时全部回退默认，不阻断 boot。
+  let defaultWorkspace = 'main';
+  let envCount = 0;
+  try {
+    const wsRaw = await getSetting(wc.fs, 'default-workspace');
+    if (isValidWorkspaceName(wsRaw)) defaultWorkspace = wsRaw;
+    envCount = (await readEnvFile(wc.fs)).size;
+  } catch (e) {
+    note(ui, `Config load failed (${String(e).slice(0, 80)}); using defaults`);
+  }
+
   // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
-  // 全新系统则初始化默认工作区 main。
-  await initWorkspace(ui, wc.fs);
+  // 全新系统则用配置的默认工作区名初始化。
+  await initWorkspace(ui, wc.fs, defaultWorkspace);
+  ok(ui, `Loaded ${envCount} environment variables`);
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。

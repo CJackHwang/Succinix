@@ -1,12 +1,26 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
 //   help / clear / sysinfo / ports / db start|status|stop / snapshot / free / top /
-//   reboot / shutdown / cache / workspace / version / whoami
+//   reboot / shutdown / cache / workspace / env / settings / version / whoami
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { detectSystemInfo } from './boot.js';
 import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
+import {
+  isValidWorkspaceName,
+  readEnvFile,
+  getEnvVar,
+  setEnvVar,
+  unsetEnvVar,
+  getSetting,
+  setSetting,
+  resetSetting,
+  listSettings,
+  validateSetting,
+  SETTING_KEYS,
+  DEFAULT_SETTINGS,
+} from './config.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -14,6 +28,8 @@ export interface CommandContext {
   /** 端口注册表：port → 预览 URL */
   ports: Map<number, string>;
   term: Terminal;
+  /** 字号等布局变更后重建 xterm 视图（main.ts 注入 FitAddon.fit） */
+  fit: () => void;
 }
 
 const RED = '\x1b[31m';
@@ -24,7 +40,7 @@ const RESET = '\x1b[0m';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const VERSION = 'WebUnix 0.1.0 (browser-native Linux)';
-const DB_PORT = 3001;
+const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
 // 内存单位：二进制换算，1 KB = 1024 B。
@@ -64,6 +80,8 @@ function printHelp(term: Terminal): void {
   term.writeln(`  shutdown     power off (you can close this tab)`);
   term.writeln(`  cache        show cache usage; 'cache clear' cleans rebuildable caches`);
   term.writeln(`  workspace    list workspaces; create/switch/rm manage isolated workspaces`);
+  term.writeln(`  env          list / set / unset environment variables (persisted in /etc/webunix.env)`);
+  term.writeln(`  settings     view / set / reset system settings (persisted in /etc/webunix.settings)`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -92,9 +110,17 @@ async function findRunningProc(ctx: CommandContext, needle: string): Promise<Rec
   return procs.find((p) => String(p.cmd ?? '').includes(needle) && p.status === 'running');
 }
 
+// db 端口：读 settings preview-port，缺省 3001；值被手改非法时回落默认。
+async function resolveDbPort(fs: FileSystemAPI): Promise<number> {
+  const raw = await getSetting(fs, 'preview-port');
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : DB_PORT_DEFAULT;
+}
+
 // db start：容器内按需安装 tinbase，然后 spawn 后台启动，等待端口就绪。
 async function dbStart(ctx: CommandContext): Promise<void> {
-  const { client, term } = ctx;
+  const { client, term, wc } = ctx;
+  const port = await resolveDbPort(wc.fs);
   term.writeln('Checking whether tinbase is installed in the container...');
 
   // 1. 检查 node_modules/tinbase 是否存在
@@ -125,25 +151,25 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   }
 
   // 2. 已在运行则直接报告
-  if (ctx.ports.has(DB_PORT)) {
-    term.writeln(`tinbase is already running: ${ctx.ports.get(DB_PORT)}`);
+  if (ctx.ports.has(port)) {
+    term.writeln(`tinbase is already running: ${ctx.ports.get(port)}`);
     return;
   }
 
-  // 3. spawn 后台启动（端口选 3001，避免常见冲突）
+  // 3. spawn 后台启动（端口取 settings preview-port，缺省 3001）
   //    --engine wasm: WebContainer 无原生二进制，必须 PGlite/WASM 引擎；
   //    去 --memory：data-dir 落容器 FS，随快照持久化（TASK5）。
-  term.writeln('Starting npx tinbase start --port 3001 --engine wasm (background process)...');
+  term.writeln(`Starting npx tinbase start --port ${port} --engine wasm (background process)...`);
   let pid: number | undefined;
   try {
-    const r = await client.spawn('npx tinbase start --port 3001 --engine wasm', undefined, 8000);
+    const r = await client.spawn(`npx tinbase start --port ${port} --engine wasm`, undefined, 8000);
     if (!r.ok || !r.pid) {
       term.writeln(`${RED}tinbase: failed to start (engine wasm): ${r.error || r.stderr || 'spawn returned failure'}${RESET}`);
       term.writeln(`${RED}tinbase: failed to start (engine wasm): check container compatibility.${RESET}`);
       return;
     }
     pid = r.pid;
-    term.writeln(`started in background (pid=${pid}); waiting for port 3001 to be ready...`);
+    term.writeln(`started in background (pid=${pid}); waiting for port ${port} to be ready...`);
   } catch (e) {
     term.writeln(`${RED}tinbase: failed to start (engine wasm): ${String(e)}${RESET}`);
     term.writeln(`${RED}tinbase: failed to start (engine wasm): check container network/compatibility.${RESET}`);
@@ -153,7 +179,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   // 4. 等待 server-ready 事件（boot.ts 的处理器会打印暗橙 [preview] 行）
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const url = ctx.ports.get(DB_PORT);
+    const url = ctx.ports.get(port);
     if (url) {
       term.writeln(`${AMBER}Database ready: ${url}${RESET}`);
       term.writeln(`Open ${url} in the browser, or curl ${url} through Lifo.`);
@@ -162,7 +188,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     }
     await sleep(500);
   }
-  term.writeln(`${RED}tinbase: failed to start (engine wasm): port 3001 not ready within 30s.${RESET}`);
+  term.writeln(`${RED}tinbase: failed to start (engine wasm): port ${port} not ready within 30s.${RESET}`);
   term.writeln(
     `${RED}tinbase: failed to start (engine wasm): WebContainer may not run WASM servers. ` +
       `Run db stop and retry, or use an external service.${RESET}`
@@ -170,9 +196,10 @@ async function dbStart(ctx: CommandContext): Promise<void> {
 }
 
 async function dbStatus(ctx: CommandContext): Promise<void> {
-  const { client, ports, term } = ctx;
-  const url = ports.get(DB_PORT);
-  term.writeln(url ? `Port 3001: in ready list -> ${url}` : 'Port 3001: not in ready list (not running)');
+  const { client, ports, term, wc } = ctx;
+  const port = await resolveDbPort(wc.fs);
+  const url = ports.get(port);
+  term.writeln(url ? `Port ${port}: in ready list -> ${url}` : `Port ${port}: not in ready list (not running)`);
 
   let procs: Array<Record<string, unknown>> = [];
   try {
@@ -193,7 +220,7 @@ async function dbStatus(ctx: CommandContext): Promise<void> {
 }
 
 async function dbStop(ctx: CommandContext): Promise<void> {
-  const { term } = ctx;
+  const { term, wc } = ctx;
   let proc: Record<string, unknown> | undefined;
   try {
     proc = await findRunningProc(ctx, DB_PKG);
@@ -209,7 +236,7 @@ async function dbStop(ctx: CommandContext): Promise<void> {
   const k = await ctx.client.terminal(`kill ${pid}`);
   if (k.ok && k.killed) {
     term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
-    ctx.ports.delete(DB_PORT);
+    ctx.ports.delete(await resolveDbPort(wc.fs));
   } else {
     term.writeln(`${RED}failed to stop: ${k.message ?? 'unknown reason'}${RESET}`);
   }
@@ -380,12 +407,6 @@ const WS_ROOT = '/ws';
 const WS_CURRENT_FILE = '/ws/.current';
 const DEFAULT_WORKSPACE = 'main';
 
-// 工作区名白名单：字母/数字开头，后续可含 . _ -（拒绝空、路径分隔、隐藏名，
-// 避免与状态文件 .current 冲突）。
-function isValidWorkspaceName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
-}
-
 // 读当前工作区名；.current 缺失或不可读返回 null。
 export async function getCurrentWorkspace(fs: FileSystemAPI): Promise<string | null> {
   try {
@@ -532,6 +553,124 @@ async function workspaceCmd(ctx: CommandContext, args: string[]): Promise<void> 
   term.writeln('usage: workspace | workspace create <name> | workspace switch <name> | workspace rm <name> --yes');
 }
 
+// ─── 系统配置（TASK10）：env / settings ───
+// 两者都落在容器 FS（/etc/webunix.env、/etc/webunix.settings），随快照持久，重启保留。
+
+// env：查看 / 设置 / 删除环境变量。
+//   env              列出全部（key=value 对齐，值可含 =）
+//   env <key>        查看单个（不存在显示 not set）
+//   env <key>=<val>  设置
+//   env -u <key>     删除
+async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term, wc } = ctx;
+  if (args.length === 0) {
+    const map = await readEnvFile(wc.fs);
+    if (map.size === 0) {
+      term.writeln('(no environment variables set)');
+      return;
+    }
+    const keys = [...map.keys()].sort();
+    const width = Math.max(...keys.map((k) => k.length));
+    for (const key of keys) {
+      term.writeln(`${key.padEnd(width)}=${map.get(key) ?? ''}`);
+    }
+    return;
+  }
+  const arg = args[0];
+  if (arg === '-u' || arg === '--unset') {
+    const key = args[1];
+    if (!key) {
+      term.writeln('usage: env -u <key>');
+      return;
+    }
+    const removed = await unsetEnvVar(wc.fs, key);
+    term.writeln(removed ? `unset ${key}` : `${key} is not set`);
+    return;
+  }
+  const eq = arg.indexOf('=');
+  if (eq === -1) {
+    // 查看单个
+    const value = await getEnvVar(wc.fs, arg);
+    term.writeln(value !== undefined ? `${arg}=${value}` : `${arg} is not set`);
+    return;
+  }
+  // 设置：按第一个 = 切分，值允许含 =
+  const key = arg.slice(0, eq);
+  const value = arg.slice(eq + 1);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    term.writeln(`${RED}env: invalid variable name '${key}'${RESET}`);
+    return;
+  }
+  await setEnvVar(wc.fs, key, value);
+  term.writeln(`set ${key}=${value}`);
+}
+
+// settings：查看 / 设置 / 恢复系统设置。
+//   settings               列出全部
+//   settings <key>         查看
+//   settings <key> <val>   设置
+//   settings reset <key>   恢复默认
+async function settingsCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term, wc } = ctx;
+  if (args.length === 0) {
+    const entries = await listSettings(wc.fs);
+    const width = Math.max(...entries.map((e) => e.key.length), 1);
+    for (const e of entries) {
+      const marker = e.isDefault ? `${GRAY}(default)${RESET}` : '';
+      term.writeln(`  ${e.key.padEnd(width)}  ${e.value}${marker ? '  ' + marker : ''}`);
+    }
+    return;
+  }
+  if (args[0] === 'reset') {
+    const key = args[1];
+    if (!key) {
+      term.writeln('usage: settings reset <key>');
+      return;
+    }
+    if (!(key in DEFAULT_SETTINGS)) {
+      term.writeln(`${RED}unknown setting: ${key}${RESET}`);
+      return;
+    }
+    const removed = await resetSetting(wc.fs, key);
+    const def = DEFAULT_SETTINGS[key];
+    term.writeln(removed ? `reset ${key} to default (${def})` : `${key} is already at default (${def})`);
+    applySettingRuntime(ctx, key, def);
+    return;
+  }
+  const key = args[0];
+  if (!(key in DEFAULT_SETTINGS)) {
+    term.writeln(`${RED}unknown setting: ${key}${RESET}`);
+    term.writeln(`known settings: ${SETTING_KEYS.join(', ')}`);
+    return;
+  }
+  if (args.length === 1) {
+    const value = await getSetting(wc.fs, key);
+    const def = DEFAULT_SETTINGS[key];
+    term.writeln(`${key}=${value}${value === def ? ' (default)' : ''}`);
+    return;
+  }
+  const value = args.slice(1).join(' ');
+  const err = validateSetting(key, value);
+  if (err) {
+    term.writeln(`${RED}settings: ${err}${RESET}`);
+    return;
+  }
+  await setSetting(wc.fs, key, value);
+  term.writeln(`set ${key}=${value}`);
+  applySettingRuntime(ctx, key, value);
+}
+
+// 运行时应用设置：font-size 立即改 xterm 字号并重算布局（FitAddon）。
+// preview-port / default-workspace 在各自消费点生效（db start / boot），无需即时动作。
+function applySettingRuntime(ctx: CommandContext, key: string, value: string): void {
+  if (key !== 'font-size') return;
+  const n = Number(value);
+  if (Number.isInteger(n) && n >= 8 && n <= 72) {
+    ctx.term.options.fontSize = n;
+    ctx.fit();
+  }
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -587,6 +726,14 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'workspace': {
       await workspaceCmd(ctx, rest);
+      return true;
+    }
+    case 'env': {
+      await envCmd(ctx, rest);
+      return true;
+    }
+    case 'settings': {
+      await settingsCmd(ctx, rest);
       return true;
     }
     default:

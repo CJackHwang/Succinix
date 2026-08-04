@@ -1,0 +1,22 @@
+{
+  "name": "webunix",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "POC: Lifo (Unix-in-TypeScript) running inside WebContainer, sharing the container filesystem via node:fs mount.",
+  "scripts": {
+    "dev": "vite",
+    "build:host": "node scripts/build-host.mjs",
+    "build": "npm run build:host && vite build"
+  },
+  "dependencies": {
+    "@lifo-sh/core": "^0.10.8",
+    "@webcontainer/api": "^1.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "esbuild": "^0.28.1",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.0"
+  }
+}

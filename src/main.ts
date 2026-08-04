@@ -251,22 +251,32 @@ function startAutoSnapshot(ctx: CommandContext): void {
 // TASK16 稳定性：host 失联自动重启。
 // 每 30s ping 一次，连续 2 次失败视为 host 掉线 → 重新注入 host.js + spawn（WARN 日志）。
 // 新 host 的进程表是全新内存表（孤儿进程不在此表内），重启后 ps 干净。
+// r4 B 时效边界：ping 走 pingDirect 绕过 exec 互斥队列——长命令（node 子进程等结果期间）
+// 排队不再阻塞探活。通道忙（有排队未启动请求 / 刚写入在途请求）时本轮跳过（中性，不计成败）；
+// 超时取 30s 以覆盖 host 处理长 Lifo 命令（≤25s）的繁忙窗口，避免繁忙误判为掉线。
 function startHostWatchdog(ctx: CommandContext): void {
   let consecutiveFailures = 0;
+  let probing = false; // 上一轮探活未完成（长超时）时跳过本轮，避免重叠
   setInterval(async () => {
+    if (probing) return;
+    probing = true;
     try {
-      const p = await ctx.client.exec('ping', undefined, 5000);
-      if (p.kind === 'pong') {
+      const p = await ctx.client.pingDirect(30000);
+      if (p === true) {
         consecutiveFailures = 0;
         return;
       }
-      throw new Error('ping response not pong');
-    } catch {
-      consecutiveFailures++;
-      if (consecutiveFailures >= 2) {
-        consecutiveFailures = 0;
-        void restartHost(ctx);
+      if (p === false) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 2) {
+          consecutiveFailures = 0;
+          void restartHost(ctx);
+        }
+        return;
       }
+      // p === null：通道忙（队列未消化 / 刚写入在途请求），中性：不计成败。
+    } finally {
+      probing = false;
     }
   }, 30000);
 }

@@ -42,10 +42,12 @@ export async function readMotd(fs: FileSystemAPI): Promise<string | null> {
   }
 }
 
-// H1 等长编辑防护：与 config 一致，写盘成功后强制落盘（快照内容盲，等长替换不会自动收录）。
+// H1 等长编辑防护 + 门控回归：与 config 一致，写盘成功后强制落盘（快照内容盲，
+// 等长/结构不变的内容替换不会自动收录）。单次 saveSnapshot(fs, true) 已足够——
+// persist 的 inflight 重入保护里，force 调用若遇并发自动快照会先等其完成再重跑一次
+// 全量保存（saveSnapshot 内部逻辑），无需调用方重复保存。
 async function forcePersist(fs: FileSystemAPI): Promise<void> {
   try {
-    await saveSnapshot(fs, true);
     await saveSnapshot(fs, true);
   } catch (e) {
     // 文件已写盘成功，快照失败只记日志，不打断 motd 命令（与自动快照的降级一致）。

@@ -769,7 +769,7 @@ async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: 
   term.writeln(`Service '${name}'`);
   term.writeln(`  state  ${st.state === 'running' ? `${AMBER}${st.state}${RESET}` : st.state}`);
   if (st.pid !== undefined) term.writeln(`  pid    ${st.pid}`);
-  if (def.port !== null) term.writeln(`  port   ${def.port}${st.url ? `  -> ${st.url}` : ''}`);
+  if (st.effectivePort !== null) term.writeln(`  port   ${st.effectivePort}${st.url ? `  -> ${st.url}` : ''}`);
 }
 
 async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
@@ -791,7 +791,7 @@ async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
     term.writeln('  ' + 'NAME'.padEnd(nameW) + 'STATE'.padEnd(stateW) + 'PORT');
     for (const s of states) {
       const st = s.state === 'running' ? AMBER + s.state.padEnd(stateW) + RESET : s.state.padEnd(stateW);
-      const portStr = s.def.port !== null ? String(s.def.port) : '-';
+      const portStr = s.effectivePort !== null ? String(s.effectivePort) : '-';
       term.writeln('  ' + s.def.name.padEnd(nameW) + st + portStr);
     }
     return;

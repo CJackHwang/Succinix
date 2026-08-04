@@ -12,6 +12,7 @@ import {
   workspaceSwitch,
   workspaceRemove,
   buildNetstatRows,
+  commandMentionsPort,
   buildUnameLine,
   detectUnameArch,
   unameRuntimeVersion,
@@ -493,6 +494,29 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
       `killed=${netKill.killed} registered=${ports.has(3456)} rowPresent=${stillPresent}`
     );
   }
+
+  // 端口↔进程匹配（r4 C）：纯函数级断言，防日后回归为子串匹配。
+  // --port 3001 命中 3001，但不误关联 300 / 30010（3001↔300/30010 不能互相匹配）。
+  const pmCmd = 'node server.js --port 3001';
+  const pmPos = commandMentionsPort(pmCmd, 3001);
+  const pmNeg300 = commandMentionsPort(pmCmd, 300);
+  const pmNeg30010 = commandMentionsPort(pmCmd, 30010);
+  verdict(
+    term,
+    'Network',
+    'port match positive (--port 3001 -> 3001)',
+    pmPos && !pmNeg300 && !pmNeg30010,
+    `pos=${pmPos} neg300=${pmNeg300} neg30010=${pmNeg30010}`
+  );
+  const pmEq = commandMentionsPort('node server.js --port=3001', 3001);
+  const pmListen = commandMentionsPort('node -e "http.createServer(...).listen(3001)"', 3001);
+  verdict(
+    term,
+    'Network',
+    'port match forms (--port=3001 / listen(3001))',
+    pmEq && pmListen,
+    `eq=${pmEq} listen=${pmListen}`
+  );
 
   // ─── 内存（Memory）：浏览器报告设备内存或 JS heap 统计（任一存在即可）───
   const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;

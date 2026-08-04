@@ -7,6 +7,7 @@ import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { getSetting } from './config.js';
 import { log } from './log.js';
+import { saveSnapshot } from './persist.js';
 
 export const SERVICES_FILE = '/etc/webunix.services';
 export const AUTOSTART_FILE = '/etc/webunix.autostart';
@@ -18,6 +19,11 @@ export const DEFAULT_SERVICES_TEXT =
 
 const DEFAULT_PORT = 3001;
 const PORT_WAIT_MS = 30000;
+
+// M1 模式：本次会话启动过的服务实际端口记录在案（startService 记录，stop 清除）。
+// 解决 preview-port 改动后静态 def.port 失真：服务启动时监听的是当时的端口，
+// 就绪等待 / 状态 / 列表 / URL 展示都用记录值；会话内未启动过的服务回落动态解析。
+const activePorts = new Map<string, number>();
 
 export interface ServiceDef {
   name: string;
@@ -31,6 +37,8 @@ export interface ServiceState {
   def: ServiceDef;
   state: 'running' | 'stopped';
   pid?: number;
+  /** 有效端口：会话内启动记录值优先，否则动态解析（命令含 ${PORT} 按 preview-port）；无端口 null */
+  effectivePort: number | null;
   /** running 且有端口时的预览 URL */
   url?: string;
 }
@@ -48,6 +56,17 @@ export interface ServiceActionResult {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// 门控回归防护：自动快照的目录签名门控（persist collectDir）只看目录结构+总字节，
+// 捕捉不到"内容变更但大小不变"的写入。定义/自启文件的写入靠此强制落盘一次
+// （与 config 的 forcePersist 模式一致：try/catch + console.warn 降级，不打断命令）。
+async function forcePersist(fs: FileSystemAPI): Promise<void> {
+  try {
+    await saveSnapshot(fs, true);
+  } catch (e) {
+    console.warn('[services] force snapshot after write failed:', e);
+  }
+}
 
 // ─── 文件 I/O ───
 
@@ -127,6 +146,7 @@ export async function writeServicesText(fs: FileSystemAPI, text: string): Promis
 export async function addServiceDef(fs: FileSystemAPI, name: string, command: string, port: number | null): Promise<void> {
   const text = (await readServicesRaw(fs)).trimEnd();
   await writeServicesText(fs, `${text}${text ? '\n' : ''}${name}|${command}|${port ?? ''}\n`);
+  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
 }
 
 // 按名字过滤移除定义（保留注释与其他行）；返回是否真有移除。
@@ -142,6 +162,7 @@ export async function removeServiceDef(fs: FileSystemAPI, name: string): Promise
     .join('\n');
   if (kept === text) return false;
   await writeServicesText(fs, kept);
+  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
   return true;
 }
 
@@ -181,6 +202,7 @@ export async function enableAutostart(fs: FileSystemAPI, name: string): Promise<
   }
   names.push(name);
   await writeAutostart(fs, names);
+  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
   void log('INFO', `service enable: ${name}`);
   return true;
 }
@@ -193,6 +215,7 @@ export async function disableAutostart(fs: FileSystemAPI, name: string): Promise
     return false;
   }
   await writeAutostart(fs, names.filter((n) => n !== name));
+  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
   void log('INFO', `service disable: ${name}`);
   return true;
 }
@@ -236,24 +259,37 @@ async function findServiceProcess(ctx: ServiceContext, def: ServiceDef): Promise
   return found ? { pid: Number(found.pid), cmd: String(found.cmd) } : undefined;
 }
 
+// 有效端口解析：会话内启动记录值优先（M1：preview-port 改动后服务仍监听启动时端口）；
+// 未启动过（或启动时显式 preferRecorded=false）的服务回落动态解析——命令含 ${PORT}
+// 占位符时按当前 preview-port，否则 def.port。startService 走 preferRecorded=false：
+// 新实例监听的是"当前" preview-port，忽略可能残留的旧记录（服务崩溃后 record 未清场景）。
+async function resolveEffectivePort(ctx: ServiceContext, def: ServiceDef, preferRecorded = true): Promise<number | null> {
+  if (preferRecorded) {
+    const recorded = activePorts.get(def.name);
+    if (recorded !== undefined) return recorded;
+  }
+  return def.command.includes('${PORT}') ? await resolvePreviewPort(ctx.wc.fs) : def.port;
+}
+
 // 状态判定：running 需进程表 running 且（有端口时）端口注册表就绪。
-// 端口取"有效端口"：命令含 ${PORT} 占位符时按当前 preview-port 解析（preview-port 改动后
-// 服务实际监听新端口，若用静态 def.port 判定会失真——新端口就绪却报 stopped）。
+// 端口取"有效端口"（resolveEffectivePort）——preview-port 改动后服务实际监听新端口，
+// 若用静态 def.port 判定会失真（新端口就绪却报 stopped / 旧端口展示与 URL 矛盾）。
 export async function getServiceState(ctx: ServiceContext, def: ServiceDef): Promise<ServiceState> {
+  const effectivePort = await resolveEffectivePort(ctx, def);
   const proc = await findServiceProcess(ctx, def);
   if (proc) {
-    const effectivePort = def.command.includes('${PORT}') ? await resolvePreviewPort(ctx.wc.fs) : def.port;
     const portOk = effectivePort === null || ctx.ports.has(effectivePort);
     if (portOk) {
       return {
         def,
         state: 'running',
         pid: proc.pid,
+        effectivePort,
         url: effectivePort !== null ? ctx.ports.get(effectivePort) : undefined,
       };
     }
   }
-  return { def, state: 'stopped' };
+  return { def, state: 'stopped', effectivePort };
 }
 
 export async function listServiceStates(ctx: ServiceContext): Promise<ServiceState[]> {
@@ -278,6 +314,8 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   }
 
   const command = await renderCommand(ctx.wc.fs, def);
+  // 新实例按当前 preview-port 解析（忽略旧记录），spawn 成功后记录实际端口。
+  const effectivePort = await resolveEffectivePort(ctx, def, false);
   let pid: number;
   try {
     const r = await ctx.client.spawn(command, undefined, 8000);
@@ -292,29 +330,33 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
     return { ok: false, message: `failed to start '${name}': ${String(e)}` };
   }
 
-  if (def.port === null) {
+  if (effectivePort === null) {
     void log('INFO', `service start: ${name} pid=${pid}`);
     return { ok: true, message: `service '${name}' started (pid=${pid})`, pid };
   }
 
+  // 记录实际端口（M1）：preview-port 改动后服务监听的是启动时端口，就绪等待与后续
+  // status/列表/URL 都用记录值，避免静态 def.port 误报。
+  activePorts.set(name, effectivePort);
+
   // 等端口就绪：进程还在且端口未就绪 → 继续等；进程提前退出 → 立即失败。
   const deadline = Date.now() + PORT_WAIT_MS;
   while (Date.now() < deadline) {
-    if (ctx.ports.has(def.port)) {
-      void log('INFO', `service start: ${name} pid=${pid} port=${def.port}`);
-      return { ok: true, message: `service '${name}' started (pid=${pid}, port ${def.port})`, pid };
+    if (ctx.ports.has(effectivePort)) {
+      void log('INFO', `service start: ${name} pid=${pid} port=${effectivePort}`);
+      return { ok: true, message: `service '${name}' started (pid=${pid}, port ${effectivePort})`, pid };
     }
     const alive = await findServiceProcess(ctx, def);
     if (!alive) {
-      void log('WARN', `service start failed: ${name} exited before port ${def.port} became ready`);
-      return { ok: false, message: `service '${name}' exited before port ${def.port} became ready`, pid };
+      void log('WARN', `service start failed: ${name} exited before port ${effectivePort} became ready`);
+      return { ok: false, message: `service '${name}' exited before port ${effectivePort} became ready`, pid };
     }
     await sleep(500);
   }
-  void log('WARN', `service start: ${name} pid=${pid} port ${def.port} not ready within ${PORT_WAIT_MS / 1000}s`);
+  void log('WARN', `service start: ${name} pid=${pid} port ${effectivePort} not ready within ${PORT_WAIT_MS / 1000}s`);
   return {
     ok: false,
-    message: `service '${name}' process started (pid=${pid}) but port ${def.port} not ready within ${PORT_WAIT_MS / 1000}s`,
+    message: `service '${name}' process started (pid=${pid}) but port ${effectivePort} not ready within ${PORT_WAIT_MS / 1000}s`,
     pid,
   };
 }
@@ -354,6 +396,7 @@ export async function stopService(ctx: ServiceContext, name: string): Promise<Se
       await sleep(100);
     }
     void log('INFO', `service stop: ${name} pid=${proc.pid}`);
+    activePorts.delete(name); // M1：stop 后清除记录端口，状态回落动态解析
     return { ok: true, message: `service '${name}' stopped (pid=${proc.pid})`, pid: proc.pid };
   } catch (e) {
     void log('WARN', `service stop failed: ${name} (${String(e)})`);

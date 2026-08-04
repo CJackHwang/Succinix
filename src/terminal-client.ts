@@ -26,12 +26,22 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // ping/ps/cwd 重发安全；kill / run / spawn 等非幂等命令一律不重试。
 const READONLY_PROTO = new Set(['ping', 'ps', 'cwd']);
 
+// host 轮询 /cmd.json 的间隔（host.ts setInterval 120ms）。看门狗直接探活要保证
+// 覆盖的不是 host"尚未读取"的在途请求：距上次写 /cmd.json 超过该余量才允许覆盖。
+const HOST_POLL_MARGIN_MS = 250;
+
 export class TerminalClient {
   private id = 0;
   // 请求互斥队列（TASK16）：/cmd.json 是单槽通道，host 一次只处理一个请求，
   // 并行调用会让后写覆盖先写的 cmd.json、先发请求等不到结果。所有 exec 串行化
   // —— host 本就串行处理，浏览器侧排队不损失吞吐，只让失败变得确定。
   private chain: Promise<unknown> = Promise.resolve();
+  /** 已入队未完成请求数（含在途）——看门狗直接探活判断通道是否可能被下一拍覆盖 */
+  private pending = 0;
+  /** 在途 doExec 数（已开始轮询结果，cmd.json 已写入） */
+  private active = 0;
+  /** 最近一次写 /cmd.json 的时间戳（看门狗覆盖安全窗口判断） */
+  private lastCmdWrite = 0;
 
   constructor(private wc: WebContainer) {}
 
@@ -81,33 +91,81 @@ export class TerminalClient {
 
   // 排队执行：同一时刻只有一个在途请求（前一个完成或超时才轮到下一个）。
   private enqueue(cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
+    this.pending++;
     const run = this.chain.then(() => this.doExec(++this.id, cmd, opts, timeoutMs));
-    this.chain = run.catch(() => {
-      /* 链不中断：单个请求失败不影响后续排队 */
-    });
+    // 请求 settle（成功或失败）后释放 pending 计数；链不中断（单个请求失败不影响后续排队）。
+    this.chain = run.then(
+      () => {
+        this.pending--;
+      },
+      () => {
+        this.pending--;
+      }
+    );
     return run;
   }
 
   // 单次 RPC：写 /cmd.json，轮询 /result-<id>.json，读到即删。
   private async doExec(id: number, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
-    await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd, opts }));
+    this.active++;
+    try {
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd, opts }));
+      this.lastCmdWrite = Date.now();
+      const resultFile = `/result-${id}.json`;
+      const start = Date.now();
+      for (;;) {
+        try {
+          const raw = await this.wc.fs.readFile(resultFile, 'utf8');
+          const m = JSON.parse(raw) as ExecResult;
+          // 读到即删：每个请求独立结果文件，避免与迟到的异步写入互相覆盖
+          try {
+            await this.wc.fs.rm(resultFile);
+          } catch {
+            /* 清理失败不影响 */
+          }
+          return m;
+        } catch {
+          /* 结果未就绪 */
+        }
+        if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${cmd}`);
+        await sleep(150);
+      }
+    } finally {
+      this.active--;
+    }
+  }
+
+  // 看门狗直接探活（r4 B）：绕过互斥队列——长命令（node 子进程等待 30-150s 期间
+  // 队列被占）排队时也能及时确认 host 存活，不再延迟数分钟。
+  // 安全前提：不覆盖 host 可能还没读取的在途 /cmd.json；不与被吞结果的 ping 浪费时间。
+  // 返回：true=host 存活（pong）；false=超时（host 无响应）；null=通道忙，本轮跳过（中性）。
+  async pingDirect(timeoutMs = 30000): Promise<boolean | null> {
+    // 队列里还有未开始的请求：下一拍 doExec 会写 /cmd.json 覆盖本 ping → 必然被吞，跳过。
+    if (this.pending > this.active) return null;
+    // 刚写过 /cmd.json（host 轮询周期内可能还没读取）：覆盖会吞掉在途请求 → 跳过。
+    if (Date.now() - this.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
+    const id = ++this.id;
+    try {
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd: 'ping' }));
+    } catch {
+      return false; // FS 不可写：按 host 不可达处理
+    }
     const resultFile = `/result-${id}.json`;
     const start = Date.now();
     for (;;) {
       try {
         const raw = await this.wc.fs.readFile(resultFile, 'utf8');
         const m = JSON.parse(raw) as ExecResult;
-        // 读到即删：每个请求独立结果文件，避免与迟到的异步写入互相覆盖
         try {
           await this.wc.fs.rm(resultFile);
         } catch {
           /* 清理失败不影响 */
         }
-        return m;
+        return m.kind === 'pong';
       } catch {
         /* 结果未就绪 */
       }
-      if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${cmd}`);
+      if (Date.now() - start > timeoutMs) return false;
       await sleep(150);
     }
   }

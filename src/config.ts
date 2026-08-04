@@ -97,7 +97,10 @@ export async function setEnvVar(fs: FileSystemAPI, key: string, value: string): 
 export async function unsetEnvVar(fs: FileSystemAPI, key: string): Promise<boolean> {
   const map = await readEnvFile(fs);
   const had = map.delete(key);
-  if (had) await writeEnvFile(fs, map);
+  if (had) {
+    await writeEnvFile(fs, map);
+    await forcePersist(fs); // 门控回归：删除是内容变更（等长/结构不变），自动快照目录签名捕捉不到，写盘后强制落盘
+  }
   return had;
 }
 

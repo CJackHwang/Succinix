@@ -27,6 +27,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Service management** — `service` manages named background services declaratively on top of `spawn`/`ps`/`kill` and the port registry: definitions live in `/etc/webunix.services` (`name|command|port`, `#` comments, `${PORT}` placeholder resolved from `preview-port`), with `start`/`stop`/`status`/`enable`/`disable`. `enable` records the service in `/etc/webunix.autostart` and boot pulls it up declaratively — a declarative restart, not a daemon (no crash self-healing).
 - **System log (journald-style)** — a persistent log written to `/var/log/webunix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
 - **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures.
+- **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -107,6 +108,8 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `service`      | List services (state + port); `start` / `stop` / `status` / `enable` / `disable <name>` manage them. Definitions in `/etc/webunix.services`, boot autostart in `/etc/webunix.autostart` (declarative restart, not a daemon) |
 | `log`          | Show recent system-log entries (last 20) from `/var/log/webunix.log`; `log -n <count>` last N, `log boot` BOOT-only, `log clear` empties the file |
 | `pkg`          | Package management: `pkg list` (lifo + npm merged with `SOURCE`), `pkg search <term>` (both channels), `pkg install <name>` (lifo if `lifo-pkg-<name>` exists, else npm), `pkg remove <name>` (via the installed source), `pkg info <name>` |
+| `netstat`      | List virtual listening ports (port registry as `tcp 127.0.0.1:<port> LISTEN`); `netstat -p` adds the associated process (matched by port number in the process command, `-` when unmatched) |
+| `ip addr`      | Show virtual network identity — `lo: virtual loopback`, `eth0: <preview-domain> (virtual)`; no fabricated interfaces or IPs |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -132,6 +135,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): the full 
 - Services: `service` lists the built-in tinbase definition; a temporary echo server can be started, observed `running` (process table + port registry), stopped, and removed with zero residue; `service enable`/`disable` write and remove the `/etc/webunix.autostart` file (deduped).
 - Logs: command executions are recorded with `exit`/`runtime`, boot events are recorded as `BOOT` entries, and `log clear` empties the log file (asserted by the self-test suite).
 - Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
+- Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
 
 ## Known Boundaries
 
@@ -157,7 +161,7 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/...)
+  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...)
   config.ts          # system configuration: /etc/webunix.env + /etc/webunix.settings I/O & defaults
   services.ts        # service management: /etc/webunix.services + /etc/webunix.autostart I/O, status/start/stop
   log.ts             # journald-style system log: /var/log/webunix.log append/read/clear/BOOT-filter
@@ -181,6 +185,7 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] Persistence layer: files/state persisted to IndexedDB, restored on boot (no data loss on refresh)
 - [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
 - [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
+- [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor
 - [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
 

@@ -14,6 +14,7 @@ import {
   buildNetstatRows,
   buildUnameLine,
   detectUnameArch,
+  tryHandleLocalCommand,
 } from './commands.js';
 import {
   readEnvFile,
@@ -50,6 +51,8 @@ export interface TestResult {
   pass: number;
   fail: number;
   skip: number;
+  /** 失败项列表（TASK16：自检后打印到终端，暗红显示） */
+  failures: string[];
 }
 
 const AMBER = '\x1b[33m';
@@ -62,6 +65,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 let pass = 0;
 let fail = 0;
 let skip = 0;
+// TASK16：收集失败项，自检结束后供 main.ts 打印到终端（暗红失败行）。
+let failures: string[] = [];
 
 // 断言结果行：[ OK ] 暗橙 / [ FAIL ] 暗红，带关键值（pid/版本/端口）。
 function verdict(term: Terminal, category: string, name: string, ok: boolean, detail = ''): void {
@@ -70,6 +75,7 @@ function verdict(term: Terminal, category: string, name: string, ok: boolean, de
     term.writeln(`${AMBER}[  OK  ]${RESET} ${category}: ${name}${detail ? ` (${detail})` : ''}`);
   } else {
     fail++;
+    failures.push(`${category}: ${name}${detail ? ` (${detail})` : ''}`);
     term.writeln(`${RED}[ FAIL ]${RESET} ${category}: ${name}${detail ? ` (${detail})` : ''}`);
   }
 }
@@ -85,6 +91,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   pass = 0;
   fail = 0;
   skip = 0;
+  failures = [];
 
   term.writeln('WebUnix self-test — boot diagnostics');
   term.writeln('');
@@ -517,6 +524,34 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `set=${motdSetOk} reset=${motdAfter === DEFAULT_MOTD}`
   );
 
+  // ─── 内置命令冒烟（Smoke，TASK16）：help 全部条目里浏览器侧命令的取安全形态逐个跑 ───
+  // 只跑非破坏性命令：reboot 会 reload、db start 会装 tinbase、snapshot now/clear 有副作用，均排除；
+  // 其余全部经 tryHandleLocalCommand 分发，断言"被浏览器处理且不抛异常"。
+  const smokeCtx = { wc, client, ports, term, fit: () => {} };
+  const smokeCommands: string[] = [
+    'help', 'clear', 'sysinfo', 'version', 'whoami', 'ports',
+    'db status', 'db stop', // db start 排除（重型：安装+spawn）
+    'snapshot', // 状态查看；snapshot now / clear 排除（副作用）
+    'free', 'top', // top 3 次快照，约 4s，可接受
+    'cache', // du 统计，几秒内返回
+    'workspace', 'env', 'settings', 'service', 'log', 'pkg',
+    'netstat', 'ip addr', 'uname -a', 'motd', 'shutdown',
+  ];
+  const smokeFails: string[] = [];
+  for (const cmd of smokeCommands) {
+    try {
+      const handled = await tryHandleLocalCommand(smokeCtx, cmd);
+      if (!handled) smokeFails.push(`${cmd}: not handled locally`);
+    } catch (e) {
+      smokeFails.push(`${cmd}: ${String(e).slice(0, 100)}`);
+    }
+  }
+  if (smokeFails.length === 0) {
+    verdict(term, 'Smoke', `built-in commands dispatch (${smokeCommands.length})`, true, smokeCommands.join(' '));
+  } else {
+    verdict(term, 'Smoke', 'built-in commands dispatch', false, smokeFails.join('; '));
+  }
+
   // ─── 已知边界（网络/生态，仅供参考，计入 skipped）───
   try {
     const b1 = await client.terminal('curl -s -m 12 https://example.com', undefined, 20000);
@@ -551,5 +586,5 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   term.writeln('');
   term.writeln(`Self-test result: ${pass} passed, ${fail} failed, ${skip} skipped`);
 
-  return { pass, fail, skip };
+  return { pass, fail, skip, failures };
 }

@@ -63,6 +63,23 @@ function lifoTerm(name: string): string {
   return name.startsWith('lifo-pkg-') ? name.slice('lifo-pkg-'.length) : name;
 }
 
+// 包名校验（TASK16）：拒绝空名 / 含空白 / 以 - 开头。
+// 合法：@scope/name（scope 与 name 均为 [a-zA-Z0-9-_.]+）或裸名 [a-zA-Z0-9-_.]+。
+// 保证 pkg install --help 之类不当作真实包名去装（-- 开头一律拒绝，不返回假成功）。
+export function isValidPackageName(name: string): boolean {
+  if (!name) return false;
+  if (name !== name.trim()) return false; // 首尾空白拒绝
+  if (/\s/.test(name)) return false; // 内部空白拒绝
+  if (name.startsWith('-')) return false;
+  if (name.startsWith('@')) return /^@[A-Za-z0-9-_.]+\/[A-Za-z0-9-_.]+$/.test(name);
+  return /^[A-Za-z0-9-_.]+$/.test(name);
+}
+
+// 命令参数双引号包裹：包名/搜索词可能含 @ 前缀等 shell 特殊字符，插值进命令必须加引号（TASK16）。
+function q(name: string): string {
+  return `"${name}"`;
+}
+
 // ─── lifo 通道 ───
 
 // lifo list 输出解析：Installed 段每行 "  <name>@<version>  [commands]"。Dev-linked 行是
@@ -248,17 +265,20 @@ export function formatSearchResults(term: string, entries: SearchEntry[]): strin
 // ─── 来源判定 ───
 
 // lifo 系判定：显式 lifo-pkg- 前缀 → 直接 lifo；否则 lifo search <name> 命中 lifo-pkg-<name> → lifo；
-// 探测失败（网络不可达）回落 npm。同名冲突优先 lifo。
-async function detectSource(ctx: PkgContext, name: string): Promise<'lifo' | 'npm'> {
-  if (name.startsWith('lifo-pkg-')) return 'lifo';
+// 探测失败（网络不可达）回落 npm 并标记 fellBack（TASK16：调用方输出附加
+// "(lifo unavailable — fell back to npm)" 提示，不吞错）。
+async function detectSource(ctx: PkgContext, name: string): Promise<{ source: 'lifo' | 'npm'; fellBack: boolean }> {
+  if (name.startsWith('lifo-pkg-')) return { source: 'lifo', fellBack: false };
   const base = lifoTerm(name);
   try {
-    const r = await ctx.client.terminal(`lifo search "${base}"`, TIMEOUT.lifoSearch.opts, TIMEOUT.lifoSearch.wait);
-    if (r.ok && parseLifoSearch(String(r.stdout ?? '')).some((h) => h.name === base)) return 'lifo';
+    const r = await ctx.client.terminal(`lifo search ${q(base)}`, TIMEOUT.lifoSearch.opts, TIMEOUT.lifoSearch.wait);
+    // lifo 通道可达但无此包 → 正当 npm（不标记回落）；通道不可达 → 回落 npm 并标记。
+    if (r.ok && parseLifoSearch(String(r.stdout ?? '')).some((h) => h.name === base)) return { source: 'lifo', fellBack: false };
+    if (r.ok) return { source: 'npm', fellBack: false };
+    return { source: 'npm', fellBack: true };
   } catch {
-    /* registry 探测失败 → 回落 npm */
+    return { source: 'npm', fellBack: true };
   }
-  return 'npm';
 }
 
 // ─── install / remove / info ───
@@ -267,10 +287,15 @@ async function detectSource(ctx: PkgContext, name: string): Promise<'lifo' | 'np
 export async function installPackage(ctx: PkgContext, rawName: string): Promise<ActionResult> {
   const name = rawName.trim();
   if (!name) return { ok: false, message: 'pkg install: package name required' };
+  if (!isValidPackageName(name)) {
+    return { ok: false, message: `pkg install: invalid package name '${name}' (scoped @scope/name or [a-zA-Z0-9-_.]+, no whitespace, no leading dash)` };
+  }
   const base = lifoTerm(name);
 
-  if ((await detectSource(ctx, name)) === 'lifo') {
-    const r = await ctx.client.terminal(`lifo install ${base}`, TIMEOUT.install.opts, TIMEOUT.install.wait);
+  const { source, fellBack } = await detectSource(ctx, name);
+  const hint = fellBack ? ' (lifo unavailable — fell back to npm)' : '';
+  if (source === 'lifo') {
+    const r = await ctx.client.terminal(`lifo install ${q(base)}`, TIMEOUT.install.opts, TIMEOUT.install.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
       void log('INFO', `pkg install: ${base} via lifo`);
@@ -281,11 +306,11 @@ export async function installPackage(ctx: PkgContext, rawName: string): Promise<
     return { ok: false, message: `install failed: ${String(why).slice(0, 300)}`, source: 'lifo', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
   }
 
-  const r = await ctx.client.terminal(`npm install ${name} --no-audit --no-fund`, TIMEOUT.install.opts, TIMEOUT.install.wait);
+  const r = await ctx.client.terminal(`npm install ${q(name)} --no-audit --no-fund`, TIMEOUT.install.opts, TIMEOUT.install.wait);
   const out = String(r.stdout ?? '').trim();
   if (r.ok) {
     void log('INFO', `pkg install: ${name} via npm`);
-    return { ok: true, message: `'${name}' installed (source: npm)`, source: 'npm', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
+    return { ok: true, message: `'${name}' installed (source: npm)${hint}`, source: 'npm', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
   }
   const why = r.stderr || out || r.error || 'npm install exited non-zero';
   void log('WARN', `pkg install failed: ${name} via npm (${String(why).slice(0, 120)})`);
@@ -296,10 +321,13 @@ export async function installPackage(ctx: PkgContext, rawName: string): Promise<
 export async function removePackage(ctx: PkgContext, rawName: string): Promise<ActionResult> {
   const name = rawName.trim();
   if (!name) return { ok: false, message: 'pkg remove: package name required' };
+  if (!isValidPackageName(name)) {
+    return { ok: false, message: `pkg remove: invalid package name '${name}' (scoped @scope/name or [a-zA-Z0-9-_.]+, no whitespace, no leading dash)` };
+  }
   const base = lifoTerm(name);
 
   if ((await listLifo(ctx.client)).some((p) => p.name === base)) {
-    const r = await ctx.client.terminal(`lifo remove ${base}`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
+    const r = await ctx.client.terminal(`lifo remove ${q(base)}`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
       void log('INFO', `pkg remove: ${base} via lifo`);
@@ -311,7 +339,7 @@ export async function removePackage(ctx: PkgContext, rawName: string): Promise<A
   }
 
   if ((await listNpm(ctx.wc)).some((p) => p.name === name)) {
-    const r = await ctx.client.terminal(`npm uninstall ${name} --no-audit --no-fund`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
+    const r = await ctx.client.terminal(`npm uninstall ${q(name)} --no-audit --no-fund`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
       void log('INFO', `pkg remove: ${name} via npm`);
@@ -330,22 +358,26 @@ export async function removePackage(ctx: PkgContext, rawName: string): Promise<A
 export async function packageInfo(ctx: PkgContext, rawName: string): Promise<{ ok: boolean; message: string; entry?: SearchEntry }> {
   const name = rawName.trim();
   if (!name) return { ok: false, message: 'pkg info: package name required' };
+  if (!isValidPackageName(name)) {
+    return { ok: false, message: `pkg info: invalid package name '${name}' (scoped @scope/name or [a-zA-Z0-9-_.]+, no whitespace, no leading dash)` };
+  }
   const base = lifoTerm(name);
 
-  // lifo 探测（来源判定规则）：命中即返回 lifo 侧信息。
+  // lifo 探测（来源判定规则）：命中即返回 lifo 侧信息；探测失败标记回落，供失败提示附加。
+  let lifoProbeFailed = false;
   try {
-    const r = await ctx.client.terminal(`lifo search "${base}"`, TIMEOUT.lifoSearch.opts, TIMEOUT.lifoSearch.wait);
+    const r = await ctx.client.terminal(`lifo search ${q(base)}`, TIMEOUT.lifoSearch.opts, TIMEOUT.lifoSearch.wait);
     if (r.ok) {
       const hit = parseLifoSearch(String(r.stdout ?? '')).find((h) => h.name === base);
       if (hit) return { ok: true, message: '', entry: hit };
     }
   } catch {
-    /* registry 探测失败 → 走 npm view */
+    lifoProbeFailed = true; /* registry 探测失败 → 走 npm view */
   }
 
   // npm 通道：npm view <name> name version description --json（真 Node，registry 探测）。
   try {
-    const r = await ctx.client.terminal(`npm view ${name} name version description --json`, TIMEOUT.view.opts, TIMEOUT.view.wait);
+    const r = await ctx.client.terminal(`npm view ${q(name)} name version description --json`, TIMEOUT.view.opts, TIMEOUT.view.wait);
     if (r.ok && String(r.stdout ?? '').trim()) {
       const o = JSON.parse(String(r.stdout)) as Record<string, unknown>;
       return {
@@ -360,8 +392,10 @@ export async function packageInfo(ctx: PkgContext, rawName: string): Promise<{ o
       };
     }
     const why = r.stderr || String(r.stdout ?? '').trim().slice(0, 120) || r.error || 'npm view exited non-zero';
-    return { ok: false, message: `'${name}' not found: ${why}` };
+    const fallback = lifoProbeFailed ? ' (lifo unavailable — fell back to npm)' : '';
+    return { ok: false, message: `'${name}' not found: ${why}${fallback}` };
   } catch (e) {
-    return { ok: false, message: `'${name}' not found: ${String(e).slice(0, 200)}` };
+    const fallback = lifoProbeFailed ? ' (lifo unavailable — fell back to npm)' : '';
+    return { ok: false, message: `'${name}' not found: ${String(e).slice(0, 200)}${fallback}` };
   }
 }

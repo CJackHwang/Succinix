@@ -26,7 +26,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **System configuration** — `env` manages persistent environment variables (`/etc/webunix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/webunix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
 - **Service management** — `service` manages named background services declaratively on top of `spawn`/`ps`/`kill` and the port registry: definitions live in `/etc/webunix.services` (`name|command|port`, `#` comments, `${PORT}` placeholder resolved from `preview-port`), with `start`/`stop`/`status`/`enable`/`disable`. `enable` records the service in `/etc/webunix.autostart` and boot pulls it up declaratively — a declarative restart, not a daemon (no crash self-healing).
 - **System log (journald-style)** — a persistent log written to `/var/log/webunix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
-- **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures.
+- **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures. The npm installed list is read from the `node_modules` **top-level directories only** (a "top-level direct-install" simplification — the container's preinstalled runtime dependencies appear too, and the dependency tree is not parsed).
 - **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
 - **System information & login banner** — `uname` reports the honest browser-native system identity (`WebUnix 0.1.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/webunix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
@@ -74,13 +74,21 @@ node scripts/build-host.mjs         # bundle the in-container host (host.js)
 npm run build                       # production build
 ```
 
+### Dependencies & audit
+
+Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluated separately to avoid regressions). Audit results as of the TASK16 maintenance round (2026-08-05):
+
+- `npm audit` → **0 vulnerabilities** (all direct + transitive dependencies clean).
+- `npm outdated` → only **`@lifo-sh/core` 0.10.8 → 0.10.9** has a newer release; everything else is current. Not upgraded (policy), pending separate evaluation.
+- `public/host.js` is esbuild-minified (`minify: true` in `scripts/build-host.mjs`); size was reduced from 1,965,361 B to 1,070,913 B (**-45.5%**). The `keepNames: true` variant measures 1,106,353 B (**-43.7%**); plain `minify` is used because the full `?test=1` suite passes against the minified bundle (Lifo has no `Function.name` dependency that breaks under name-minification).
+
 ### Self-test mode
 
 ```bash
 # open http://localhost:7892/?test=1
 ```
 
-Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) inside the centered boot-splash overlay, then drops you into the shell.
+Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports, config, services, logs, packages, smoke) inside the centered boot-splash overlay, then prints the summary into the terminal and drops you into the shell.
 
 ## Usage
 
@@ -126,7 +134,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): the full diagnostics pass, now including the system-config lifecycle (`env` set/get/delete and `settings` write/reset).
+Result of the browser runtime verification suite (see `src/tests.ts`): **51 passed, 0 failed, 5 skipped** (TASK16 run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -140,6 +148,8 @@ Result of the browser runtime verification suite (see `src/tests.ts`): the full 
 - Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
 - System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
+- Smoke: all 23 safe built-in commands (help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
+- Stability: the RPC client serializes requests over the single-slot `/cmd.json` channel (no more parallel-channel race), retries read-only commands (ping/ps/cwd) once on transport failure, and the browser watchdog re-injects + respawns `host.js` after 2 consecutive failed pings.
 
 ## Known Boundaries
 

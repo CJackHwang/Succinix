@@ -5,7 +5,7 @@
 // POC 阶段文本为主：二进制文件跳过并计数（console.warn 报告），不做 base64。
 // 尺寸保护：超过 ~50MB 跳过本次写（README 注明）。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { log } from './log.js';
+import { log, LOG_FILE } from './log.js';
 
 // 快照元数据：版本号固定 1，恢复时校验用。
 export interface SnapshotMeta {
@@ -13,6 +13,9 @@ export interface SnapshotMeta {
   savedAt: number;
   fileCount: number;
   totalBytes: number;
+  /** 签名用文件数/总字节（不含 /var/log/webunix.log；旧快照无此字段时回落 fileCount/totalBytes） */
+  sigFileCount?: number;
+  sigTotalBytes?: number;
 }
 
 interface SnapshotRecord {
@@ -62,10 +65,19 @@ function isExcludedPath(path: string): boolean {
 interface Collected {
   files: Array<{ path: string; content: string }>;
   totalBytes: number;
+  /** 签名用文件数（不含 /var/log/webunix.log —— TASK16 R1：日志每条命令都在增长，计入签名会让自动快照每次全量重写） */
+  sigFileCount: number;
+  /** 签名用总字节（不含 /var/log/webunix.log） */
+  sigTotalBytes: number;
   skipped: number;
 }
 
-const EMPTY_COLLECT: Collected = { files: [], totalBytes: 0, skipped: 0 };
+const EMPTY_COLLECT: Collected = { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0 };
+
+// 日志文件：参与遍历（随快照持久），但不参与签名计算。
+function isLogFile(path: string): boolean {
+  return path === LOG_FILE;
+}
 
 async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -80,20 +92,29 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
       try {
         content = await fs.readFile(path, 'utf8');
       } catch {
-        return { files: [], totalBytes: 0, skipped: 1 }; // 不可读（权限/二进制）跳过并计数
+        return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1 }; // 不可读（权限/二进制）跳过并计数
       }
       // 二进制启发：utf8 解码出现 U+FFFD 替换字符即视为二进制，跳过并计数（README 注明）
-      if (content.includes('\uFFFD')) return { files: [], totalBytes: 0, skipped: 1 };
-      return { files: [{ path, content }], totalBytes: content.length, skipped: 0 };
+      if (content.includes('\uFFFD')) return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1 };
+      const excludedFromSig = isLogFile(path);
+      return {
+        files: [{ path, content }],
+        totalBytes: content.length,
+        sigFileCount: excludedFromSig ? 0 : 1,
+        sigTotalBytes: excludedFromSig ? 0 : content.length,
+        skipped: 0,
+      };
     })
   );
   return parts.reduce(
     (acc, r) => ({
       files: acc.files.concat(r.files),
       totalBytes: acc.totalBytes + r.totalBytes,
+      sigFileCount: acc.sigFileCount + r.sigFileCount,
+      sigTotalBytes: acc.sigTotalBytes + r.sigTotalBytes,
       skipped: acc.skipped + r.skipped,
     }),
-    { files: [], totalBytes: 0, skipped: 0 }
+    { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0 }
   );
 }
 
@@ -167,17 +188,20 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
 
   const fileCount = collected.files.length;
   const totalBytes = collected.totalBytes;
+  // 签名用计数：不含 /var/log/webunix.log（日志每条命令都在增长，计入则自动快照每次全量重写）。
+  const sigFileCount = collected.sigFileCount;
+  const sigTotalBytes = collected.sigTotalBytes;
   // 内容未变则跳过写（自动快照去重）；force 供手动 snapshot now 强制保存。
-  if (!force && lastSavedMeta && lastSignature.fileCount === fileCount && lastSignature.totalBytes === totalBytes) {
+  if (!force && lastSavedMeta && lastSignature.fileCount === sigFileCount && lastSignature.totalBytes === sigTotalBytes) {
     return { meta: lastSavedMeta, skipped: false };
   }
   // 已清除：禁止 put 回写复活已删快照，也不更新缓存（clearSnapshot 已重置）。
   if (cleared) return { meta: lastSavedMeta ?? EMPTY_META, skipped: false };
 
-  const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes };
+  const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes, sigFileCount, sigTotalBytes };
   const record: SnapshotRecord = { meta, files: collected.files };
   await idbReq('readwrite', (s) => s.put(record, KEY));
-  lastSignature = { fileCount, totalBytes };
+  lastSignature = { fileCount: sigFileCount, totalBytes: sigTotalBytes };
   lastSavedMeta = meta;
   if (collected.skipped > 0) {
     console.warn(`[persist] snapshot saved: ${fileCount} files, ${totalBytes} bytes (skipped ${collected.skipped} binary/unreadable)`);
@@ -194,7 +218,11 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
     await fs.writeFile(f.path, f.content);
   }
   lastSavedMeta = record.meta;
-  lastSignature = { fileCount: record.meta.fileCount, totalBytes: record.meta.totalBytes };
+  // 签名回落：旧快照无 sig 字段时用全量计数（迁移兼容）。
+  lastSignature = {
+    fileCount: record.meta.sigFileCount ?? record.meta.fileCount,
+    totalBytes: record.meta.sigTotalBytes ?? record.meta.totalBytes,
+  };
   // TASK12：快照事件采集点（INFO）——恢复成功后记录（写回先完成，日志行追加在旧日志尾部）。
   void log('INFO', `snapshot restored: ${record.meta.fileCount} files, ${record.meta.totalBytes} bytes`);
   return record.meta;

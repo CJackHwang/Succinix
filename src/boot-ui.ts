@@ -165,13 +165,17 @@ export function createBootUI(): BootUI {
 
 // 轻量 Terminal 替身：把 writeln/write 转发到覆盖层日志区。
 // 用于 ?test=1 时把自检输出改道到覆盖层（tests.ts 断言逻辑不动，只换输出目标）。
-export function overlayTerminalShim(ui: BootUI): Pick<Terminal, 'writeln' | 'write'> {
+// TASK16：冒烟测试会触发 clear，补一个无副作用 no-op（覆盖层无清屏语义）。
+export function overlayTerminalShim(ui: BootUI): Pick<Terminal, 'writeln' | 'write' | 'clear'> {
   return {
     writeln(line: string): void {
       ui.log(line);
     },
     write(data: string): void {
       ui.log(data);
+    },
+    clear(): void {
+      /* 覆盖层日志区没有清屏概念，no-op */
     },
   };
 }

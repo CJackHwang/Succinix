@@ -9,7 +9,7 @@ import { bootWebUnix } from './boot.js';
 import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { log } from './log.js';
-import { runTests } from './tests.js';
+import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
@@ -19,6 +19,8 @@ const AMBER = '\x1b[33m';
 const RED = '\x1b[31m';
 const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // 欢迎横幅：覆盖层淡出后显示在终端里（TASK3 的"启动后进入系统首页"）。
 // TASK15：默认横幅改由 /etc/webunix.motd 提供（可编辑、随快照持久）；此处仅作
@@ -246,6 +248,69 @@ function startAutoSnapshot(ctx: CommandContext): void {
   window.addEventListener('beforeunload', flush);
 }
 
+// TASK16 稳定性：host 失联自动重启。
+// 每 30s ping 一次，连续 2 次失败视为 host 掉线 → 重新注入 host.js + spawn（WARN 日志）。
+// 新 host 的进程表是全新内存表（孤儿进程不在此表内），重启后 ps 干净。
+function startHostWatchdog(ctx: CommandContext): void {
+  let consecutiveFailures = 0;
+  setInterval(async () => {
+    try {
+      const p = await ctx.client.exec('ping', undefined, 5000);
+      if (p.kind === 'pong') {
+        consecutiveFailures = 0;
+        return;
+      }
+      throw new Error('ping response not pong');
+    } catch {
+      consecutiveFailures++;
+      if (consecutiveFailures >= 2) {
+        consecutiveFailures = 0;
+        void restartHost(ctx);
+      }
+    }
+  }, 30000);
+}
+
+// 重新注入 host.js（容器内缺失时从构建产物拉取）并 spawn 新 host，等待 ping 就绪。
+async function restartHost(ctx: CommandContext): Promise<void> {
+  const { term } = ctx;
+  try {
+    term.writeln(`${AMBER}[ WARN ] host unresponsive — re-injecting host.js and respawning${RESET}`);
+    void log('WARN', 'host unresponsive — re-injecting host.js and respawning');
+    try {
+      await ctx.wc.fs.readFile('/host.js');
+    } catch {
+      const src = await (await fetch('/host.js')).text();
+      await ctx.wc.fs.writeFile('/host.js', src);
+    }
+    await ctx.wc.spawn('node', ['host.js']);
+    // 等待新 host 就绪：TerminalClient 的 exec 自动指向新 host。
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const p = await ctx.client.exec('ping', undefined, 2000);
+        if (p.kind === 'pong') {
+          ready = true;
+          break;
+        }
+      } catch {
+        /* host 尚未就绪 */
+      }
+      await sleep(300);
+    }
+    if (ready) {
+      term.writeln(`${AMBER}[  OK  ] host respawned — process table is clean${RESET}`);
+      void log('WARN', 'host respawned; process table is fresh');
+    } else {
+      term.writeln(`${RED}[ FAIL ] host respawn did not become ready${RESET}`);
+      void log('ERROR', 'host respawn did not become ready');
+    }
+  } catch (e) {
+    term.writeln(`${RED}[ FAIL ] host restart failed: ${String(e)}${RESET}`);
+    void log('ERROR', `host restart failed: ${String(e)}`);
+  }
+}
+
 // ─── 主流程 ───
 async function main(): Promise<void> {
   const ui = createBootUI();
@@ -261,14 +326,17 @@ async function main(): Promise<void> {
       term.options.fontSize = fontSizeNum;
     }
 
+    let testResult: TestResult | null = null;
+    let testCrashed = '';
     if (testMode) {
       // 自检期间把用户输入排队，避免与断言互相干扰；自检输出走覆盖层日志区。
       busy = true;
       const shim = overlayTerminalShim(ui) as unknown as Terminal;
       try {
-        await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
+        testResult = await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
       } catch (e) {
         // 自检自身异常（非环境问题）：显示 self-test crashed，不误报成 Startup failed。
+        testCrashed = String(e);
         shim.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
       } finally {
         busy = false;
@@ -278,6 +346,23 @@ async function main(): Promise<void> {
     // boot（及可选自检）完成：淡出覆盖层、显示终端，然后打印登录横幅（motd）+ 提示符。
     await ui.complete();
     fitAddon.fit();
+
+    // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）——覆盖层淡出后结果可回溯。
+    // 失败 >0 时暗红显示失败行；全绿只打印 summary 行。
+    if (testResult) {
+      const summary = `Self-test result: ${testResult.pass} passed, ${testResult.fail} failed, ${testResult.skip} skipped`;
+      if (testResult.fail > 0) {
+        term.writeln(`${RED}${summary}${RESET}`);
+        for (const f of testResult.failures) {
+          term.writeln(`${RED}  [ FAIL ] ${f}${RESET}`);
+        }
+      } else {
+        term.writeln(`${AMBER}${summary}${RESET}`);
+      }
+    } else if (testCrashed) {
+      term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
+    }
+
     const motdText = await readMotd(services.wc.fs);
     if (motdText) {
       for (const line of motdText.split(/\r?\n/)) term.writeln(line);
@@ -287,6 +372,9 @@ async function main(): Promise<void> {
 
     // 持久化主循环：此后每 ~2.5s 自动快照（内容未变不写 IDB）。
     startAutoSnapshot(ctx);
+
+    // TASK16 稳定性：host 失联自动重启（每 30s ping，连续 2 次失败重新注入+spawn）。
+    startHostWatchdog(ctx);
 
     // 容器里任何服务就绪都实时打印暗橙预览提示（覆盖层已移除，走终端）。
     services.wc.on('server-ready', (port, url) => {

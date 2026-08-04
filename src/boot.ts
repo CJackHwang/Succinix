@@ -165,14 +165,10 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     ui.fail([`WebContainer runtime failed to start: ${String(e)}`]);
     return null;
   }
-  // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。放在快照恢复之前是安全的：
-  // loadSnapshot 写回旧 /var/log/webunix.log 时，最多覆盖到先写的一行 boot 日志
-  // （"Started WebContainer runtime"），旧日志内容绝不会丢——恢复后所有 boot/快照事件都落盘。
-  initLogger(wc.fs);
-  ok(ui, 'Started WebContainer runtime');
-
-  // 恢复持久化快照：先于 browser-wrote.txt 写入（那是自检用的测试文件，每次写，不影响恢复）。
-  // 恢复必须在 ensureTerminalHost 之前 —— host 挂载的就是恢复后的 FS。
+  // TASK16 R3：先 loadSnapshot 再 initLogger —— 消除恢复期日志写竞争。
+  // loadSnapshot 会把旧 /var/log/webunix.log 写回容器 FS；若日志系统先初始化，
+  // 恢复写回会与并发日志写互相覆盖（恢复前的 boot 事件不落盘，可接受）。
+  // initLogger 之后所有 boot / 快照 / 命令事件照常落盘。
   try {
     const restored = await loadSnapshot(wc.fs);
     if (restored) {
@@ -184,6 +180,11 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     note(ui, `Persistent restore failed (${String(e).slice(0, 80)}); continuing with current filesystem`);
     ok(ui, 'Initialized fresh workspace');
   }
+
+  // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。在快照恢复之后调用，
+  // 恢复写回的旧日志不再与新日志写竞争；此后的 boot/命令/快照事件全部落盘。
+  initLogger(wc.fs);
+  ok(ui, 'Started WebContainer runtime');
 
   // 系统配置（TASK10）：settings 决定全新系统的默认工作区名；env 文件统计加载数。
   // 读取失败 / 值被手改非法时全部回退默认，不阻断 boot。

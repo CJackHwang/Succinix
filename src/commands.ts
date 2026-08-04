@@ -931,6 +931,10 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
   }
 
   if (sub === 'search') {
+    if (args[1] === '--help' || args[1] === '-h') {
+      for (const line of PKG_USAGE_LINES) term.writeln(line);
+      return;
+    }
     const termName = args.slice(1).join(' ').trim();
     if (!termName) {
       term.writeln('usage: pkg search <term>');
@@ -943,6 +947,10 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
   }
 
   if (sub === 'install') {
+    if (args[1] === '--help' || args[1] === '-h') {
+      for (const line of PKG_USAGE_LINES) term.writeln(line);
+      return;
+    }
     const name = args.slice(1).join(' ').trim();
     if (!name) {
       term.writeln('usage: pkg install <name>');
@@ -955,6 +963,10 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
   }
 
   if (sub === 'remove') {
+    if (args[1] === '--help' || args[1] === '-h') {
+      for (const line of PKG_USAGE_LINES) term.writeln(line);
+      return;
+    }
     const name = args.slice(1).join(' ').trim();
     if (!name) {
       term.writeln('usage: pkg remove <name>');
@@ -967,6 +979,10 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
   }
 
   if (sub === 'info') {
+    if (args[1] === '--help' || args[1] === '-h') {
+      for (const line of PKG_USAGE_LINES) term.writeln(line);
+      return;
+    }
     const name = args.slice(1).join(' ').trim();
     if (!name) {
       term.writeln('usage: pkg info <name>');
@@ -996,17 +1012,31 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
 
 // 从进程命令提取简短可读标签：npx <pkg> ... → <pkg>；node 且含 http.createServer → node http server；
 // node <script>.js → node <script>.js；其余取命令首词。标签只做摘要，不改写事实。
+// TASK16：npx/node 跳过前置 flag（--yes / --watch 等），取第一个非 flag 参数作为包/脚本名。
 function processLabel(cmd: string): string {
   const words = cmd.trim().split(/\s+/);
   const first = words[0] ?? '';
-  if (first === 'npx' && words[1]) return words[1];
-  if (first === 'node') {
+  if (first === 'npx' || first === 'node') {
+    const target = words.slice(1).find((w) => !w.startsWith('-'));
+    if (first === 'npx') return target || 'npx';
     if (cmd.includes('http.createServer')) return 'node http server';
-    const script = words.find((w) => w.endsWith('.js') && !w.startsWith('-'));
-    if (script) return `node ${script}`;
-    return 'node';
+    if (target && target.endsWith('.js')) return `node ${target}`;
+    return target || 'node';
   }
   return first || cmd;
+}
+
+// 端口↔进程结构化匹配（TASK16）：拒绝子串误关联（3001↔300/30010）。
+// 命中任一即认为该进程与端口相关：
+//   --port 3001 / --port=3001 / --port:3001 （后面跟空白或行尾）
+//   listen(3001)
+//   裸 token 3001（词边界，两侧非 [A-Za-z0-9_]）
+export function commandMentionsPort(cmd: string, port: number): boolean {
+  const p = String(port);
+  const flag = new RegExp(`--port\\s*[=:]?\\s*${p}(?:\\s|$)`);
+  const listen = new RegExp(`listen\\(${p}\\)`);
+  const token = new RegExp(`(?:^|[^A-Za-z0-9_])${p}(?:[^A-Za-z0-9_]|$)`);
+  return flag.test(cmd) || listen.test(cmd) || token.test(cmd);
 }
 
 // netstat 表行（导出供自检断言格式：proto / localAddress / state / process）。
@@ -1037,7 +1067,7 @@ export async function buildNetstatRows(
     .sort((a, b) => a - b)
     .map((port) => {
       const found = withProcess
-        ? procs.find((p) => p.status === 'running' && String(p.cmd ?? '').includes(String(port)))
+        ? procs.find((p) => p.status === 'running' && commandMentionsPort(String(p.cmd ?? ''), port))
         : undefined;
       return {
         proto: 'tcp',

@@ -22,8 +22,16 @@ export interface ExecResult {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// 只读/幂等协议命令：RPC 传输失败时允许重试 1 次（TASK16 稳定性）。
+// ping/ps/cwd 重发安全；kill / run / spawn 等非幂等命令一律不重试。
+const READONLY_PROTO = new Set(['ping', 'ps', 'cwd']);
+
 export class TerminalClient {
   private id = 0;
+  // 请求互斥队列（TASK16）：/cmd.json 是单槽通道，host 一次只处理一个请求，
+  // 并行调用会让后写覆盖先写的 cmd.json、先发请求等不到结果。所有 exec 串行化
+  // —— host 本就串行处理，浏览器侧排队不损失吞吐，只让失败变得确定。
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(private wc: WebContainer) {}
 
@@ -43,7 +51,10 @@ export class TerminalClient {
       }
     }
     // TASK12：命令执行采集点（INFO）——cmd/exit/runtime。协议命令无 runtime 字段，标 protocol。
-    void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'protocol'}`);
+    // TASK16 R2 降噪：纯轮询 ps（top/service 内部高频调用）跳过命令日志，避免刷屏；kill 保留。
+    if (trimmed !== 'ps') {
+      void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'protocol'}`);
+    }
     return res;
   }
 
@@ -56,8 +67,29 @@ export class TerminalClient {
   }
 
   // 文件 RPC 核心：写 /cmd.json，轮询 /result-<id>.json，读到即删。
+  // 经互斥队列串行；只读协议命令失败重试 1 次（幂等，重发安全）。
   async exec(cmd: string, opts?: Record<string, unknown>, timeoutMs = 30000): Promise<ExecResult> {
-    const id = ++this.id;
+    const first = this.enqueue(cmd, opts, timeoutMs);
+    if (!READONLY_PROTO.has(cmd)) return first;
+    try {
+      return await first;
+    } catch {
+      // 只读命令：首次传输失败（超时/FS 抖动）→ 排队重试一次。重试也失败则向上抛。
+      return await this.enqueue(cmd, opts, timeoutMs);
+    }
+  }
+
+  // 排队执行：同一时刻只有一个在途请求（前一个完成或超时才轮到下一个）。
+  private enqueue(cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
+    const run = this.chain.then(() => this.doExec(++this.id, cmd, opts, timeoutMs));
+    this.chain = run.catch(() => {
+      /* 链不中断：单个请求失败不影响后续排队 */
+    });
+    return run;
+  }
+
+  // 单次 RPC：写 /cmd.json，轮询 /result-<id>.json，读到即删。
+  private async doExec(id: number, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
     await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd, opts }));
     const resultFile = `/result-${id}.json`;
     const start = Date.now();

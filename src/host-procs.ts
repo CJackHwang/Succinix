@@ -72,13 +72,13 @@ export interface KillResult {
 export function killProcess(pid: number): KillResult {
   const entry = table.get(pid);
   if (!entry) {
-    return { killed: false, message: `进程 ${pid} 不在进程表中；Lifo 侧进程仅支持列表，不支持 kill` };
+    return { killed: false, message: `process ${pid} not in process table; Lifo-side processes are list-only (kill not supported)` };
   }
   if (entry.status === 'exited') {
-    return { killed: false, message: `进程 ${pid} 已退出（exit=${entry.exitCode ?? '?'}），无需 kill` };
+    return { killed: false, message: `process ${pid} already exited (exit=${entry.exitCode ?? '?'}), nothing to kill` };
   }
   const ok = entry.child.kill();
   return ok
-    ? { killed: true, message: `已向进程 ${pid} 发送 SIGTERM` }
-    : { killed: false, message: `向进程 ${pid} 发送信号失败` };
+    ? { killed: true, message: `SIGTERM sent to process ${pid}` }
+    : { killed: false, message: `failed to send signal to process ${pid}` };
 }

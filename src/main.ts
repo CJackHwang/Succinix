@@ -1,39 +1,51 @@
-// WebUnix 入口：全屏黑终端 + 启动画面 + REPL。
-// 默认进入终端；URL 带 ?test=1 时自动跑测试套件。
+// WebUnix 入口：全屏暗橙终端 + 启动画面 + REPL。
+// 默认进入终端；URL 带 ?test=1 时自动跑完整系统自检（boot diagnostics）。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/700.css';
 import { bootWebUnix } from './boot.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { runTests } from './tests.js';
 import type { ExecResult } from './terminal-client.js';
 
-const GREEN = '\x1b[32m';
+const AMBER = '\x1b[33m';
 const RED = '\x1b[31m';
 const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
 
-// ─── xterm：全屏黑色终端 ───
+// ─── xterm：全屏暗橙终端（JetBrains Mono，暖色暗调色板）───
 const term = new Terminal({
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace',
+  fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   fontSize: 14,
   lineHeight: 1.15,
   cursorBlink: true,
   convertEol: true,
   scrollback: 3000,
   theme: {
-    background: '#000000',
-    foreground: '#c9d6c9',
-    cursor: '#4af626',
-    cursorAccent: '#000000',
-    selectionBackground: '#1e3a1e',
+    background: '#0a0a0a',
+    foreground: '#d6cfc4',
+    cursor: '#c2702a',
+    cursorAccent: '#0a0a0a',
+    selectionBackground: '#3a2a1a',
     selectionForeground: '#ffffff',
-    green: '#4af626',
-    red: '#f66',
-    brightGreen: '#5af632',
-    brightRed: '#ff7b72',
-    brightBlack: '#5c6a5c',
-    white: '#c9d6c9',
+    black: '#1a1816',
+    red: '#c0543a',
+    green: '#7a8a5a',
+    yellow: '#c98a2e',
+    blue: '#7a8a9a',
+    magenta: '#a06f9a',
+    cyan: '#6f9a8a',
+    white: '#d6cfc4',
+    brightBlack: '#6b6560',
+    brightRed: '#d96a4e',
+    brightGreen: '#9aab72',
+    brightYellow: '#dba04a',
+    brightBlue: '#8aa0ae',
+    brightMagenta: '#b887b0',
+    brightCyan: '#86aea0',
+    brightWhite: '#efe8dc',
   },
 });
 const fitAddon = new FitAddon();
@@ -66,7 +78,7 @@ function handleData(data: string): void {
       line = '';
       if (busy) {
         if (cmd.trim()) queue.push(cmd.trim());
-        term.write(`${GRAY}（已排队，上一条执行完自动运行）${RESET}\r\n`);
+        term.write(`${GRAY}queued: will run after the current command finishes${RESET}\r\n`);
       } else {
         void runCommand(cmd);
       }
@@ -81,7 +93,7 @@ function handleData(data: string): void {
     }
     if (ch === '\u0003') {
       if (busy) {
-        term.write(`^C\r\n${GRAY}（正在执行，不中断）${RESET}\r\n`);
+        term.write(`^C\r\n${GRAY}running, not interrupted${RESET}\r\n`);
       } else {
         term.write('^C\r\n');
         prompt();
@@ -102,22 +114,22 @@ function handleData(data: string): void {
 }
 term.onData(handleData);
 
-// 协议命令（ps/cwd/kill/spawn…）没有 stdout，直接呈现字段。
+// 协议命令（ps/cwd/kill/spawn...）没有 stdout，直接呈现字段。
 function printProtocolResponse(res: ExecResult): void {
   if (Array.isArray(res.processes)) {
-    term.writeln('PID\t状态\t命令');
+    term.writeln('PID  STATUS  COMMAND');
     for (const p of res.processes) {
       const row = p as { pid: number; status: string; cmd: string; outputTail?: string };
-      const status = row.status === 'running' ? `${GREEN}运行中${RESET}` : `${GRAY}已退出${RESET}`;
-      term.writeln(`${String(row.pid).padEnd(8)}  ${status}  ${row.cmd ?? ''}`);
+      const status = row.status === 'running' ? AMBER + 'running' + RESET : GRAY + 'exited' + RESET;
+      term.writeln(`${String(row.pid).padEnd(6)}  ${status}  ${row.cmd ?? ''}`);
       if (row.outputTail) {
-        term.writeln(`         ${GRAY}输出尾部: ${row.outputTail.slice(-120)}${RESET}`);
+        term.writeln(`         ${GRAY}output tail: ${row.outputTail.slice(-120)}${RESET}`);
       }
     }
     return;
   }
   if (typeof res.pid === 'number') {
-    term.writeln(`已后台启动（pid=${res.pid}，runtime=${res.runtime ?? '?'}）`);
+    term.writeln(`started in background (pid=${res.pid}, runtime=${res.runtime ?? '?'})`);
     return;
   }
   if (res.cwd) {
@@ -186,11 +198,10 @@ async function main(): Promise<void> {
     const services = await bootWebUnix(term);
     ctx = { wc: services.wc, client: services.client, ports: services.ports, term };
     if (testMode) {
-      // 测试期间把用户输入排队，避免与断言互相干扰
+      // 自检期间把用户输入排队，避免与断言互相干扰；跑完自动回到终端。
       busy = true;
-      const { pass, fail } = await runTests(ctx);
+      await runTests(ctx);
       busy = false;
-      term.writeln(`\n${GREEN}完成 — PASS ${pass} / FAIL ${fail}${RESET}`);
     }
     const next = queue.shift();
     if (next) {
@@ -199,7 +210,7 @@ async function main(): Promise<void> {
       prompt();
     }
   } catch (e) {
-    term.writeln(`${RED}❌ 初始化失败：${String(e)}${RESET}`);
+    term.writeln(`${RED}init failed: ${String(e)}${RESET}`);
     prompt();
   }
 }

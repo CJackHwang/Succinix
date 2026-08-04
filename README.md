@@ -141,7 +141,7 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] POC: Lifo inside WebContainer with shared filesystem
 - [x] TerminalExecutor v1: unified routing + process table
 - [x] Product shell: full-screen terminal, boot sequence, ports, tinbase
-- [ ] Production-grade interface polish (English UI, dark-amber theme) — in progress
+- [x] Production-grade interface: English UI, dark-amber theme, JetBrains Mono, system self-checks
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor
 - [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
 

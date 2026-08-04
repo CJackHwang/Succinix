@@ -89,7 +89,7 @@ async function handleCommand(req: CommandRequest): Promise<void> {
       writeResult(req.id, { ok: true, kind: 'bye' });
       return;
     default:
-      writeResult(req.id, { ok: false, error: `未知命令: ${req.cmd}` });
+      writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` });
   }
 }
 
@@ -97,7 +97,7 @@ async function handleCommand(req: CommandRequest): Promise<void> {
 async function dispatchRun(req: CommandRequest): Promise<void> {
   const command = String(req.opts?.command ?? '').trim();
   if (!command) {
-    writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: '空命令', runtime: 'lifo' });
+    writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: 'empty command', runtime: 'lifo' });
     return;
   }
   if (NODE_PREFIX_RE.test(command)) {
@@ -134,7 +134,7 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
   timer = setTimeout(() => {
     if (child.exitCode === null) {
       child.kill();
-      settle({ ok: false, exitCode: -1, stdout, stderr: `node 子进程超时（${timeoutMs}ms），已终止`, runtime: 'node' });
+      settle({ ok: false, exitCode: -1, stdout, stderr: `node subprocess timed out after ${timeoutMs}ms, killed`, runtime: 'node' });
     }
   }, timeoutMs);
 
@@ -153,13 +153,13 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
 function dispatchSpawn(req: CommandRequest): void {
   const command = String(req.opts?.command ?? '').trim();
   if (!command) {
-    writeResult(req.id, { ok: false, error: '空命令', runtime: 'node' });
+    writeResult(req.id, { ok: false, error: 'empty command', runtime: 'node' });
     return;
   }
   if (!NODE_PREFIX_RE.test(command)) {
     writeResult(req.id, {
       ok: false,
-      error: 'spawn 仅支持 node/npm/npx 系后台进程（Lifo 侧没有后台概念）',
+      error: 'spawn only supports node/npm/npx background processes (Lifo side has no background concept)',
       runtime: 'lifo',
     });
     return;
@@ -173,7 +173,7 @@ function dispatchSpawn(req: CommandRequest): void {
   writeResult(req.id, { ok: true, pid, runtime: 'node' });
 }
 
-// Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl …）。结果带 runtime: 'lifo'。
+// Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。
 async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
   try {
     const timeout = typeof opts?.timeout === 'number' ? opts.timeout : LIFO_TIMEOUT_MS;
@@ -194,7 +194,7 @@ async function runLifo(command: string, opts: Record<string, unknown> | undefine
 function dispatchKill(req: CommandRequest): void {
   const pid = parsePid(req);
   if (!Number.isInteger(pid) || pid <= 0) {
-    writeResult(req.id, { ok: false, killed: false, message: `无效 pid: ${req.opts?.pid ?? req.cmd}` });
+    writeResult(req.id, { ok: false, killed: false, message: `invalid pid: ${req.opts?.pid ?? req.cmd}` });
     return;
   }
   const r = killProcess(pid);

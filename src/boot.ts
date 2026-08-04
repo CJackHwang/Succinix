@@ -1,4 +1,4 @@
-// 启动模块：全屏黑终端的产品化引导。
+// 启动模块：全屏暗橙终端的产品化引导。
 // 职责：打印启动画面（ASCII art + 版本 + 浏览器系统信息）、按真实完成时序打印
 // systemd 风格启动日志、拉起 WebContainer + host、登记 server-ready 端口注册表。
 import { WebContainer } from '@webcontainer/api';
@@ -12,15 +12,15 @@ export interface WebUnixServices {
   ports: Map<number, string>;
 }
 
-const GREEN = '\x1b[32m';
+const AMBER = '\x1b[33m';
 const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// systemd 风格：绿色 [  OK  ] 标记 + 默认色消息
+// systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息
 function ok(term: Terminal, msg: string): void {
-  term.writeln(`${GREEN}[  OK  ]${RESET} ${msg}`);
+  term.writeln(`${AMBER}[  OK  ]${RESET} ${msg}`);
 }
 
 // 灰色 [ .... ] 标记，用于中间过程的过渡说明
@@ -30,7 +30,7 @@ function note(term: Terminal, msg: string): void {
 
 // ─── 启动画面 ───
 
-// 大号 ASCII art "WebUnix"（figlet ANSI Shadow 风格，自制，绿色）
+// 大号 ASCII art "WebUnix"（figlet ANSI Shadow 风格，自制，暗橙）
 const ASCII_ART = [
   '██╗    ██╗███████╗██████╗ ██╗   ██╗███╗   ██╗██╗██╗  ██╗',
   '██║    ██║██╔════╝██╔══██╗██║   ██║████╗  ██║██║╚██╗██╔╝',
@@ -47,33 +47,33 @@ export function detectSystemInfo(): string[] {
 
   const uaData = (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData;
   const platform = uaData?.platform ?? (navigator as { platform?: string }).platform;
-  if (platform) lines.push(`平台: ${platform}`);
+  if (platform) lines.push(`Platform: ${platform}`);
 
   const chrome = /Chrome\/([\d.]+)/.exec(ua);
-  if (chrome) lines.push(`浏览器: Chrome/${chrome[1]}`);
+  if (chrome) lines.push(`Browser: Chrome/${chrome[1]}`);
   else {
     const other = /\b(Firefox|Safari|Edg|OPR)\/([\d.]+)/.exec(ua);
-    if (other) lines.push(`浏览器: ${other[1]}/${other[2]}`);
+    if (other) lines.push(`Browser: ${other[1]}/${other[2]}`);
   }
 
-  if (navigator.hardwareConcurrency) lines.push(`CPU 核数: ${navigator.hardwareConcurrency}`);
+  if (navigator.hardwareConcurrency) lines.push(`CPU cores: ${navigator.hardwareConcurrency}`);
 
   const deviceMemory = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
-  if (deviceMemory) lines.push(`内存: ${deviceMemory} GB`);
+  if (deviceMemory) lines.push(`Memory: ${deviceMemory} GB`);
 
-  if (navigator.language) lines.push(`语言: ${navigator.language}`);
+  if (navigator.language) lines.push(`Language: ${navigator.language}`);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (tz) lines.push(`时区: ${tz}`);
+  if (tz) lines.push(`Timezone: ${tz}`);
 
   const { screen } = window;
-  if (screen?.width && screen?.height) lines.push(`屏幕: ${screen.width}×${screen.height}`);
+  if (screen?.width && screen?.height) lines.push(`Screen: ${screen.width}x${screen.height}`);
 
   return lines;
 }
 
 function printSplashHeader(term: Terminal): void {
-  term.writeln(`${GREEN}${ASCII_ART}${RESET}`);
-  term.writeln(`${GREEN}  WebUnix 0.1.0 — browser-native Linux${RESET}`);
+  term.writeln(`${AMBER}${ASCII_ART}${RESET}`);
+  term.writeln(`${AMBER}  WebUnix 0.1.0 — browser-native Linux${RESET}`);
   term.writeln('');
   for (const line of detectSystemInfo()) {
     term.writeln(`  ${line}`);
@@ -108,7 +108,7 @@ async function ensureTerminalHost(
     }
     await sleep(300);
   }
-  throw new Error('host 无响应');
+  throw new Error('host did not respond');
 }
 
 // ─── 主启动流程 ───
@@ -117,7 +117,7 @@ export async function bootWebUnix(term: Terminal): Promise<WebUnixServices> {
   printSplashHeader(term);
   const ports = new Map<number, string>();
 
-  term.writeln('  启动系统服务…');
+  term.writeln('  Starting system services...');
   term.writeln('');
 
   const wc = await WebContainer.boot();
@@ -127,18 +127,18 @@ export async function bootWebUnix(term: Terminal): Promise<WebUnixServices> {
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
   await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
 
-  // 端口注册表：容器里任何服务就绪都记一笔，并实时打印绿色预览提示；
+  // 端口注册表：容器里任何服务就绪都记一笔，并实时打印暗橙预览提示；
   // 进程被杀 / 端口关闭时自动移除（进程表自然清空，每次 boot 重建）。
   wc.on('server-ready', (port, url) => {
     ports.set(port, url);
-    term.writeln(`\r\n${GREEN}[preview]${RESET} 端口 ${port} 就绪 → ${url}`);
+    term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
   });
   wc.on('port', (port, type) => {
     if (type === 'close') ports.delete(port);
   });
 
   const client = await ensureTerminalHost(wc, {
-    onInjected: () => note(term, 'host.js 不存在，已从构建产物注入'),
+    onInjected: () => note(term, 'host.js missing in container; injected from build artifact'),
     onSpawned: () => {
       ok(term, 'Mounted shared filesystem');
       ok(term, 'Started Lifo kernel');
@@ -151,7 +151,7 @@ export async function bootWebUnix(term: Terminal): Promise<WebUnixServices> {
 
   // 横幅
   term.writeln('');
-  term.writeln(`${GREEN}WebUnix 0.1.0${RESET} (kernel: JS runtime + WebContainer; userland: Lifo; exec: TerminalExecutor)`);
+  term.writeln(`${AMBER}WebUnix 0.1.0${RESET} — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor`);
   term.writeln(`Type ${GRAY}'help'${RESET} to see available commands.`);
   term.writeln('');
 

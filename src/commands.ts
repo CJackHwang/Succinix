@@ -1,6 +1,6 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
 //   help / clear / sysinfo / ports / db start|status|stop / snapshot / free / top /
-//   reboot / shutdown / cache / workspace / env / settings / version / whoami
+//   reboot / shutdown / cache / workspace / env / settings / service / version / whoami
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
@@ -21,6 +21,16 @@ import {
   SETTING_KEYS,
   DEFAULT_SETTINGS,
 } from './config.js';
+import {
+  readServices,
+  listServiceStates,
+  getServiceState,
+  startService,
+  stopService,
+  enableAutostart,
+  disableAutostart,
+  type ServiceContext,
+} from './services.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -42,6 +52,11 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const VERSION = 'WebUnix 0.1.0 (browser-native Linux)';
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
+
+// M1 修复：db start 启动时解析的端口记录在案；db status/stop 用记录值而非每次现读 settings，
+// 避免运行中改 preview-port 后 status/stop 操作到错误的端口。本次会话未启动过 db 时为 null，
+// status/stop 回落现读 settings（此时没有在跑实例，读最新设置是合理的）。
+let dbActivePort: number | null = null;
 
 // 内存单位：二进制换算，1 KB = 1024 B。
 const MIB = 1024 * 1024;
@@ -82,6 +97,7 @@ function printHelp(term: Terminal): void {
   term.writeln(`  workspace    list workspaces; create/switch/rm manage isolated workspaces`);
   term.writeln(`  env          list / set / unset environment variables (persisted in /etc/webunix.env)`);
   term.writeln(`  settings     view / set / reset system settings (persisted in /etc/webunix.settings)`);
+  term.writeln(`  service      list services; start/stop/status/enable/disable manage them (declarative autostart)`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -121,13 +137,15 @@ async function resolveDbPort(fs: FileSystemAPI): Promise<number> {
 async function dbStart(ctx: CommandContext): Promise<void> {
   const { client, term, wc } = ctx;
   const port = await resolveDbPort(wc.fs);
+  dbActivePort = port; // 记录本次启动端口（M1：status/stop 用记录值）
   term.writeln('Checking whether tinbase is installed in the container...');
 
-  // 1. 检查 node_modules/tinbase 是否存在
+  // 1. 检查 node_modules/tinbase 是否存在（test -d：不存在时 exit≠0，比 ls+stdout 包含判断可靠，
+  //    避免 Lifo 把 "No such file or directory" 打到 stdout 造成误判重复 npm install）
   let installed = false;
   try {
-    const r = await client.terminal('ls node_modules/tinbase', undefined, 15000);
-    installed = r.ok && String(r.stdout ?? '').includes('tinbase');
+    const r = await client.terminal('test -d node_modules/tinbase', undefined, 15000);
+    installed = r.ok === true;
   } catch {
     installed = false;
   }
@@ -150,10 +168,21 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     term.writeln('tinbase installed');
   }
 
-  // 2. 已在运行则直接报告
+  // 2. 已在运行则直接报告：端口就绪 + 进程表有 tinbase running 进程，交叉验证防占端口误报
+  //    （端口被其他进程占用时不再误报 "tinbase is already running"）。
   if (ctx.ports.has(port)) {
-    term.writeln(`tinbase is already running: ${ctx.ports.get(port)}`);
-    return;
+    let running: Record<string, unknown> | undefined;
+    try {
+      running = await findRunningProc(ctx, DB_PKG);
+    } catch {
+      running = undefined; // 进程表不可达：按无 tinbase 进程处理
+    }
+    if (running) {
+      term.writeln(`tinbase is already running: ${ctx.ports.get(port)}`);
+      return;
+    }
+    term.writeln(`${AMBER}Port ${port} is in the ready list but no tinbase process is running; another process may own it.${RESET}`);
+    term.writeln('Attempting to start tinbase anyway (it will fail fast if the port is truly taken)...');
   }
 
   // 3. spawn 后台启动（端口取 settings preview-port，缺省 3001）
@@ -176,7 +205,9 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  // 4. 等待 server-ready 事件（boot.ts 的处理器会打印暗橙 [preview] 行）
+  // 4. 等待 server-ready 事件（boot.ts 的处理器会打印暗橙 [preview] 行）。
+  //    顺带检查进程表：pid 已 exited 则提前报失败（配合 host 的 spawn error 改写，
+  //    立即看到原因而非等满 30s 端口超时）。
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const url = ctx.ports.get(port);
@@ -185,6 +216,20 @@ async function dbStart(ctx: CommandContext): Promise<void> {
       term.writeln(`Open ${url} in the browser, or curl ${url} through Lifo.`);
       term.writeln('Database data persists in the workspace (.tinbase) and survives refresh via snapshots.');
       return;
+    }
+    if (pid) {
+      try {
+        const ps = await client.terminal('ps');
+        const procs = Array.isArray(ps.processes) ? ps.processes : [];
+        const proc = procs.find((p) => Number(p.pid) === pid);
+        if (proc && proc.status === 'exited') {
+          term.writeln(`${RED}tinbase: failed to start (engine wasm): process exited (pid=${pid}) before port ${port} became ready.${RESET}`);
+          term.writeln(`${RED}Run 'db status' to inspect the process output tail, then 'db stop' and retry.${RESET}`);
+          return;
+        }
+      } catch {
+        /* 进程表查询失败不阻断等待，继续轮询 */
+      }
     }
     await sleep(500);
   }
@@ -197,7 +242,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
 
 async function dbStatus(ctx: CommandContext): Promise<void> {
   const { client, ports, term, wc } = ctx;
-  const port = await resolveDbPort(wc.fs);
+  const port = dbActivePort ?? (await resolveDbPort(wc.fs));
   const url = ports.get(port);
   term.writeln(url ? `Port ${port}: in ready list -> ${url}` : `Port ${port}: not in ready list (not running)`);
 
@@ -236,7 +281,9 @@ async function dbStop(ctx: CommandContext): Promise<void> {
   const k = await ctx.client.terminal(`kill ${pid}`);
   if (k.ok && k.killed) {
     term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
-    ctx.ports.delete(await resolveDbPort(wc.fs));
+    // 用记录端口清理注册表（运行中改 settings 不影响 stop 的正确端口）
+    ctx.ports.delete(dbActivePort ?? (await resolveDbPort(wc.fs)));
+    dbActivePort = null;
   } else {
     term.writeln(`${RED}failed to stop: ${k.message ?? 'unknown reason'}${RESET}`);
   }
@@ -267,7 +314,12 @@ async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
     return;
   }
   if (sub === 'now') {
-    const meta = await saveSnapshot(ctx.wc.fs, true);
+    const { meta, skipped } = await saveSnapshot(ctx.wc.fs, true);
+    if (skipped) {
+      // 超过 50MB 上限：persist 跳过本次写，明确输出 skipped，不伪装成成功。
+      term.writeln('Snapshot skipped (over 50MB limit)');
+      return;
+    }
     term.writeln(`Snapshot saved: ${meta.fileCount} files, ${formatKB(meta.totalBytes)} (${new Date(meta.savedAt).toISOString()})`);
     return;
   }
@@ -594,9 +646,12 @@ async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
     term.writeln(value !== undefined ? `${arg}=${value}` : `${arg} is not set`);
     return;
   }
-  // 设置：按第一个 = 切分，值允许含 =
+  // 设置：按第一个 = 切分，值允许含 =；值含空格时（token 被空白拆开）join 剩余 token，
+  // 杜绝静默截断（M2：env FOO=hello world 应存 'hello world'，而不是截断成 'hello'）。
   const key = arg.slice(0, eq);
-  const value = arg.slice(eq + 1);
+  const first = arg.slice(eq + 1);
+  const restTokens = args.slice(1);
+  const value = restTokens.length > 0 ? `${first} ${restTokens.join(' ')}` : first;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
     term.writeln(`${RED}env: invalid variable name '${key}'${RESET}`);
     return;
@@ -671,6 +726,113 @@ function applySettingRuntime(ctx: CommandContext, key: string, value: string): v
   }
 }
 
+// ─── 服务管理（TASK11）：service 命令族，spawn/ps/kill + 端口注册表的声明式封装 ───
+// 定义在 /etc/webunix.services（name|command|port），自启清单在 /etc/webunix.autostart，
+// 两者都随快照持久。状态由进程表 + 端口注册表联合判定（services.ts）。
+
+// 单个服务详情：state + pid + port/url（未匹配显示 unknown service）。
+async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: string): Promise<void> {
+  const { term } = ctx;
+  const defs = await readServices(ctx.wc.fs);
+  const def = defs.find((d) => d.name === name);
+  if (!def) {
+    term.writeln(`${RED}unknown service: ${name}${RESET}`);
+    return;
+  }
+  const st = await getServiceState(svc, def);
+  term.writeln(`Service '${name}'`);
+  term.writeln(`  state  ${st.state === 'running' ? `${AMBER}${st.state}${RESET}` : st.state}`);
+  if (st.pid !== undefined) term.writeln(`  pid    ${st.pid}`);
+  if (def.port !== null) term.writeln(`  port   ${def.port}${st.url ? `  -> ${st.url}` : ''}`);
+}
+
+async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports };
+  const sub = args[0] ?? '';
+
+  if (sub === '') {
+    const states = await listServiceStates(svc);
+    if (states.length === 0) {
+      term.writeln('Services');
+      term.writeln('  (none defined)');
+      return;
+    }
+    // 表格对齐：NAME / STATE 按最长值 + 2 空格间隔，running 用暗橙。
+    const nameW = Math.max(4, ...states.map((s) => s.def.name.length)) + 2;
+    const stateW = Math.max(5, ...states.map((s) => s.state.length)) + 2;
+    term.writeln('Services');
+    term.writeln('  ' + 'NAME'.padEnd(nameW) + 'STATE'.padEnd(stateW) + 'PORT');
+    for (const s of states) {
+      const st = s.state === 'running' ? AMBER + s.state.padEnd(stateW) + RESET : s.state.padEnd(stateW);
+      const portStr = s.def.port !== null ? String(s.def.port) : '-';
+      term.writeln('  ' + s.def.name.padEnd(nameW) + st + portStr);
+    }
+    return;
+  }
+
+  if (sub === 'start') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service start <name>');
+      return;
+    }
+    const r = await startService(svc, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'stop') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service stop <name>');
+      return;
+    }
+    const r = await stopService(svc, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'status') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service status <name>');
+      return;
+    }
+    await serviceStatusOne(ctx, svc, name);
+    return;
+  }
+
+  if (sub === 'enable') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service enable <name>');
+      return;
+    }
+    const defs = await readServices(ctx.wc.fs);
+    if (!defs.some((d) => d.name === name)) {
+      term.writeln(`${RED}unknown service: ${name}${RESET}`);
+      return;
+    }
+    const added = await enableAutostart(ctx.wc.fs, name);
+    term.writeln(added ? `service '${name}' enabled (will start on boot)` : `service '${name}' is already enabled`);
+    return;
+  }
+
+  if (sub === 'disable') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service disable <name>');
+      return;
+    }
+    const removed = await disableAutostart(ctx.wc.fs, name);
+    term.writeln(removed ? `service '${name}' disabled` : `service '${name}' is not enabled`);
+    return;
+  }
+
+  term.writeln('usage: service | service start <name> | service stop <name> | service status <name> | service enable <name> | service disable <name>');
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -734,6 +896,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'settings': {
       await settingsCmd(ctx, rest);
+      return true;
+    }
+    case 'service': {
+      await serviceCmd(ctx, rest);
       return true;
     }
     default:

@@ -84,12 +84,20 @@ function handleData(data: string): void {
       term.write('\r\n');
       const cmd = line;
       line = '';
+      const trimmed = cmd.trim();
       if (busy) {
-        if (cmd.trim()) queue.push(cmd.trim());
-        term.write(`${GRAY}queued: will run after the current command finishes${RESET}\r\n`);
-      } else {
-        void runCommand(cmd);
+        if (trimmed) {
+          queue.push(trimmed);
+          term.write(`${GRAY}queued: will run after the current command finishes${RESET}\r\n`);
+        }
+        return;
       }
+      if (!trimmed) {
+        // 空命令：只换到下一行提示符，不发 host（否则 host 会回一个 "empty command" 错误）。
+        term.write(promptStr);
+        return;
+      }
+      void runCommand(cmd);
       return;
     }
     if (ch === '\u007f' || ch === '\b') {
@@ -183,6 +191,11 @@ async function execute(cmd: string): Promise<void> {
     if ((stdout || stderr) && !(stderr || '').endsWith('\n')) term.write('\r\n');
     term.write(`${GRAY}[exit ${code}]${RESET}`);
   }
+  // TASK3 修复：stdout/stderr 均空但 error 存在时显示 error，杜绝静默失败
+  // （如 host 的 { ok:false, error } 协议响应、spawn 的非 node 拒绝、unknown command 等）。
+  if (res.ok === false && !stdout && !stderr && res.error) {
+    term.write(`${RED}${String(res.error)}${RESET}`);
+  }
 }
 
 async function runCommand(cmd: string): Promise<void> {
@@ -201,13 +214,14 @@ async function runCommand(cmd: string): Promise<void> {
 }
 
 // 自动快照：每 ~2.5s 保存一次容器 FS 快照到 IndexedDB（persist 内部做"内容变化"去重，
-// 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前尽力保存一次。
+// 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前强制保存一次
+// （force=true 跳过内容缓存——等长编辑在关闭时也必须落盘，否则必丢）。
 function startAutoSnapshot(ctx: CommandContext): void {
   setInterval(() => {
     void saveSnapshot(ctx.wc.fs).catch((e) => console.warn('[persist] auto snapshot failed:', e));
   }, 2500);
   const flush = () => {
-    void saveSnapshot(ctx.wc.fs).catch(() => {});
+    void saveSnapshot(ctx.wc.fs, true).catch(() => {});
   };
   window.addEventListener('pagehide', flush);
   window.addEventListener('beforeunload', flush);
@@ -232,8 +246,14 @@ async function main(): Promise<void> {
       // 自检期间把用户输入排队，避免与断言互相干扰；自检输出走覆盖层日志区。
       busy = true;
       const shim = overlayTerminalShim(ui) as unknown as Terminal;
-      await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
-      busy = false;
+      try {
+        await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
+      } catch (e) {
+        // 自检自身异常（非环境问题）：显示 self-test crashed，不误报成 Startup failed。
+        shim.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
+      } finally {
+        busy = false;
+      }
     }
 
     // boot（及可选自检）完成：淡出覆盖层、显示终端，然后给出欢迎横幅 + 提示符。

@@ -8,6 +8,7 @@ import type { BootUI } from './boot-ui.js';
 import { TerminalClient } from './terminal-client.js';
 import { loadSnapshot } from './persist.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
+import { ensureServicesFiles, readAutostart, startService } from './services.js';
 
 export interface WebUnixServices {
   wc: WebContainer;
@@ -37,9 +38,10 @@ export function checkEnvironment(): string[] {
     failures.push('Cross-origin isolation: not enabled (requires COOP/COEP headers)');
   }
   const ua = navigator.userAgent;
-  // 非 Chromium 内核：UA 含 Firefox/Safari 且不含 Chrome/Chromium/Edg
+  // 非 Chromium 内核：UA 含 Firefox/Safari 且不含 Chrome/Chromium/Edg/CriOS。
+  // CriOS = Chrome on iOS（UA 同时含 Safari 标记，若不特判会被误报为 Safari）。
   const isFirefoxOrSafari = /Firefox|Safari/i.test(ua);
-  const isChromium = /Chrome|Chromium|Edg/i.test(ua);
+  const isChromium = /Chrome|Chromium|Edg|CriOS/i.test(ua);
   if (isFirefoxOrSafari && !isChromium) {
     const name = /Firefox/i.test(ua) ? 'Firefox' : 'Safari';
     failures.push(`Browser: ${name} is not supported (WebContainers requires Chromium)`);
@@ -191,6 +193,13 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   await initWorkspace(ui, wc.fs, defaultWorkspace);
   ok(ui, `Loaded ${envCount} environment variables`);
 
+  // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
+  try {
+    await ensureServicesFiles(wc.fs);
+  } catch (e) {
+    note(ui, `Service files init failed (${String(e).slice(0, 80)})`);
+  }
+
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
   await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
@@ -215,6 +224,19 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   // 探活：命令轮询循环就绪，TerminalExecutor 可用
   await client.exec('ping');
   ok(ui, 'TerminalExecutor ready');
+
+  // 服务自启（TASK11）：声明式重启 —— boot 后按 /etc/webunix.autostart 逐个拉起。
+  // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
+  try {
+    const autostart = await readAutostart(wc.fs);
+    for (const name of autostart) {
+      const r = await startService({ wc, client, ports }, name);
+      if (r.ok) ok(ui, `Started service '${name}' (autostart)`);
+      else ui.log(`[ FAIL ] service '${name}' failed to start`, 'fail');
+    }
+  } catch (e) {
+    note(ui, `Autostart skipped (${String(e).slice(0, 80)})`);
+  }
 
   return { wc, client, ports };
 }

@@ -20,10 +20,11 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Process management** — `ps` / `kill` over a unified process table (real child processes + tracked state), including background `spawn`.
 - **Port management** — services are detected via WebContainer `server-ready` events and listed by `ports` with their preview URLs.
 - **Database** — `db start` boots a real Postgres (tinbase, PGlite/WASM engine) inside the container; `db status` / `db stop` manage it.
-- **Persistence** — the workspace (files + database data) is snapshotted to IndexedDB and restored on boot; refresh never loses data. `snapshot` command for status / manual save / reset.
+- **Persistence** — the workspace (files + database data) is snapshotted to IndexedDB and restored on boot; refresh never loses data. `snapshot` command for status / manual save / reset. Snapshots are text-focused: binary/unreadable files are skipped (counted and reported in the save log), and a snapshot whose collected size exceeds ~50 MB is skipped with a warning rather than written (`snapshot now` reports `skipped (over 50MB limit)`).
 - **Memory management** — `free` / `top` give a memory overview (device + JS heap; sandbox estimates are honestly labeled), `reboot` restarts the system with a browser reload (persisted data survives), `shutdown` powers off, and `cache` / `cache clear` report and clean rebuildable caches without touching `/workspace`.
 - **Workspace split** — `workspace` manages multiple isolated workspaces: each lives in its own `/ws/<name>` directory with its own files and state; `create` / `switch` / `rm` manage them, and the current workspace is recorded in `/ws/.current` (persists across refreshes). The default `main` workspace is initialized on first boot.
 - **System configuration** — `env` manages persistent environment variables (`/etc/webunix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/webunix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
+- **Service management** — `service` manages named background services declaratively on top of `spawn`/`ps`/`kill` and the port registry: definitions live in `/etc/webunix.services` (`name|command|port`, `#` comments, `${PORT}` placeholder resolved from `preview-port`), with `start`/`stop`/`status`/`enable`/`disable`. `enable` records the service in `/etc/webunix.autostart` and boot pulls it up declaratively — a declarative restart, not a daemon (no crash self-healing).
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -101,6 +102,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `workspace`    | List workspaces; `create` / `switch` / `rm` manage isolated workspaces  |
 | `env`          | List / set (`env KEY=value`) / unset (`env -u KEY`) environment variables, persisted in `/etc/webunix.env` |
 | `settings`     | View / set / reset (`settings reset KEY`) system settings, persisted in `/etc/webunix.settings` |
+| `service`      | List services (state + port); `start` / `stop` / `status` / `enable` / `disable <name>` manage them. Definitions in `/etc/webunix.services`, boot autostart in `/etc/webunix.autostart` (declarative restart, not a daemon) |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -123,6 +125,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): the full 
 - Database: tinbase (PGlite/WASM) boots and serves.
 - Memory: device memory / JS heap stats reported by the browser (`free` can render).
 - Config: `env` set/get/delete lifecycle and `settings` write/reset persist to `/etc/webunix.*`.
+- Services: `service` lists the built-in tinbase definition; a temporary echo server can be started, observed `running` (process table + port registry), stopped, and removed with zero residue; `service enable`/`disable` write and remove the `/etc/webunix.autostart` file (deduped).
 
 ## Known Boundaries
 
@@ -133,7 +136,10 @@ These are environmental constraints, not bugs:
 - **No package manager / native binaries**: there is no `apt`; native executables cannot run. This layer is reserved for a future v86-backed fallback.
 - **stdin for interactive processes**: unreliable in the WebContainer environment; the design uses file-based RPC instead.
 - **Streaming cross-runtime pipes**: cross-runtime pipes are buffered (fine for agent-style "run then read" workflows).
+- **Declarative autostart (not a daemon)**: `service enable` only records the service for a boot-time restart. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
+- **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
+- **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
 
 ## Project Structure
 
@@ -142,8 +148,9 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/...)
+  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/...)
   config.ts          # system configuration: /etc/webunix.env + /etc/webunix.settings I/O & defaults
+  services.ts        # service management: /etc/webunix.services + /etc/webunix.autostart I/O, status/start/stop
   terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
   host.ts            # TerminalExecutor daemon (runs inside WebContainer)

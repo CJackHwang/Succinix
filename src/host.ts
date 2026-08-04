@@ -32,7 +32,6 @@ const sandbox = await Sandbox.create({
     },
   ],
 });
-console.log('HOST_READY');
 
 // ─── 命令路由 ───
 
@@ -197,7 +196,13 @@ function dispatchSpawn(req: CommandRequest): void {
   const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
   child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
-  child.on('error', (e: Error) => appendProcessOutput(pid, `[spawn error] ${e}\n`));
+  // spawn 失败（如命令不存在 ENOENT）：把刚写好的 ok:true 结果改写为 ok:false + 真实错误，
+  // 让浏览器侧（db start / service start）轮询到即看到原因，而不是等 30s 端口超时。
+  // error 事件必然在同步的 writeResult(ok:true) 之后触发，因此后者总被前者覆盖。
+  child.on('error', (e: Error) => {
+    appendProcessOutput(pid, `[spawn error] ${e}\n`);
+    writeResult(req.id, { ok: false, error: `spawn failed: ${e.message}`, runtime: 'node' });
+  });
   writeResult(req.id, { ok: true, pid, runtime: 'node' });
 }
 

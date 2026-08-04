@@ -21,6 +21,17 @@ import {
   setSetting,
   resetSetting,
 } from './config.js';
+import {
+  readServices,
+  addServiceDef,
+  removeServiceDef,
+  startService,
+  stopService,
+  getServiceState,
+  enableAutostart,
+  disableAutostart,
+  readAutostart,
+} from './services.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -104,11 +115,11 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   // ─── 持久化（Persistence）───
   // 自检会真实写入快照 —— 这是特性（自检也验证了持久化）。断言放 Filesystem 区。
   const pers1 = await saveSnapshot(wc.fs);
-  verdict(term, 'Persistence', 'snapshot saved', pers1.fileCount > 0, `${pers1.fileCount} files`);
+  verdict(term, 'Persistence', 'snapshot saved', pers1.meta.fileCount > 0, `${pers1.meta.fileCount} files`);
 
   const pers2 = await loadSnapshot(wc.fs);
   const restoredText = pers2 ? await wc.fs.readFile('/browser-wrote.txt', 'utf8') : '';
-  const loadable = !!pers2 && pers2.fileCount === pers1.fileCount && restoredText.includes('hello from browser');
+  const loadable = !!pers2 && pers2.fileCount === pers1.meta.fileCount && restoredText.includes('hello from browser');
   verdict(term, 'Persistence', 'snapshot loadable', loadable, pers2 ? `restored ${pers2.fileCount} files` : 'no snapshot to restore');
 
   // ─── 工作区（Workspace，TASK7）：多工作区隔离 ───
@@ -172,6 +183,25 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `removed=${cfgEnvDel}`
   );
 
+  // H1 回归：等长值修改必须强制落盘。快照签名只看文件数+总字节（内容盲），
+  // 'aaaaa'→'bbbbb' 等长替换不改变签名 → 自动快照会跳过写；依赖 setEnvVar 写盘后强制保存。
+  // 先保存一次快照收录旧值（模拟"旧值已被持久化"的真实前置），再等长替换，
+  // loadSnapshot 若仍读回旧值即说明修改未落盘（重启回滚）。
+  const cfgEqlKey = 'TEST_EQLEN';
+  await setEnvVar(wc.fs, cfgEqlKey, 'aaaaa');
+  await saveSnapshot(wc.fs); // 快照先收录 'aaaaa'（此后等长替换不再改变文件数/总字节）
+  await setEnvVar(wc.fs, cfgEqlKey, 'bbbbb'); // 同长度替换：内容盲签名不变，必须靠强制保存
+  await loadSnapshot(wc.fs); // 从快照恢复，校验新值已收录
+  const cfgEqlAfter = await getEnvVar(wc.fs, cfgEqlKey);
+  verdict(
+    term,
+    'Config',
+    'equal-length env change persists (force snapshot)',
+    cfgEqlAfter === 'bbbbb',
+    `${cfgEqlKey}=${cfgEqlAfter}`
+  );
+  await unsetEnvVar(wc.fs, cfgEqlKey); // 清理，零残留
+
   // settings: 设 preview-port 9999 → 读回 → reset 回默认 3001。
   await setSetting(wc.fs, 'preview-port', '9999');
   const cfgPortSet = await getSetting(wc.fs, 'preview-port');
@@ -185,6 +215,68 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     cfgPortReset === true && cfgPortAfter === '3001',
     `preview-port=${cfgPortAfter}`
   );
+
+  // ─── 服务管理（Services，TASK11）：声明式 service 命令族 ───
+  const svcCtx = { wc, client, ports };
+  const svcDefs = await readServices(wc.fs);
+  const tinbaseDef = svcDefs.find((d) => d.name === 'tinbase');
+  verdict(
+    term,
+    'Services',
+    'list shows tinbase',
+    !!tinbaseDef && tinbaseDef.command.includes('tinbase') && tinbaseDef.port === 3001,
+    tinbaseDef ? `name=${tinbaseDef.name} port=${tinbaseDef.port}` : 'no tinbase def'
+  );
+
+  // 生命周期：注册临时 echo server 定义 → start → running → stop → stopped → 清理定义（零残留）。
+  const SVC_TEST = 'selftest-svc';
+  const SVC_PORT = 3457;
+  const SVC_CMD = `node -e "http.createServer((q,s)=>s.end('hello-svc')).listen(${SVC_PORT})"`;
+  await addServiceDef(wc.fs, SVC_TEST, SVC_CMD, SVC_PORT);
+  const svcDefs1 = await readServices(wc.fs);
+  const svcDef = svcDefs1.find((d) => d.name === SVC_TEST);
+  verdict(term, 'Services', 'temporary def registered', !!svcDef, svcDef ? `name=${svcDef.name}` : 'def missing');
+  if (svcDef) {
+    const started = await startService(svcCtx, SVC_TEST);
+    verdict(term, 'Services', 'start returns pid', started.ok && Number(started.pid) > 0, started.message);
+
+    // 等端口就绪 → running（进程表 + 端口注册表联合判定）。
+    let running = false;
+    const runDeadline = Date.now() + 15000;
+    while (Date.now() < runDeadline) {
+      const st = await getServiceState(svcCtx, svcDef);
+      if (st.state === 'running') {
+        running = true;
+        break;
+      }
+      await sleep(300);
+    }
+    verdict(term, 'Services', 'start -> running', running, `port=${SVC_PORT} ready=${ports.has(SVC_PORT)}`);
+
+    const stopped = await stopService(svcCtx, SVC_TEST);
+    await sleep(500);
+    const stAfter = await getServiceState(svcCtx, svcDef);
+    verdict(term, 'Services', 'stop -> stopped', stopped.ok && stAfter.state === 'stopped', stopped.message);
+  }
+  const removed = await removeServiceDef(wc.fs, SVC_TEST);
+  const svcDefs2 = await readServices(wc.fs);
+  verdict(
+    term,
+    'Services',
+    'cleanup definition (zero residue)',
+    removed === true && !svcDefs2.some((d) => d.name === SVC_TEST),
+    `removed=${removed}`
+  );
+
+  // 自启：enable 写入（去重）→ disable 移除（文件断言，结束后零残留）。
+  await enableAutostart(wc.fs, SVC_TEST);
+  await enableAutostart(wc.fs, SVC_TEST);
+  const autoList1 = await readAutostart(wc.fs);
+  const autoCount = autoList1.filter((n) => n === SVC_TEST).length;
+  verdict(term, 'Services', 'autostart enable writes (dedup)', autoCount === 1, `count=${autoCount}`);
+  const dis = await disableAutostart(wc.fs, SVC_TEST);
+  const autoList2 = await readAutostart(wc.fs);
+  verdict(term, 'Services', 'autostart disable removes', dis === true && !autoList2.includes(SVC_TEST), `removed=${dis}`);
 
   // ─── TerminalExecutor 统一路由（Executor / Process table / Port registry）───
   const te1 = await client.terminal('node -e "console.log(21*2)"');

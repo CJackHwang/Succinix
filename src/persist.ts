@@ -19,6 +19,13 @@ interface SnapshotRecord {
   files: Array<{ path: string; content: string }>;
 }
 
+// 保存结果：meta 为本次生效的元数据（成功写 IDB 或回落的上次值）；
+// skipped=true 表示本次因超过 50MB 上限被跳过（未写 IDB），供 snapshot now 输出明确失败。
+export interface SaveResult {
+  meta: SnapshotMeta;
+  skipped: boolean;
+}
+
 const DB_NAME = 'webunix-persist';
 const STORE_NAME = 'snapshots';
 const KEY = 'current';
@@ -128,25 +135,32 @@ let lastSignature = { fileCount: -1, totalBytes: -1 };
 let lastSavedMeta: SnapshotMeta | null = null;
 let overLimitWarned = false;
 // 重入保护：并发调用复用同一个进行中的保存 Promise。
-let inflight: Promise<SnapshotMeta> | null = null;
+let inflight: Promise<SaveResult> | null = null;
+// "已清除"脏标志：clearSnapshot 置位后，任何进行中/稍后开始的保存都跳过 put，防止把已删快照复活。
+let cleared = false;
 
 // 保存快照：遍历当前容器 FS，写 IndexedDB。force=true 跳过内容缓存强制写（snapshot now）。
-export function saveSnapshot(fs: FileSystemAPI, force = false): Promise<SnapshotMeta> {
-  if (inflight) return inflight;
-  inflight = doSave(fs, force).finally(() => {
-    inflight = null;
-  });
-  return inflight;
+// 并发语义：非 force 调用共享进行中的保存；force 调用必须等当前完成后**重跑一次**——
+// 否则会被并发非 force 快照的"内容未变跳过写"降级复用，造成 snapshot now 假成功。
+export function saveSnapshot(fs: FileSystemAPI, force = false): Promise<SaveResult> {
+  if (!inflight) {
+    inflight = doSave(fs, force).finally(() => {
+      inflight = null;
+    });
+    return inflight;
+  }
+  if (!force) return inflight;
+  return inflight.then(() => saveSnapshot(fs, true));
 }
 
-async function doSave(fs: FileSystemAPI, force: boolean): Promise<SnapshotMeta> {
+async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
   const collected = await collectDir(fs, '/');
   if (collected.totalBytes > MAX_SNAPSHOT_BYTES) {
     if (!overLimitWarned) {
       console.warn(`[persist] snapshot skipped: ${collected.totalBytes} bytes exceeds ${MAX_SNAPSHOT_BYTES} limit`);
       overLimitWarned = true;
     }
-    return lastSavedMeta ?? EMPTY_META;
+    return { meta: lastSavedMeta ?? EMPTY_META, skipped: true };
   }
   overLimitWarned = false;
 
@@ -154,8 +168,10 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SnapshotMeta> 
   const totalBytes = collected.totalBytes;
   // 内容未变则跳过写（自动快照去重）；force 供手动 snapshot now 强制保存。
   if (!force && lastSavedMeta && lastSignature.fileCount === fileCount && lastSignature.totalBytes === totalBytes) {
-    return lastSavedMeta;
+    return { meta: lastSavedMeta, skipped: false };
   }
+  // 已清除：禁止 put 回写复活已删快照，也不更新缓存（clearSnapshot 已重置）。
+  if (cleared) return { meta: lastSavedMeta ?? EMPTY_META, skipped: false };
 
   const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes };
   const record: SnapshotRecord = { meta, files: collected.files };
@@ -165,7 +181,7 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SnapshotMeta> 
   if (collected.skipped > 0) {
     console.warn(`[persist] snapshot saved: ${fileCount} files, ${totalBytes} bytes (skipped ${collected.skipped} binary/unreadable)`);
   }
-  return meta;
+  return { meta, skipped: false };
 }
 
 // 恢复快照：有则逐文件写回容器 FS，返回元数据；无快照返回 null（全新系统）。
@@ -192,11 +208,26 @@ async function ensureParentDir(fs: FileSystemAPI, path: string): Promise<void> {
 }
 
 // 清除快照（= 重置系统，下次启动全新）。
+// 防止复活：先置"已清除"脏标志，再等可能的 in-flight 保存结束，最后删除。
+// 标志挡掉清除期间新开始的保存，等待挡掉清除前已在途的 put——两步合起来保证没有回写复活。
 export async function clearSnapshot(): Promise<void> {
-  await idbReq('readwrite', (s) => s.delete(KEY));
-  lastSavedMeta = null;
-  lastSignature = { fileCount: -1, totalBytes: -1 };
-  overLimitWarned = false;
+  cleared = true;
+  try {
+    const pending = inflight;
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        /* 进行中保存失败不影响清除 */
+      }
+    }
+    await idbReq('readwrite', (s) => s.delete(KEY));
+    lastSavedMeta = null;
+    lastSignature = { fileCount: -1, totalBytes: -1 };
+    overLimitWarned = false;
+  } finally {
+    cleared = false;
+  }
 }
 
 // 查看持久化状态：只读元数据，不触碰容器 FS。

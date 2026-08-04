@@ -53,11 +53,13 @@
 
     /* 大标题：figlet 风格 ASCII art，等宽字符随字号等比缩放不变形。
        clamp(18px, 4.5vw, 44px) 为标称公式；叠加"恰好适配容器宽"上限：
-       字符画 56 列 * 0.6em = 33.6em，字号 = 容器宽 / 34 即不溢出。 */
+       字符画 56 列 * 0.6em = 33.6em，字号 = 容器宽 / 34 即不溢出。
+       再叠可读性下限 max(13px, ...)：窄屏（375px）适配公式降到 ~10px 太小，
+       宁可横向裁掉字符画边缘也保证 13px 可读（overflow hidden 已兜底）。 */
     .boot-title {
       margin: 0;
       color: #c2702a;
-      font-size: min(clamp(18px, 4.5vw, 44px), calc(min(92vw, 860px) / 34));
+      font-size: max(13px, min(clamp(18px, 4.5vw, 44px), calc(min(92vw, 860px) / 34)));
       line-height: 1.15;
       text-align: center;
       white-space: pre;

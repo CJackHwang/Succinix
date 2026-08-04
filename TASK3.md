@@ -84,7 +84,7 @@ guest@webunix:~$
 
 内容包含（英文写规范、中文可作解释）：
 - 设计规范：界面全英文；禁止 emoji；暗橙主题（给出色值）；JetBrains Mono；专业克制不玩具；与 Linux 用户习惯对齐（提示符/错误格式/exit code/ps 表格）
-- 技术约束：文件 RPC `/cmd.json` → `/result-<id>.json` 不许改回单文件；`node|npm|npx` → 真 Node、其余 → Lifo 的路由不许改；vite 端口 7892 + COOP/COEP 头不许改；tinbase 必须 `--engine wasm --memory`；db 安装超时必须 host 侧 `{timeout:120000}`
+- 技术约束：文件 RPC `/cmd.json` → `/result-<id>.json` 不许改回单文件；`node|npm|npx` → 真 Node、其余 → Lifo 的路由不许改；vite 端口 7892 + COOP/COEP 头不许改；tinbase 必须 `--engine wasm`（无 `--memory`，数据落工作区快照持久）；db 安装超时必须 host 侧 `{timeout:120000}`
 - 质量门禁：`npx tsc -p tsconfig.json --noEmit` 0 错误；`node scripts/build-host.mjs`；`npm run build`；dev server 可起
 
 ### 8. Linux 对齐的小设计
@@ -101,7 +101,7 @@ guest@webunix:~$
 - 文件 RPC 通道（`/cmd.json` → `/result-<id>.json`，每请求独立结果文件）
 - host 路由规则（node|npm|npx → child_process；其余 → Lifo sandbox）
 - `spawn` 协议、进程表、`kill`
-- `db start` 的 `--engine wasm --memory` 和安装超时 `{ timeout: 120000 }, 150000`
+- `db start` 的 `--engine wasm`（无 `--memory`）和安装超时 `{ timeout: 120000 }, 150000`
 - `scripts/build-host.mjs`（@lifo-sh/ui external）
 - 测试逻辑本身（断言不变，只改输出表现形态为自检风格）
 

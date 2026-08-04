@@ -3,6 +3,21 @@
 // 随快照持久化（persist.ts 遍历 / 时天然收录，重启保留）。
 // 解析要健壮：空行 / # 注释跳过；值可含 =（按第一个 = 切分）；读取失败一律按空处理。
 import type { FileSystemAPI } from '@webcontainer/api';
+import { saveSnapshot } from './persist.js';
+
+// H1 修复：等长值修改（如 preview-port 3001→3002、env FOO=a→FOO=b）不改变文件数/总字节，
+// persist 的内容盲签名会跳过自动快照写，重启即回滚。因此写盘成功后强制落盘一次。
+// saveSnapshot 有 inflight 重入保护：若并发自动快照正在执行，force 调用会被复用而可能丢失本次内容；
+// 这里先等待可能存在的并发快照完成，再强制保存一次，保证本次写盘内容必被收录。
+async function forcePersist(fs: FileSystemAPI): Promise<void> {
+  try {
+    await saveSnapshot(fs, true);
+    await saveSnapshot(fs, true);
+  } catch (e) {
+    // 文件已写盘成功，快照失败只记日志，不打断配置命令（与自动快照的降级一致）。
+    console.warn('[config] force snapshot after write failed:', e);
+  }
+}
 
 export const ENV_FILE = '/etc/webunix.env';
 export const SETTINGS_FILE = '/etc/webunix.settings';
@@ -76,6 +91,7 @@ export async function setEnvVar(fs: FileSystemAPI, key: string, value: string): 
   const map = await readEnvFile(fs);
   map.set(key, value);
   await writeEnvFile(fs, map);
+  await forcePersist(fs); // 写盘成功后强制落盘（H1：等长修改也要持久）
 }
 
 // 删除变量；返回是否原本存在（供输出 removed / not set）。
@@ -120,13 +136,17 @@ export async function setSetting(fs: FileSystemAPI, key: string, value: string):
   const map = await readSettingsFile(fs);
   map.set(key, value);
   await writeSettingsFile(fs, map);
+  await forcePersist(fs); // 写盘成功后强制落盘（H1）
 }
 
 // 恢复默认 = 删除存储值；返回是否原本存在自定义值。
 export async function resetSetting(fs: FileSystemAPI, key: string): Promise<boolean> {
   const map = await readSettingsFile(fs);
   const had = map.delete(key);
-  if (had) await writeSettingsFile(fs, map);
+  if (had) {
+    await writeSettingsFile(fs, map);
+    await forcePersist(fs); // 写盘成功后强制落盘（H1）
+  }
   return had;
 }
 

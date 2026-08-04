@@ -10,6 +10,7 @@ import { loadSnapshot } from './persist.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
 import { ensureServicesFiles, readAutostart, startService } from './services.js';
 import { initLogger, log } from './log.js';
+import { ensureMotd } from './motd.js';
 
 export interface WebUnixServices {
   wc: WebContainer;
@@ -206,6 +207,13 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     await ensureServicesFiles(wc.fs);
   } catch (e) {
     note(ui, `Service files init failed (${String(e).slice(0, 80)})`);
+  }
+
+  // 登录横幅（TASK15）：确保 /etc/webunix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
+  try {
+    await ensureMotd(wc.fs);
+  } catch (e) {
+    note(ui, `Motd init failed (${String(e).slice(0, 80)})`);
   }
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。

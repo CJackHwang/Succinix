@@ -12,6 +12,7 @@ import { log } from './log.js';
 import { runTests } from './tests.js';
 import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
+import { readMotd } from './motd.js';
 import type { ExecResult } from './terminal-client.js';
 
 const AMBER = '\x1b[33m';
@@ -20,6 +21,8 @@ const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
 
 // 欢迎横幅：覆盖层淡出后显示在终端里（TASK3 的"启动后进入系统首页"）。
+// TASK15：默认横幅改由 /etc/webunix.motd 提供（可编辑、随快照持久）；此处仅作
+// motd 文件缺失时的兜底。
 const WELCOME_BANNER =
   `WebUnix 0.1.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
   `Type 'help' to see available commands.`;
@@ -272,10 +275,15 @@ async function main(): Promise<void> {
       }
     }
 
-    // boot（及可选自检）完成：淡出覆盖层、显示终端，然后给出欢迎横幅 + 提示符。
+    // boot（及可选自检）完成：淡出覆盖层、显示终端，然后打印登录横幅（motd）+ 提示符。
     await ui.complete();
     fitAddon.fit();
-    term.writeln(WELCOME_BANNER);
+    const motdText = await readMotd(services.wc.fs);
+    if (motdText) {
+      for (const line of motdText.split(/\r?\n/)) term.writeln(line);
+    } else {
+      term.writeln(WELCOME_BANNER); // 兜底：motd 文件缺失时保留旧欢迎行
+    }
 
     // 持久化主循环：此后每 ~2.5s 自动快照（内容未变不写 IDB）。
     startAutoSnapshot(ctx);

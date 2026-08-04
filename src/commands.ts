@@ -1,7 +1,7 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
 //   help / clear / sysinfo / ports / db start|status|stop / snapshot / free / top /
 //   reboot / shutdown / cache / workspace / env / settings / service / log / pkg /
-//   netstat / ip / version / whoami
+//   netstat / ip / version / whoami / uname / motd
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
@@ -43,6 +43,7 @@ import {
   packageInfo,
   type PkgContext,
 } from './pkg.js';
+import { readMotd, writeMotd, resetMotd } from './motd.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -114,6 +115,8 @@ function printHelp(term: Terminal): void {
   term.writeln(`  pkg          package management: list / search <term> / install <name> / remove <name> / info <name>`);
   term.writeln(`  netstat      list virtual listening ports ('netstat -p' shows associated processes)`);
   term.writeln(`  ip addr      show virtual network identity (browser platform + preview domain)`);
+  term.writeln(`  uname        show system identity: kernel / runtime / arch (honest, no fake Linux)`);
+  term.writeln(`  motd         view the login banner; 'motd <text>' sets, 'motd reset' restores default`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -1100,6 +1103,108 @@ async function ipCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln(`ip: only the virtual 'addr' view is available (no real network interfaces)`);
 }
 
+// ─── 系统信息（TASK15）：uname / motd ───
+
+// uname：诚实数据，不冒充 Linux。内核标识写 js-runtime+webcontainer（保留项），
+// 不编造 linux 版本号。架构从 UA 提取（x86_64 / arm64），缺失显示 unknown。
+// uname -r 用 package.json 的 @webcontainer/api 版本（浏览器侧拿不到容器 node 版本，
+// 注明：此常量需与 package.json 的 @webcontainer/api 版本保持同步）。
+const UNAME_RUNTIME = '1.6.4';
+
+// 架构提取：UA 含 x86_64/amd64/Win64 → x86_64；aarch64/arm64 → arm64；否则 unknown。
+export function detectUnameArch(): string {
+  const ua = navigator.userAgent;
+  if (/x86_64|amd64|Win64/.test(ua)) return 'x86_64';
+  if (/aarch64|arm64/i.test(ua)) return 'arm64';
+  return 'unknown';
+}
+
+interface UnameFields {
+  s: string; // 系统名（uname -s）
+  n: string; // 主机名（uname -n，与提示符 guest@webunix 一致）
+  version: string; // WebUnix 版本
+  v: string; // 内核标识（uname -v）
+  r: string; // 运行时版本（uname -r）
+  m: string; // 架构（uname -m）
+  o: string; // 操作系统（uname -o）
+}
+
+function unameFields(): UnameFields {
+  return {
+    s: 'WebUnix',
+    n: 'webunix',
+    version: '0.1.0',
+    v: 'js-runtime+webcontainer',
+    r: UNAME_RUNTIME,
+    m: detectUnameArch(),
+    o: 'browser-native',
+  };
+}
+
+// 无参数 uname 摘要行（样例格式：系统名 版本 内核 运行时 架构）。
+export function buildUnameLine(): string {
+  const f = unameFields();
+  return `${f.s} ${f.version} ${f.v} ${f.r} ${f.m}`;
+}
+
+// uname -a 完整信息：全部字段一行（主机名 + 操作系统并入）。
+export function buildUnameAllLine(): string {
+  const f = unameFields();
+  return `${f.s} ${f.n} ${f.version} ${f.v} ${f.r} ${f.m} ${f.o}`;
+}
+
+const UNAME_USAGE = 'usage: uname | uname -a | uname -s | uname -n | uname -r | uname -v | uname -m | uname -o';
+
+// uname 命令族：无参数 → 摘要行；-a → 全部字段；单个/组合短 flag 按标准顺序输出对应字段。
+function unameCmd(term: Terminal, args: string[]): void {
+  if (args.includes('--help') || args.includes('-h')) {
+    term.writeln(UNAME_USAGE);
+    return;
+  }
+  const flags = args.join('').replace(/^-+/, '');
+  if (!flags) {
+    term.writeln(buildUnameLine());
+    return;
+  }
+  if (flags.includes('a')) {
+    term.writeln(buildUnameAllLine());
+    return;
+  }
+  const f = unameFields();
+  const order: Array<keyof UnameFields> = ['s', 'n', 'r', 'v', 'm', 'o'];
+  const parts: string[] = [];
+  for (const ch of order) {
+    if (flags.includes(ch)) parts.push(f[ch]);
+  }
+  if (parts.length === 0) {
+    term.writeln(UNAME_USAGE);
+    return;
+  }
+  term.writeln(parts.join(' '));
+}
+
+// motd：查看 / 设置 / 恢复登录横幅（/etc/webunix.motd，随快照持久）。
+//   motd          查看当前内容
+//   motd <text>   设置（多词用空格 join）
+//   motd reset    恢复默认
+async function motdCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term, wc } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === '') {
+    const text = await readMotd(wc.fs);
+    term.writeln(text ?? '(no motd set)');
+    return;
+  }
+  if (sub === 'reset') {
+    await resetMotd(wc.fs);
+    term.writeln('motd reset to default');
+    return;
+  }
+  const text = args.join(' ');
+  await writeMotd(wc.fs, text);
+  term.writeln(`motd set: ${text}`);
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -1183,6 +1288,13 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'ip': {
       await ipCmd(ctx, rest);
+      return true;
+    }
+    case 'uname':
+      unameCmd(term, rest);
+      return true;
+    case 'motd': {
+      await motdCmd(ctx, rest);
       return true;
     }
     default:

@@ -12,6 +12,8 @@ import {
   workspaceSwitch,
   workspaceRemove,
   buildNetstatRows,
+  buildUnameLine,
+  detectUnameArch,
 } from './commands.js';
 import {
   readEnvFile,
@@ -35,6 +37,7 @@ import {
 } from './services.js';
 import { readLog, readBootLog, clearLog, flushLogs } from './log.js';
 import { listPackages, formatPackageList, searchPackages } from './pkg.js';
+import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from './motd.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -492,6 +495,27 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   } else {
     boundary(term, 'Memory', 'device memory reported', 'no device memory / heap stats in this browser');
   }
+
+  // ─── 系统信息（Info，TASK15）：uname 输出 + motd 生命周期 ───
+  const unameSummary = buildUnameLine();
+  const unameOk =
+    unameSummary.startsWith('WebUnix') &&
+    /^WebUnix \d+\.\d+\.\d+ js-runtime\+webcontainer \d+\.\d+\.\d+ (x86_64|arm64|unknown)$/.test(unameSummary);
+  verdict(term, 'Info', 'uname output', unameOk, `${unameSummary} (arch=${detectUnameArch()})`);
+
+  // motd：设置 → 读回 → reset（恢复默认，零残留）。
+  await writeMotd(wc.fs, 'selftest-motd');
+  const motdRead = await readMotd(wc.fs);
+  const motdSetOk = motdRead === 'selftest-motd';
+  await resetMotd(wc.fs);
+  const motdAfter = await readMotd(wc.fs);
+  verdict(
+    term,
+    'Info',
+    'motd read/write/reset',
+    motdSetOk && motdAfter === DEFAULT_MOTD,
+    `set=${motdSetOk} reset=${motdAfter === DEFAULT_MOTD}`
+  );
 
   // ─── 已知边界（网络/生态，仅供参考，计入 skipped）───
   try {

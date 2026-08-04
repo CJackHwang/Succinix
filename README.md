@@ -28,6 +28,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **System log (journald-style)** — a persistent log written to `/var/log/webunix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
 - **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures.
 - **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
+- **System information & login banner** — `uname` reports the honest browser-native system identity (`WebUnix 0.1.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/webunix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -110,6 +111,8 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `pkg`          | Package management: `pkg list` (lifo + npm merged with `SOURCE`), `pkg search <term>` (both channels), `pkg install <name>` (lifo if `lifo-pkg-<name>` exists, else npm), `pkg remove <name>` (via the installed source), `pkg info <name>` |
 | `netstat`      | List virtual listening ports (port registry as `tcp 127.0.0.1:<port> LISTEN`); `netstat -p` adds the associated process (matched by port number in the process command, `-` when unmatched) |
 | `ip addr`      | Show virtual network identity — `lo: virtual loopback`, `eth0: <preview-domain> (virtual)`; no fabricated interfaces or IPs |
+| `uname`        | Show system identity: summary line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`); `uname -a` all fields, `-r` runtime version, `-m` architecture (from UA, `unknown` if absent) |
+| `motd`         | View the login banner (`/etc/webunix.motd`); `motd <text>` sets it (persisted), `motd reset` restores the default |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -136,6 +139,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): the full 
 - Logs: command executions are recorded with `exit`/`runtime`, boot events are recorded as `BOOT` entries, and `log clear` empties the log file (asserted by the self-test suite).
 - Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
+- System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
 
 ## Known Boundaries
 
@@ -163,6 +167,7 @@ src/
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
   commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...)
   config.ts          # system configuration: /etc/webunix.env + /etc/webunix.settings I/O & defaults
+  motd.ts            # login banner: /etc/webunix.motd I/O & default
   services.ts        # service management: /etc/webunix.services + /etc/webunix.autostart I/O, status/start/stop
   log.ts             # journald-style system log: /var/log/webunix.log append/read/clear/BOOT-filter
   pkg.ts             # package management: pkg list/search/install/remove/info over lifo + npm channels

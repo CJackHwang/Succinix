@@ -3,6 +3,7 @@
 // systemd 风格启动日志（经 BootUI 渲染到覆盖层）、拉起 WebContainer + host、登记
 // server-ready 端口注册表。输出目标由调用方注入的 BootUI 决定（TASK4 呈现层重构）。
 import { WebContainer } from '@webcontainer/api';
+import type { FileSystemAPI } from '@webcontainer/api';
 import type { BootUI } from './boot-ui.js';
 import { TerminalClient } from './terminal-client.js';
 import { loadSnapshot } from './persist.js';
@@ -76,6 +77,32 @@ export function detectSystemInfo(): string[] {
   return lines;
 }
 
+// ─── 工作区初始化（TASK7）───
+
+// 默认工作区初始化：恢复快照后调用。/ws/.current 存在 → 报告当前工作区；
+// 不存在（全新系统）→ 建 /ws/main/ 并写 .current=main。状态随快照持久，host 零改动。
+async function initWorkspace(ui: BootUI, fs: FileSystemAPI): Promise<void> {
+  let current: string | null = null;
+  try {
+    const raw = await fs.readFile('/ws/.current', 'utf8');
+    current = raw.trim() || null;
+  } catch {
+    current = null;
+  }
+  if (current) {
+    ok(ui, `Workspace '${current}'`);
+    return;
+  }
+  try {
+    await fs.mkdir('/ws/main', { recursive: true });
+    await fs.writeFile('/ws/.current', 'main');
+  } catch (e) {
+    note(ui, `Default workspace init failed (${String(e).slice(0, 80)})`);
+    return;
+  }
+  ok(ui, `Initialized default workspace 'main'`);
+}
+
 // ─── host 拉起 ───
 
 // host.js 由 Vite 预打包提供（public/host.js）；容器里没有就注入。
@@ -145,6 +172,10 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     note(ui, `Persistent restore failed (${String(e).slice(0, 80)}); continuing with current filesystem`);
     ok(ui, 'Initialized fresh workspace');
   }
+
+  // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
+  // 全新系统则初始化默认工作区 main。
+  await initWorkspace(ui, wc.fs);
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。

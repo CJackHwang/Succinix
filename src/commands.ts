@@ -1,9 +1,9 @@
 // 浏览器侧命令拦截：以下命令在浏览器处理，不进容器。
 //   help / clear / sysinfo / ports / db start|status|stop / snapshot / free / top /
-//   reboot / shutdown / cache / version / whoami
+//   reboot / shutdown / cache / workspace / version / whoami
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
-import type { WebContainer } from '@webcontainer/api';
+import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { detectSystemInfo } from './boot.js';
 import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
@@ -63,6 +63,7 @@ function printHelp(term: Terminal): void {
   term.writeln(`  reboot       restart the system (browser reload; persistent data survives)`);
   term.writeln(`  shutdown     power off (you can close this tab)`);
   term.writeln(`  cache        show cache usage; 'cache clear' cleans rebuildable caches`);
+  term.writeln(`  workspace    list workspaces; create/switch/rm manage isolated workspaces`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
@@ -371,6 +372,166 @@ async function cacheCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln('usage: cache | cache clear');
 }
 
+// ─── 工作区（workspace，TASK7）：/ws/<name> 子目录 = 一个工作区，
+// /ws/.current 记录当前工作区名（随快照持久，host 零改动）。
+// 全部走 wc.fs 原生 API：mkdir / readFile / writeFile / rm(recursive)。
+
+const WS_ROOT = '/ws';
+const WS_CURRENT_FILE = '/ws/.current';
+const DEFAULT_WORKSPACE = 'main';
+
+// 工作区名白名单：字母/数字开头，后续可含 . _ -（拒绝空、路径分隔、隐藏名，
+// 避免与状态文件 .current 冲突）。
+function isValidWorkspaceName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name);
+}
+
+// 读当前工作区名；.current 缺失或不可读返回 null。
+export async function getCurrentWorkspace(fs: FileSystemAPI): Promise<string | null> {
+  try {
+    const raw = await fs.readFile(WS_CURRENT_FILE, 'utf8');
+    const name = raw.trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
+// 列出全部工作区目录名（以目录为准；.current 是文件，天然排除）。
+export async function listWorkspaces(fs: FileSystemAPI): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(WS_ROOT, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isDirectory())
+      .map((e) => String(e.name))
+      .sort();
+  } catch {
+    return []; // /ws 不存在（极端情况），按空列表处理
+  }
+}
+
+// 组装列表输出：当前工作区置顶，其余按名字排序；表格对齐，
+// (current) 列对齐到最长名字 + 5 空格，最小列宽 9。
+export function buildWorkspaceList(current: string | null, names: string[]): string[] {
+  const lines = ['Workspaces'];
+  if (names.length === 0) {
+    lines.push('  (none)');
+    return lines;
+  }
+  const ordered = [...names].sort();
+  if (current && ordered.includes(current)) {
+    ordered.splice(ordered.indexOf(current), 1);
+    ordered.unshift(current);
+  }
+  const width = Math.max(9, ...ordered.map((n) => n.length + 5));
+  for (const name of ordered) {
+    const marker = name === current ? '(current)' : '';
+    lines.push(`  ${name.padEnd(width)}${marker}`);
+  }
+  return lines;
+}
+
+// 创建工作区：目录已存在则报错。
+export async function workspaceCreate(fs: FileSystemAPI, name: string): Promise<{ ok: boolean; message: string }> {
+  if (!isValidWorkspaceName(name)) {
+    return { ok: false, message: `invalid workspace name: '${name}' (letters, digits, dot, dash, underscore only)` };
+  }
+  if ((await listWorkspaces(fs)).includes(name)) {
+    return { ok: false, message: `Workspace '${name}' already exists` };
+  }
+  try {
+    await fs.mkdir(WS_ROOT, { recursive: true }); // 兜底：确保 /ws 存在
+    await fs.mkdir(`${WS_ROOT}/${name}`, { recursive: false });
+  } catch (e) {
+    return { ok: false, message: `failed to create workspace: ${String(e).slice(0, 120)}` };
+  }
+  return { ok: true, message: `Workspace '${name}' created. Switch with: workspace switch ${name}` };
+}
+
+// 切换工作区：更新 /ws/.current；不存在则报错。
+export async function workspaceSwitch(fs: FileSystemAPI, name: string): Promise<{ ok: boolean; message: string }> {
+  if (!(await listWorkspaces(fs)).includes(name)) {
+    return { ok: false, message: `Workspace '${name}' does not exist` };
+  }
+  try {
+    await fs.writeFile(WS_CURRENT_FILE, name);
+  } catch (e) {
+    return { ok: false, message: `failed to switch workspace: ${String(e).slice(0, 120)}` };
+  }
+  return { ok: true, message: `Switched to workspace '${name}'. Your files live in /ws/${name}. cd /ws/${name} to start working.` };
+}
+
+// 删除工作区：需 --yes；禁止删当前工作区与 main。
+export async function workspaceRemove(
+  fs: FileSystemAPI,
+  name: string,
+  current: string | null,
+  yes: boolean
+): Promise<{ ok: boolean; message: string }> {
+  if (name === DEFAULT_WORKSPACE) {
+    return { ok: false, message: `cannot remove 'main' (default workspace)` };
+  }
+  if (name === current) {
+    return { ok: false, message: `cannot remove the current workspace (switch first: workspace switch main)` };
+  }
+  if (!(await listWorkspaces(fs)).includes(name)) {
+    return { ok: false, message: `Workspace '${name}' does not exist` };
+  }
+  if (!yes) {
+    return { ok: false, message: `This will permanently remove workspace '${name}' and its files. Confirm with: workspace rm ${name} --yes` };
+  }
+  try {
+    await fs.rm(`${WS_ROOT}/${name}`, { recursive: true, force: true });
+  } catch (e) {
+    return { ok: false, message: `failed to remove workspace: ${String(e).slice(0, 120)}` };
+  }
+  return { ok: true, message: `Workspace '${name}' removed` };
+}
+
+// workspace 命令族：workspace | create <name> | switch <name> | rm <name> --yes
+async function workspaceCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === '') {
+    const current = await getCurrentWorkspace(ctx.wc.fs);
+    const names = await listWorkspaces(ctx.wc.fs);
+    for (const line of buildWorkspaceList(current, names)) term.writeln(line);
+    return;
+  }
+  if (sub === 'create') {
+    const name = args[1] ?? '';
+    if (!name) {
+      term.writeln('usage: workspace create <name>');
+      return;
+    }
+    const r = await workspaceCreate(ctx.wc.fs, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+  if (sub === 'switch') {
+    const name = args[1] ?? '';
+    if (!name) {
+      term.writeln('usage: workspace switch <name>');
+      return;
+    }
+    const r = await workspaceSwitch(ctx.wc.fs, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+  if (sub === 'rm') {
+    const name = args[1] ?? '';
+    if (!name) {
+      term.writeln('usage: workspace rm <name> --yes');
+      return;
+    }
+    const current = await getCurrentWorkspace(ctx.wc.fs);
+    const r = await workspaceRemove(ctx.wc.fs, name, current, args.includes('--yes'));
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+  term.writeln('usage: workspace | workspace create <name> | workspace switch <name> | workspace rm <name> --yes');
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -422,6 +583,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
       return true;
     case 'cache': {
       await cacheCmd(ctx, rest);
+      return true;
+    }
+    case 'workspace': {
+      await workspaceCmd(ctx, rest);
       return true;
     }
     default:

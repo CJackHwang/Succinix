@@ -15,8 +15,22 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **File RPC channel:** `/cmd.json` → `/result-<id>.json`, one independent result file per request. Do not revert to a single shared result file.
 - **Unified routing:** commands starting with `node|npm|npx` go to a real Node child process; everything else goes to the Lifo sandbox. Do not change this split.
 - **Dev server:** Vite on port `7892` with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` (WebContainer requires cross-origin isolation).
-- **tinbase:** must start with `--engine wasm --memory`; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`.
+- **tinbase:** must start with `--engine wasm`（no `--memory` — data persists in the workspace snapshot; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`).
 - **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Rebuild `public/host.js` with `node scripts/build-host.mjs` after touching `src/host.ts` or `src/host-procs.ts`.
+
+## Explicitly Not Implemented (do not force)
+
+Browser-environment limits are accepted as-is. Do not build simulations with no real value; if a capability cannot genuinely work, it is omitted or clearly degraded:
+
+- **Multi-user / login / permission isolation.** Single-user browser sandbox; a login ritual without real isolation has no value. `guest` is the only user.
+- **Permission-bit management (`chmod` semantics).** Simulated modes add no value; do not fake them.
+- **Real kernel / apt / native binaries.** Physically impossible in the sandbox (a future v86 layer is emulation, not native).
+- **Inbound external networking.** Ports are virtual previews; tunnels are outbound bridges, not real inbound.
+- **Direct external `curl` without CORS.** Use `https://r.jina.ai/<url>`-style proxies.
+- **Interactive stdin (REPL-style processes).** Unreliable in WebContainer (verified); file-based RPC replaces it.
+- **symlinks / hard links.** Not supported by the Lifo VFS.
+- **Firefox / Safari / mobile.** WebContainers does not support them; the environment-check error page explains requirements instead.
+- **Precise OS-level memory/CPU stats.** Only estimates are available; always mark with `~` and an `(estimated ...)` footnote. Never present estimates as exact.
 
 ## Quality Gates (must all pass before finishing)
 

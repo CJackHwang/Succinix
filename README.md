@@ -22,6 +22,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Database** — `db start` boots a real Postgres (tinbase, PGlite/WASM engine) inside the container; `db status` / `db stop` manage it.
 - **Persistence** — the workspace (files + database data) is snapshotted to IndexedDB and restored on boot; refresh never loses data. `snapshot` command for status / manual save / reset.
 - **Memory management** — `free` / `top` give a memory overview (device + JS heap; sandbox estimates are honestly labeled), `reboot` restarts the system with a browser reload (persisted data survives), `shutdown` powers off, and `cache` / `cache clear` report and clean rebuildable caches without touching `/workspace`.
+- **Workspace split** — `workspace` manages multiple isolated workspaces: each lives in its own `/ws/<name>` directory with its own files and state; `create` / `switch` / `rm` manage them, and the current workspace is recorded in `/ws/.current` (persists across refreshes). The default `main` workspace is initialized on first boot.
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -96,6 +97,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 | `reboot`       | Restart WebUnix (browser reload; persisted data survives)                |
 | `shutdown`     | Power off (you can close this tab)                                       |
 | `cache`        | Show cache usage; `cache clear` cleans rebuildable caches                |
+| `workspace`    | List workspaces; `create` / `switch` / `rm` manage isolated workspaces  |
 
 ### Host commands (TerminalExecutor, unified routing)
 
@@ -109,7 +111,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) 
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **19 passed / 1 known boundary**.
+Result of the browser runtime verification suite (see `src/tests.ts`): **27 passed / 1 known boundary**.
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -136,7 +138,7 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/...)
+  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/...)
   terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
   host.ts            # TerminalExecutor daemon (runs inside WebContainer)
@@ -155,7 +157,7 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] Boot splash: centered DOM overlay, responsive layout, graceful environment-exit
 - [x] Persistence layer: files/state persisted to IndexedDB, restored on boot (no data loss on refresh)
 - [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
-- [ ] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
+- [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor
 - [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
 

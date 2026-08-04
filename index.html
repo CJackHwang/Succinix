@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WebUnix — browser-native Linux</title>
   <style>
+    /* ─── 基础：全屏黑底；终端在覆盖层之下，boot 期间不可见 ─── */
     html, body {
       margin: 0;
       padding: 0;
@@ -18,10 +19,181 @@
       width: 100vw;
       height: 100vh;
       background: #0a0a0a;
+      visibility: hidden; /* boot 覆盖层期间隐藏，boot 完成再显示 */
+    }
+
+    /* ─── DOM 居中启动覆盖层（boot splash）─── */
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a0a;
+      padding: 32px;
+      opacity: 1;
+      transition: opacity 400ms ease;
+      user-select: none; /* 覆盖层非交互 */
+      -webkit-user-select: none;
+      cursor: default;
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    /* boot 完成：淡出并移除（boot-ui.ts 的 complete() 添加此 class） */
+    #boot-overlay.boot-fade {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .boot-inner {
+      max-width: min(92vw, 860px);
+      width: 100%;
+      line-height: 1.6;
+    }
+
+    /* 大标题：figlet 风格 ASCII art，等宽字符随字号等比缩放不变形。
+       clamp(18px, 4.5vw, 44px) 为标称公式；叠加"恰好适配容器宽"上限：
+       字符画 56 列 * 0.6em = 33.6em，字号 = 容器宽 / 34 即不溢出。 */
+    .boot-title {
+      margin: 0;
+      color: #c2702a;
+      font-size: min(clamp(18px, 4.5vw, 44px), calc(min(92vw, 860px) / 34));
+      line-height: 1.15;
+      text-align: center;
+      white-space: pre;
+      overflow: hidden;
+    }
+
+    .boot-version {
+      margin-top: 20px;
+      color: #d6cfc4;
+      font-size: 13px;
+      text-align: center;
+      opacity: 0.92;
+    }
+
+    /* 系统信息：两列网格，键右对齐固定宽度、值暖白；窄屏(<640px)改单列 */
+    .boot-sysinfo {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      column-gap: 24px;
+      row-gap: 6px;
+      font-size: 13px;
+    }
+    .si-key {
+      color: #6b6560;
+      text-align: right;
+      min-width: 110px;
+    }
+    .si-value { color: #d6cfc4; }
+    .si-full { grid-column: 1 / -1; color: #d6cfc4; }
+
+    /* 标题与信息之间的暗灰分隔线 */
+    .boot-divider {
+      margin-top: 28px;
+      border-bottom: 1px solid #2a2520;
+    }
+
+    .boot-log-head {
+      margin-top: 20px;
+      color: #6b6560;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* 自检日志区：固定 ~8 行，overflow hidden，新行从底部追加、旧的自动向上滚动 */
+    .boot-log {
+      margin-top: 8px;
+      height: 150px; /* 12.5px * 1.5 * 8 行 */
+      overflow: hidden;
+      font-size: 12.5px;
+      line-height: 1.5;
+      scrollbar-width: none; /* 滚动条隐藏 */
+    }
+    .boot-log::-webkit-scrollbar { display: none; }
+    .log-line {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .log-line .mark { font-weight: 700; }
+    .log-line.kind-ok .mark { color: #c2702a; }   /* [  OK  ] 暗橙 */
+    .log-line.kind-note .mark { color: #6b6560; } /* [ .... ] 暗灰 */
+    .log-line.kind-skip .mark { color: #6b6560; } /* [SKIP] 暗灰 */
+    .log-line.kind-fail .mark { color: #c0543a; } /* [ FAIL ] 暗红 */
+    .log-line.kind-info { color: #d6cfc4; }
+    .log-line .rest { color: #d6cfc4; }
+    .log-gap { height: 8px; }
+
+    /* ─── 环境不适配错误页（覆盖层内居中，常态隐藏）─── */
+    #boot-error { display: none; }
+    .boot-error-head {
+      margin-top: 28px;
+      color: #d6cfc4;
+      font-size: 16px;
+      text-align: center;
+    }
+    .boot-error-list {
+      margin-top: 18px;
+      font-size: 13px;
+      line-height: 1.8;
+    }
+    .boot-error-list .mark { color: #c0543a; font-weight: 700; }
+    .boot-error-list .rest { color: #d6cfc4; }
+    .boot-error-foot {
+      margin-top: 24px;
+      color: #6b6560;
+      font-size: 12px;
+      line-height: 1.7;
+      text-align: center;
+    }
+    /* 错误模式：隐藏信息/日志区，只留大标题 + 错误块 */
+    #boot-overlay.boot-error-mode #boot-version,
+    #boot-overlay.boot-error-mode .boot-sysinfo,
+    #boot-overlay.boot-error-mode .boot-divider,
+    #boot-overlay.boot-error-mode .boot-log-head,
+    #boot-overlay.boot-error-mode .boot-log {
+      display: none;
+    }
+    #boot-overlay.boot-error-mode #boot-error {
+      display: block;
+    }
+
+    /* 窄屏（<640px）：系统信息改单列，覆盖层留白收紧 */
+    @media (max-width: 639px) {
+      #boot-overlay { padding: 20px; }
+      .boot-sysinfo { grid-template-columns: 1fr; }
+      .si-key { text-align: left; min-width: 0; }
     }
   </style>
 </head>
 <body>
+  <!-- DOM 居中启动覆盖层：boot-ui.ts 驱动（日志/系统信息/错误页/淡出），boot 完成淡出显示 xterm -->
+  <div id="boot-overlay" role="status" aria-live="polite">
+    <div class="boot-inner">
+      <pre id="boot-title" class="boot-title">██╗    ██╗███████╗██████╗ ██╗   ██╗███╗   ██╗██╗██╗  ██╗
+██║    ██║██╔════╝██╔══██╗██║   ██║████╗  ██║██║╚██╗██╔╝
+██║ █╗ ██║█████╗  ██████╔╝██║   ██║██╔██╗ ██║██║ ╚███╔╝
+██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║╚██╗██║██║ ██╔██╗
+╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║ ╚████║██║██╔╝ ██╗
+ ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝</pre>
+      <div id="boot-version" class="boot-version">WebUnix 0.1.0 — browser-native Linux</div>
+      <div id="boot-sysinfo" class="boot-sysinfo"></div>
+      <div class="boot-divider"></div>
+      <div id="boot-log-head" class="boot-log-head">System self-check</div>
+      <div id="boot-log" class="boot-log"></div>
+      <!-- 环境不适配错误页：boot-ui.ts 的 fail() 填充，常态隐藏 -->
+      <div id="boot-error" class="boot-error">
+        <div id="boot-error-head" class="boot-error-head">Environment check failed</div>
+        <div id="boot-error-list" class="boot-error-list"></div>
+        <div id="boot-error-foot" class="boot-error-foot">
+          WebUnix requires a Chromium-based browser with cross-origin isolation.<br />
+          See README for deployment requirements.
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="terminal"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>

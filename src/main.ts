@@ -1,11 +1,12 @@
-// WebUnix 入口：全屏暗橙终端 + 启动画面 + REPL。
-// 默认进入终端；URL 带 ?test=1 时自动跑完整系统自检（boot diagnostics）。
+// WebUnix 入口：全屏暗橙终端 + DOM 居中启动覆盖层 + REPL。
+// 默认进入终端；URL 带 ?test=1 时在覆盖层日志区自动跑完整系统自检（boot diagnostics）。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
 import { bootWebUnix } from './boot.js';
+import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { runTests } from './tests.js';
 import type { ExecResult } from './terminal-client.js';
@@ -14,6 +15,11 @@ const AMBER = '\x1b[33m';
 const RED = '\x1b[31m';
 const GRAY = '\x1b[90m';
 const RESET = '\x1b[0m';
+
+// 欢迎横幅：覆盖层淡出后显示在终端里（TASK3 的"启动后进入系统首页"）。
+const WELCOME_BANNER =
+  `WebUnix 0.1.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
+  `Type 'help' to see available commands.`;
 
 // ─── xterm：全屏暗橙终端（JetBrains Mono，暖色暗调色板）───
 const term = new Terminal({
@@ -194,15 +200,31 @@ async function runCommand(cmd: string): Promise<void> {
 
 // ─── 主流程 ───
 async function main(): Promise<void> {
+  const ui = createBootUI();
   try {
-    const services = await bootWebUnix(term);
+    const services = await bootWebUnix(ui);
+    // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
+    if (!services) return;
     ctx = { wc: services.wc, client: services.client, ports: services.ports, term };
+
     if (testMode) {
-      // 自检期间把用户输入排队，避免与断言互相干扰；跑完自动回到终端。
+      // 自检期间把用户输入排队，避免与断言互相干扰；自检输出走覆盖层日志区。
       busy = true;
-      await runTests(ctx);
+      const shim = overlayTerminalShim(ui) as unknown as Terminal;
+      await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
       busy = false;
     }
+
+    // boot（及可选自检）完成：淡出覆盖层、显示终端，然后给出欢迎横幅 + 提示符。
+    await ui.complete();
+    fitAddon.fit();
+    term.writeln(WELCOME_BANNER);
+
+    // 容器里任何服务就绪都实时打印暗橙预览提示（覆盖层已移除，走终端）。
+    services.wc.on('server-ready', (port, url) => {
+      term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
+    });
+
     const next = queue.shift();
     if (next) {
       void runCommand(next);
@@ -210,8 +232,11 @@ async function main(): Promise<void> {
       prompt();
     }
   } catch (e) {
-    term.writeln(`${RED}init failed: ${String(e)}${RESET}`);
-    prompt();
+    // 启动期异常（host 未就绪等）：在覆盖层内显示错误页并停留。
+    ui.fail([`Startup failed: ${String(e)}`], {
+      header: 'Startup failed',
+      footer: 'Check the browser console for the underlying error.',
+    });
   }
 }
 

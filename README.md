@@ -12,7 +12,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 
 ## Features
 
-- **Full-screen terminal experience** — Ubuntu-style boot sequence with system self-checks, then an interactive shell (`guest@webunix:~$`).
+- **Full-screen terminal experience** — a centered DOM boot splash with system self-checks and graceful environment-exit (shows a professional error page instead of degrading), then an interactive shell (`guest@webunix:~$`).
 - **Unified command execution** — one terminal entry point:
   - `node`, `npm`, `npx` and project binaries run on a **real Node.js process** (WebContainer).
   - Everything else (`grep`, `sed`, `awk`, `cat`, `tar`, `curl`, pipes, redirects, ...) runs on **Lifo**, a clean-room TypeScript implementation of Unix.
@@ -47,7 +47,7 @@ Key design decision: **the filesystem is the single source of truth.** Because W
 
 ## Quick Start
 
-Requirements: a modern Chromium-based browser (Chrome/Edge) with `SharedArrayBuffer` support. No server-side infrastructure needed for local development.
+Requirements: a modern Chromium-based browser (Chrome/Edge) with cross-origin isolation (COOP/COEP headers) and `SharedArrayBuffer` support. No server-side infrastructure needed for local development.
 
 ```bash
 npm install          # install dependencies
@@ -71,7 +71,7 @@ npm run build                       # production build
 # open http://localhost:7892/?test=1
 ```
 
-Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) in the terminal, then drops you into the shell.
+Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports) inside the centered boot-splash overlay, then drops you into the shell.
 
 ## Usage
 
@@ -125,7 +125,8 @@ These are environmental constraints, not bugs:
 ```
 src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
-  boot.ts            # boot sequence, system info detection, self-checks
+  boot.ts            # boot sequence, system info detection, env pre-check
+  boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
   commands.ts        # browser-side commands (help/ports/db/...)
   terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
@@ -142,6 +143,10 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] TerminalExecutor v1: unified routing + process table
 - [x] Product shell: full-screen terminal, boot sequence, ports, tinbase
 - [x] Production-grade interface: English UI, dark-amber theme, JetBrains Mono, system self-checks
+- [x] Boot splash: centered DOM overlay, responsive layout, graceful environment-exit
+- [ ] Persistence layer: files/state persisted to OPFS/IndexedDB, restored on boot (no data loss on refresh)
+- [ ] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
+- [ ] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor
 - [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
 

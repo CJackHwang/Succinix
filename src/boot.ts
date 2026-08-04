@@ -1,8 +1,9 @@
-// 启动模块：全屏暗橙终端的产品化引导。
-// 职责：打印启动画面（ASCII art + 版本 + 浏览器系统信息）、按真实完成时序打印
-// systemd 风格启动日志、拉起 WebContainer + host、登记 server-ready 端口注册表。
+// 启动模块：浏览器侧引导（业务逻辑，不碰 DOM / xterm）。
+// 职责：环境最小必要检测（不适配即错误页退出，不做降级）、填系统信息、按真实完成时序
+// systemd 风格启动日志（经 BootUI 渲染到覆盖层）、拉起 WebContainer + host、登记
+// server-ready 端口注册表。输出目标由调用方注入的 BootUI 决定（TASK4 呈现层重构）。
 import { WebContainer } from '@webcontainer/api';
-import type { Terminal } from '@xterm/xterm';
+import type { BootUI } from './boot-ui.js';
 import { TerminalClient } from './terminal-client.js';
 
 export interface WebUnixServices {
@@ -12,33 +13,36 @@ export interface WebUnixServices {
   ports: Map<number, string>;
 }
 
-const AMBER = '\x1b[33m';
-const GRAY = '\x1b[90m';
-const RESET = '\x1b[0m';
-
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息
-function ok(term: Terminal, msg: string): void {
-  term.writeln(`${AMBER}[  OK  ]${RESET} ${msg}`);
+// systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息（渲染到覆盖层日志区）
+function ok(ui: BootUI, msg: string): void {
+  ui.log(`[  OK  ] ${msg}`, 'ok');
 }
 
 // 灰色 [ .... ] 标记，用于中间过程的过渡说明
-function note(term: Terminal, msg: string): void {
-  term.writeln(`${GRAY}[ .... ]${RESET} ${msg}`);
+function note(ui: BootUI, msg: string): void {
+  ui.log(`[ .... ] ${msg}`, 'note');
 }
 
-// ─── 启动画面 ───
+// ─── 环境最小必要检测 ───
 
-// 大号 ASCII art "WebUnix"（figlet ANSI Shadow 风格，自制，暗橙）
-const ASCII_ART = [
-  '██╗    ██╗███████╗██████╗ ██╗   ██╗███╗   ██╗██╗██╗  ██╗',
-  '██║    ██║██╔════╝██╔══██╗██║   ██║████╗  ██║██║╚██╗██╔╝',
-  '██║ █╗ ██║█████╗  ██████╔╝██║   ██║██╔██╗ ██║██║ ╚███╔╝ ',
-  '██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║╚██╗██║██║ ██╔██╗ ',
-  '╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║ ╚████║██║██╔╝ ██╗',
-  ' ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝',
-].join('\n');
+// 返回不满足条件的英文原因列表；空数组 = 环境可用。任何 WebContainer 操作之前调用。
+export function checkEnvironment(): string[] {
+  const failures: string[] = [];
+  if (window.crossOriginIsolated !== true) {
+    failures.push('Cross-origin isolation: not enabled (requires COOP/COEP headers)');
+  }
+  const ua = navigator.userAgent;
+  // 非 Chromium 内核：UA 含 Firefox/Safari 且不含 Chrome/Chromium/Edg
+  const isFirefoxOrSafari = /Firefox|Safari/i.test(ua);
+  const isChromium = /Chrome|Chromium|Edg/i.test(ua);
+  if (isFirefoxOrSafari && !isChromium) {
+    const name = /Firefox/i.test(ua) ? 'Firefox' : 'Safari';
+    failures.push(`Browser: ${name} is not supported (WebContainers requires Chromium)`);
+  }
+  return failures;
+}
 
 // 浏览器检测的系统信息：有的写、没有的不写。
 export function detectSystemInfo(): string[] {
@@ -69,16 +73,6 @@ export function detectSystemInfo(): string[] {
   if (screen?.width && screen?.height) lines.push(`Screen: ${screen.width}x${screen.height}`);
 
   return lines;
-}
-
-function printSplashHeader(term: Terminal): void {
-  term.writeln(`${AMBER}${ASCII_ART}${RESET}`);
-  term.writeln(`${AMBER}  WebUnix 0.1.0 — browser-native Linux${RESET}`);
-  term.writeln('');
-  for (const line of detectSystemInfo()) {
-    term.writeln(`  ${line}`);
-  }
-  term.writeln('');
 }
 
 // ─── host 拉起 ───
@@ -113,47 +107,54 @@ async function ensureTerminalHost(
 
 // ─── 主启动流程 ───
 
-export async function bootWebUnix(term: Terminal): Promise<WebUnixServices> {
-  printSplashHeader(term);
+// boot 完成信号 = Promise 解析（null 表示环境不适配，错误页已由 ui.fail 显示）。
+export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
+  // 任何 WebContainer 操作之前：最小必要环境检测，不满足直接错误页退出，不做降级/兜底。
+  const failures = checkEnvironment();
+  if (failures.length > 0) {
+    ui.fail(failures);
+    return null;
+  }
+
+  // 系统信息（浏览器检测）：填覆盖层两列网格
+  ui.systemInfo(detectSystemInfo());
+
   const ports = new Map<number, string>();
+  ui.log('Starting system services...', 'info');
 
-  term.writeln('  Starting system services...');
-  term.writeln('');
-
-  const wc = await WebContainer.boot();
-  ok(term, 'Started WebContainer runtime');
+  let wc: WebContainer;
+  try {
+    wc = await WebContainer.boot();
+  } catch (e) {
+    ui.fail([`WebContainer runtime failed to start: ${String(e)}`]);
+    return null;
+  }
+  ok(ui, 'Started WebContainer runtime');
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
   // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
   await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
 
-  // 端口注册表：容器里任何服务就绪都记一笔，并实时打印暗橙预览提示；
-  // 进程被杀 / 端口关闭时自动移除（进程表自然清空，每次 boot 重建）。
+  // 端口注册表：容器里任何服务就绪都记一笔，进程被杀 / 端口关闭时自动移除。
+  // 预览提示行由 main.ts 的 server-ready 监听器打到 xterm（呈现层，不在这里）。
   wc.on('server-ready', (port, url) => {
     ports.set(port, url);
-    term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
   });
   wc.on('port', (port, type) => {
     if (type === 'close') ports.delete(port);
   });
 
   const client = await ensureTerminalHost(wc, {
-    onInjected: () => note(term, 'host.js missing in container; injected from build artifact'),
+    onInjected: () => note(ui, 'host.js missing in container; injected from build artifact'),
     onSpawned: () => {
-      ok(term, 'Mounted shared filesystem');
-      ok(term, 'Started Lifo kernel');
+      ok(ui, 'Mounted shared filesystem');
+      ok(ui, 'Started Lifo kernel');
     },
   });
 
   // 探活：命令轮询循环就绪，TerminalExecutor 可用
   await client.exec('ping');
-  ok(term, 'TerminalExecutor ready');
-
-  // 横幅
-  term.writeln('');
-  term.writeln(`${AMBER}WebUnix 0.1.0${RESET} — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor`);
-  term.writeln(`Type ${GRAY}'help'${RESET} to see available commands.`);
-  term.writeln('');
+  ok(ui, 'TerminalExecutor ready');
 
   return { wc, client, ports };
 }

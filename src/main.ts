@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // TASK15：默认横幅改由 /etc/webunix.motd 提供（可编辑、随快照持久）；此处仅作
 // motd 文件缺失时的兜底。
 const WELCOME_BANNER =
-  `WebUnix 0.1.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
+  `WebUnix 0.2.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
   `Type 'help' to see available commands.`;
 
 // ─── xterm：全屏暗橙终端（JetBrains Mono，暖色暗调色板）───

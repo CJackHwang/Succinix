@@ -7,7 +7,7 @@ import { saveSnapshot } from './persist.js';
 export const MOTD_FILE = '/etc/webunix.motd';
 
 // 默认内容（一条欢迎行；英文，无 emoji）。
-export const DEFAULT_MOTD = "Welcome to WebUnix 0.1.0 — browser-native Linux. Type 'help' for commands.";
+export const DEFAULT_MOTD = "Welcome to WebUnix 0.2.0 — browser-native Linux. Type 'help' for commands.";
 
 async function ensureParentDir(fs: FileSystemAPI, file: string): Promise<void> {
   const idx = file.lastIndexOf('/');

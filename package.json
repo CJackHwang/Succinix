@@ -1,7 +1,7 @@
 {
   "name": "webunix",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "POC: Lifo (Unix-in-TypeScript) running inside WebContainer, sharing the container filesystem via node:fs mount.",
   "scripts": {

@@ -62,7 +62,7 @@ const RESET = '\x1b[0m';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const VERSION = 'WebUnix 0.1.0 (browser-native Linux)';
+const VERSION = 'WebUnix 0.2.0 (browser-native Linux)';
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
@@ -1137,9 +1137,10 @@ async function ipCmd(ctx: CommandContext, args: string[]): Promise<void> {
 
 // uname：诚实数据，不冒充 Linux。内核标识写 js-runtime+webcontainer（保留项），
 // 不编造 linux 版本号。架构从 UA 提取（x86_64 / arm64），缺失显示 unknown。
-// uname -r 用 package.json 的 @webcontainer/api 版本（浏览器侧拿不到容器 node 版本，
-// 注明：此常量需与 package.json 的 @webcontainer/api 版本保持同步）。
-const UNAME_RUNTIME = '1.6.4';
+// uname -r 用 @webcontainer/api 运行时版本（浏览器侧拿不到容器 node 版本）。
+// R1（TASK17）：版本改为构建期注入——vite.config.ts 的 define 从 node_modules 已安装
+// 版本读入，依赖升级后自动跟随，不再硬编码 1.6.4（消除漂移，uname 不输出假数据）。
+declare const __UNAME_RUNTIME__: string;
 
 // 架构提取：UA 含 x86_64/amd64/Win64 → x86_64；aarch64/arm64 → arm64；否则 unknown。
 export function detectUnameArch(): string {
@@ -1163,9 +1164,9 @@ function unameFields(): UnameFields {
   return {
     s: 'WebUnix',
     n: 'webunix',
-    version: '0.1.0',
+    version: '0.2.0',
     v: 'js-runtime+webcontainer',
-    r: UNAME_RUNTIME,
+    r: __UNAME_RUNTIME__,
     m: detectUnameArch(),
     o: 'browser-native',
   };
@@ -1175,6 +1176,11 @@ function unameFields(): UnameFields {
 export function buildUnameLine(): string {
   const f = unameFields();
   return `${f.s} ${f.version} ${f.v} ${f.r} ${f.m}`;
+}
+
+// uname -r 输出：@webcontainer/api 运行时版本（R2 自检经命令分发路径断言用）。
+export function unameRuntimeVersion(): string {
+  return unameFields().r;
 }
 
 // uname -a 完整信息：全部字段一行（主机名 + 操作系统并入）。

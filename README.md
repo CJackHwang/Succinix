@@ -1,7 +1,7 @@
 # WebUnix
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-black.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.2.0-black.svg)](package.json)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **A browser-native Linux: a full-screen Unix terminal powered by WebContainer + Lifo, with a unified TerminalExecutor that routes `node|npm|npx` to a real Node.js runtime and everything else to a Lifo Unix userland — sharing one filesystem.**
@@ -28,7 +28,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **System log (journald-style)** — a persistent log written to `/var/log/webunix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
 - **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures. The npm installed list is read from the `node_modules` **top-level directories only** (a "top-level direct-install" simplification — the container's preinstalled runtime dependencies appear too, and the dependency tree is not parsed).
 - **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
-- **System information & login banner** — `uname` reports the honest browser-native system identity (`WebUnix 0.1.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/webunix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
+- **System information & login banner** — `uname` reports the honest browser-native system identity (`WebUnix 0.2.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/webunix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -76,7 +76,7 @@ npm run build                       # production build
 
 ### Dependencies & audit
 
-Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluated separately to avoid regressions). Audit results as of the TASK16 maintenance round (2026-08-05):
+Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluated separately to avoid regressions). Audit results as of the TASK17 final round (2026-08-05):
 
 - `npm audit` → **0 vulnerabilities** (all direct + transitive dependencies clean).
 - `npm outdated` → only **`@lifo-sh/core` 0.10.8 → 0.10.9** has a newer release; everything else is current. Not upgraded (policy), pending separate evaluation.
@@ -134,7 +134,7 @@ Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports, 
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **51 passed, 0 failed, 5 skipped** (TASK16 run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **53 passed, 0 failed, 5 skipped** (TASK17 final run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -147,7 +147,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): **51 pass
 - Logs: command executions are recorded with `exit`/`runtime`, boot events are recorded as `BOOT` entries, and `log clear` empties the log file (asserted by the self-test suite).
 - Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
-- System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
+- System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; the `-r`/`-m` flag parsing is additionally asserted through the command-dispatch path (not just the builders). `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
 - Smoke: all 23 safe built-in commands (help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
 - Stability: the RPC client serializes requests over the single-slot `/cmd.json` channel (no more parallel-channel race), retries read-only commands (ping/ps/cwd) once on transport failure, and the browser watchdog re-injects + respawns `host.js` after 2 consecutive failed pings.
 
@@ -167,6 +167,8 @@ These are environmental constraints, not bugs:
 - **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
 - **lifo packages are session-scoped; npm packages persist**: `lifo install` places packages in the Lifo runtime's in-memory global module directory, so they exist for the current host session and are recreated when the host restarts (a full refresh boots a fresh Lifo kernel). npm packages install into `/node_modules` on the shared filesystem and persist with the workspace snapshot. `pkg list` merges both; the source rule is "lifo if `lifo-pkg-<name>` exists on npm, otherwise npm; lifo wins on a name conflict".
 - **`pkg` installs need registry access**: `pkg install`/`search`/`info` hit the npm registry (via `lifo search` / real npm). When the registry is unreachable the command reports the reason and does not pretend to succeed.
+- **Single-user, no permission bits**: WebUnix is a single-user browser sandbox (`guest` is the only user); there is no multi-user login / isolation, and permission-bit management (`chmod` semantics) is not simulated — simulated modes would add no real value.
+- **Chromium-only**: WebContainers requires a Chromium-based browser (Chrome/Edge). Firefox, Safari, and mobile browsers are not supported; the environment-check error page explains the requirements instead of degrading.
 
 ## Project Structure
 
@@ -190,6 +192,10 @@ scripts/
 public/host.js       # built host bundle (gitignored, generated)
 ```
 
+## Development Archive
+
+`TASK2.md`–`TASK17.md` document this project's incremental development history (each task's requirements, retention rules, and quality gates). They are kept in the repository as a **historical development archive** and are not part of the shipped product.
+
 ## Roadmap
 
 - [x] POC: Lifo inside WebContainer with shared filesystem
@@ -201,7 +207,7 @@ public/host.js       # built host bundle (gitignored, generated)
 - [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
 - [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
-- [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor
+- [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor — **deferred** (planned as TASK8; not scheduled)
 - [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
 
 ## License

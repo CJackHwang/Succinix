@@ -14,6 +14,7 @@ import {
   buildNetstatRows,
   buildUnameLine,
   detectUnameArch,
+  unameRuntimeVersion,
   tryHandleLocalCommand,
 } from './commands.js';
 import {
@@ -522,6 +523,40 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     'motd read/write/reset',
     motdSetOk && motdAfter === DEFAULT_MOTD,
     `set=${motdSetOk} reset=${motdAfter === DEFAULT_MOTD}`
+  );
+
+  // R2（TASK17）：经命令分发路径断言 uname flag 解析 —— 不直接调 buildUname*()，
+  // 而是走 tryHandleLocalCommand → unameCmd 的真实链路（捕获型假终端收集输出）。
+  // uname -r 应输出运行时版本、uname -m 应输出 UA 架构，验证 flag 解析不再短路。
+  const captureTerm = (): { term: Terminal; lines: string[] } => {
+    const lines: string[] = [];
+    const termShim = {
+      writeln: (l: string) => void lines.push(String(l)),
+      write: (d: string) => void lines.push(String(d)),
+      clear: () => {},
+    } as unknown as Terminal;
+    return { term: termShim, lines };
+  };
+  const dispatchBase = { wc, client, ports, fit: () => {} };
+
+  const capR = captureTerm();
+  const handledR = await tryHandleLocalCommand({ ...dispatchBase, term: capR.term }, 'uname -r');
+  verdict(
+    term,
+    'Info',
+    'uname -r via dispatch',
+    handledR && capR.lines.join('') === unameRuntimeVersion(),
+    `handled=${handledR} out=${capR.lines.join('') || '(empty)'}`
+  );
+
+  const capM = captureTerm();
+  const handledM = await tryHandleLocalCommand({ ...dispatchBase, term: capM.term }, 'uname -m');
+  verdict(
+    term,
+    'Info',
+    'uname -m via dispatch',
+    handledM && capM.lines.join('') === detectUnameArch(),
+    `handled=${handledM} out=${capM.lines.join('') || '(empty)'}`
   );
 
   // ─── 内置命令冒烟（Smoke，TASK16）：help 全部条目里浏览器侧命令的取安全形态逐个跑 ───

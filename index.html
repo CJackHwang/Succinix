@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebUnix — TerminalExecutor（Lifo + 真 Node 统一终端执行器）</title>
+  <title>WebUnix — browser-native Linux</title>
   <style>
-    body { background: #1a1b26; color: #c0caf5; font-family: ui-monospace, monospace; padding: 24px; }
-    h1 { font-size: 18px; color: #7aa2f7; }
-    #status { color: #e0af68; margin: 8px 0; }
-    #output { white-space: pre-wrap; background: #16161e; border: 1px solid #3b4261; border-radius: 8px; padding: 16px; margin-top: 12px; font-size: 12px; line-height: 1.6; }
-    .ok { color: #9ece6a; } .fail { color: #f7768e; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #000000;
+      overflow: hidden;
+    }
+    #terminal {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000000;
+    }
   </style>
 </head>
 <body>
-  <h1>WebUnix — TerminalExecutor（Lifo + 真 Node 统一终端执行器）</h1>
-  <div id="status">初始化中…</div>
-  <div id="output">（等待结果）</div>
+  <div id="terminal"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

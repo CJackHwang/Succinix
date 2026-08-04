@@ -4,7 +4,8 @@
 //   host   → /result-<id>.json  { id, ok, ... }（每个请求独立结果文件，
 //            避免异步 close 写入把更新的结果覆盖掉 —— v4 曾因此丢 kill 响应）
 // 命令协议：
-//   run  统一路由执行（node|npm|npx 前缀 → 真 Node 子进程；其余 → Lifo sandbox）
+//   run   统一路由执行（node|npm|npx 前缀 → 真 Node 子进程；其余 → Lifo sandbox）
+//   spawn 后台长驻进程（仅 node 系；立即返回 pid，输出持续收集进进程表 outputTail）
 //   ps   列出进程表（host 拉起的真实子进程）
 //   kill 终止真实子进程（Lifo 侧进程不在表内，明确返回"仅支持列表"）
 //   cwd  返回统一 cwd（process.cwd()，即挂载点，与 Lifo 侧天然一致）
@@ -14,7 +15,7 @@
 import { Sandbox } from '@lifo-sh/core';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { registerProcess, listProcesses, killProcess } from './host-procs.js';
+import { registerProcess, listProcesses, killProcess, appendProcessOutput } from './host-procs.js';
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
@@ -74,6 +75,9 @@ async function handleCommand(req: CommandRequest): Promise<void> {
       return;
     case 'run':
       await dispatchRun(req);
+      return;
+    case 'spawn':
+      dispatchSpawn(req);
       return;
     case 'ps':
       writeResult(req.id, { ok: true, kind: 'ps', processes: listProcesses() });
@@ -140,6 +144,33 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
   child.on('error', (e: Error) =>
     settle({ ok: false, exitCode: -1, stdout, stderr: String(e), runtime: 'node' })
   );
+}
+
+// spawn：后台长驻进程（端口管理 / 数据库服务等）。
+// 只支持 node 系命令（spawn 用于服务器；Lifo 侧没有后台概念，明确返回"不支持"）。
+// 与 run 的 node 分支不同：不写最终结果文件，立即返回 { ok, pid, runtime: 'node' }；
+// 子进程输出持续收集进进程表条目（outputTail，ps 返回最近 ~500 字符）。
+function dispatchSpawn(req: CommandRequest): void {
+  const command = String(req.opts?.command ?? '').trim();
+  if (!command) {
+    writeResult(req.id, { ok: false, error: '空命令', runtime: 'node' });
+    return;
+  }
+  if (!NODE_PREFIX_RE.test(command)) {
+    writeResult(req.id, {
+      ok: false,
+      error: 'spawn 仅支持 node/npm/npx 系后台进程（Lifo 侧没有后台概念）',
+      runtime: 'lifo',
+    });
+    return;
+  }
+  const [prog, ...args] = tokenize(command);
+  const child = spawn(prog, args, { cwd: process.cwd() });
+  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
+  child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
+  child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
+  child.on('error', (e: Error) => appendProcessOutput(pid, `[spawn error] ${e}\n`));
+  writeResult(req.id, { ok: true, pid, runtime: 'node' });
 }
 
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl …）。结果带 runtime: 'lifo'。

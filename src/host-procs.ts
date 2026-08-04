@@ -8,6 +8,8 @@ export interface ProcInfo {
   status: 'running' | 'exited';
   startTime: number;
   exitCode?: number | null;
+  /** spawn 后台进程的最近输出尾部（最长 OUTPUT_TAIL_MAX 字符），供 ps 附带查看 */
+  outputTail?: string;
 }
 
 interface ProcEntry extends ProcInfo {
@@ -16,6 +18,7 @@ interface ProcEntry extends ProcInfo {
 
 const table = new Map<number, ProcEntry>();
 const MAX_ENTRIES = 100;
+const OUTPUT_TAIL_MAX = 500;
 
 // 登记一个刚 spawn 的子进程；进程退出时自动把状态更新为 exited。
 export function registerProcess(cmd: string, child: ChildProcess): number {
@@ -49,7 +52,15 @@ export function listProcesses(): ProcInfo[] {
     status: e.status,
     startTime: e.startTime,
     exitCode: e.exitCode,
+    ...(e.outputTail !== undefined ? { outputTail: e.outputTail } : {}),
   }));
+}
+
+// 把子进程的一块输出追加到进程表条目；只保留最近 OUTPUT_TAIL_MAX 字符。
+export function appendProcessOutput(pid: number, text: string): void {
+  const entry = table.get(pid);
+  if (!entry) return;
+  entry.outputTail = ((entry.outputTail ?? '') + text).slice(-OUTPUT_TAIL_MAX);
 }
 
 export interface KillResult {

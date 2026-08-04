@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@lifo-sh/core": "^0.10.8",
-    "@webcontainer/api": "^1.6.4"
+    "@webcontainer/api": "^1.6.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

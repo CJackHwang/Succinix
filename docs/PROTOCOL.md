@@ -36,24 +36,26 @@ The browser writes a JSON object to `/cmd.json`:
 {
   "protocol": 1,        // protocol version (added in v1; a missing field is treated as 1)
   "id": 42,             // unique request id, strictly increasing per client
-  "cmd": "run",         // one of: run | spawn | ps | kill | cwd | ping | exit
+  "cmd": "run",         // one of: run | spawn | ps | kill | cwd | setCwd | ping | exit
   "opts": {             // command-specific options (optional)
     "command": "...",   // full command string (run / spawn)
     "pid": 1234,        // target process id (kill)
+    "cwd": "/workspace/proj", // target session cwd (setCwd; optional)
     "timeout": 30000    // host-side timeout in ms (run / spawn; optional)
   }
 }
 ```
 
-| `cmd`  | Purpose                                        | `opts`               |
-|--------|------------------------------------------------|----------------------|
-| `run`  | Execute one command (unified routing)          | `command`, `timeout` |
-| `spawn`| Start a background long-running process (node) | `command`, `timeout` |
-| `ps`   | List the process table                         | —                    |
-| `kill` | Terminate a real child process                 | `pid`                |
-| `cwd`  | Return the unified working directory           | —                    |
-| `ping` | Liveness probe                                 | —                    |
-| `exit` | Graceful shutdown handshake                    | —                    |
+| `cmd`    | Purpose                                        | `opts`               |
+|----------|------------------------------------------------|----------------------|
+| `run`    | Execute one command (unified routing)          | `command`, `timeout` |
+| `spawn`  | Start a background long-running process (node) | `command`, `timeout` |
+| `ps`     | List the process table                         | —                    |
+| `kill`   | Terminate a real child process                 | `pid`                |
+| `cwd`    | Return the session working directory           | —                    |
+| `setCwd` | Explicitly set the session working directory   | `cwd`                |
+| `ping`   | Liveness probe                                 | —                    |
+| `exit`   | Graceful shutdown handshake                    | —                    |
 
 The host polls `/cmd.json` every **50 ms**. It tracks the last processed `id` and ignores
 a request whose `id` is not a number or equals the previous one (dedup). Unknown `cmd`
@@ -82,15 +84,27 @@ Common fields:
 
 Per-command response fields:
 
-| `cmd`   | Success shape                                                    |
-|---------|------------------------------------------------------------------|
-| `run`   | `{ ok, exitCode, stdout, stderr, runtime }`                      |
-| `spawn` | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
-| `ps`    | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, exitCode?, outputTail? }] }` |
-| `kill`  | `{ ok, killed, message }`                                        |
-| `cwd`   | `{ ok, kind: "cwd", cwd }`                                       |
-| `ping`  | `{ ok, kind: "pong" }`                                           |
-| `exit`  | `{ ok, kind: "bye" }`                                            |
+| `cmd`    | Success shape                                                    |
+|----------|------------------------------------------------------------------|
+| `run`    | `{ ok, exitCode, stdout, stderr, runtime }` (+ optional `cwd` on a successful `cd`, TASK23) |
+| `spawn`  | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
+| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, exitCode?, outputTail? }] }` |
+| `kill`   | `{ ok, killed, message }`                                        |
+| `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
+| `setCwd` | `{ ok, kind: "cwd", cwd }` (the new session cwd)                 |
+| `ping`   | `{ ok, kind: "pong" }`                                           |
+| `exit`   | `{ ok, kind: "bye" }`                                            |
+
+### Session cwd (`cwd` / `setCwd`)
+
+The host maintains a **session cwd** (initial value `process.cwd()`, persisted to
+`/etc/webunix.cwd` and restored on host start). Every real Node/Python child process is
+spawned with `cwd = session cwd`. When a `run` command that starts with `cd` succeeds in
+the Lifo sandbox **and** the new cwd is under the `/workspace` mount, the host syncs the
+session cwd to it and includes the new value as a `cwd` field on the `run` result.
+`cd` to a missing directory keeps the session cwd unchanged. `setCwd` sets it explicitly
+(absolute path, must be an existing directory) — it is the explicit protocol form of the
+same sync and is optional for clients (interactive `cd` already syncs automatically).
 
 ### TTL / prune
 
@@ -104,11 +118,30 @@ before the host starts (the engine's `boot` writes it only when `resultTtlMs` is
 The host applies a single, fixed routing rule to `run` commands:
 
 - **`node|npm|npx`** (followed by whitespace or end of command) → a **real Node.js child
-  process** via `child_process.spawn`. Result `runtime: "node"`.
+  process** via `child_process.spawn`. Result `runtime: "node"`. Exception (TASK24): if the
+  tokenized argv contains a **shell metacharacter** token (`&&`, `||`, `|`, `>`, `>>`, `<`,
+  `2>`, `2>&1`, `;`, `&`, `$(`, or a glued redirect like `>file`, `1>out`, `&>all`) the
+  **whole command** runs through the Lifo shell instead (pipes/chains/redirects parsed there),
+  result `runtime: "lifo"`; each `node`/`npm`/`npx` segment in the chain is forwarded to the
+  **real binary** by the host (the Lifo shell's in-browser JS-interpreter shims are overridden).
+  A pure node command with no metachars is unchanged (direct spawn).
+- **`python|python3`** (followed by whitespace or end of command) → a **real Node.js child
+  process** loading the built-in `python-runtime.js` (python-wasm, Python 3.11). Result
+  `runtime: "node"` (it *is* a node child process; the routing field stays stable). Exception
+  (TASK24 复审): if the tokenized argv contains a shell metacharacter token the **whole command**
+  runs through the Lifo shell (result `runtime: "lifo"`), and each `python`/`python3` segment in
+  the chain is forwarded to the real runtime — `python -c "print(1)" | grep 2` → empty,
+  `python -c "print(42)" | grep 42` → `42`. The runtime is a system asset injected lazily on
+  first use — `python -c "<code>"` executes a code string, `python <script.py>` executes a
+  script (absolute paths are resolved against the browser filesystem root = host process cwd).
+  Interactive REPL and `pip` are not supported.
 - **everything else** → the **Lifo sandbox** (`sandbox.commands.run`). Result `runtime: "lifo"`.
 
-The command string is split with a simple tokenizer that honors single/double quotes but
-does **not** do escapes or variable expansion. Empty commands are answered with
+The command string is split with a shlex-style tokenizer (`src/engine/tokenize.ts`): single/double
+quotes group whitespace, a backslash escapes the next character (`\"` inside quotes → literal `"`,
+`\\` → `\`, `\'` in single quotes → `'`), and an **unterminated quote throws**
+`unterminated quote in command` (reported as `{ ok: false, exitCode: -1, stderr: "unterminated quote in command", runtime: "node" }`)
+instead of silently truncating. No variable expansion. Empty commands are answered with
 `{ ok: false, exitCode: -1, stderr: "empty command", runtime: "lifo" }`.
 
 ### Error semantics
@@ -118,9 +151,12 @@ does **not** do escapes or variable expansion. Empty commands are answered with
 | Unknown protocol `cmd`          | `{ ok: false, error: "unknown command: <cmd>" }`                    |
 | Node subprocess not found       | `{ ok: false, exitCode: -1, stderr: String(e), runtime: "node" }`   |
 | Node subprocess times out       | child killed; `{ ok: false, exitCode: -1, stderr: "node subprocess timed out after <ms>ms, killed", runtime: "node" }` |
+| Node/npm stderr contains `EACCES` + `/usr/local` | original stderr, then a newline + `hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)` (TASK24) |
+| Python assets not injected      | `{ ok: false, exitCode: -1, stderr: "python runtime failed to load: assets not injected yet ...", runtime: "node" }` |
 | Lifo command throws             | `{ ok: false, exitCode: -1, stderr: <first 200 chars>, runtime: "lifo" }` |
 | `spawn` with a non-node command | `{ ok: false, error: "spawn only supports node/npm/npx background processes ...", runtime: "lifo" }` |
 | `kill` of a non-table pid       | `{ ok: false, killed: false, message: "process <pid> not in process table; Lifo-side processes are list-only (kill not supported)" }` |
+| `setCwd` with a bad path        | `{ ok: false, error: "setCwd: cwd must be an absolute path ..." / "setCwd: not a directory: ..." }` |
 
 **Output cap.** Each command's `stdout` and `stderr` are independently capped at ~1 MB
 (tail kept). The host trims incrementally at 2× the cap and applies the final cut when
@@ -232,7 +268,11 @@ reference implementation.
 These are intentional constraints of the environment/protocol:
 
 - **Interactive stdin** is unreliable in WebContainer — file RPC replaces it. `log -f`
-  and REPL-style processes are not supported.
+  and REPL-style processes are not supported. This is why `python` has no interactive
+  REPL (use `python -c "<code>"` / `python <script.py>`); `pip` is not available either.
+- **Session cwd sync covers the `/workspace` mount only**: a Lifo `cd` into a VFS-private
+  path (e.g. `/tmp`, `/home/user`) succeeds in Lifo but has no host-filesystem equivalent,
+  so the session cwd is left unchanged (Node/Python children keep the last synced cwd).
 - **CORS** — `curl` to sites without CORS headers fails; use `https://r.jina.ai/<url>`.
 - **Symlinks / hard links** are not supported by the Lifo VFS.
 - **1 MB output cap** — stdout/stderr keep only the tail past 1 MB.

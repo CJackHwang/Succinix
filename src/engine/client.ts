@@ -76,7 +76,13 @@ export class TerminalClient {
       if (killMatch) {
         res = await this.exec('kill', { pid: Number(killMatch[1]) }, timeoutMs);
       } else {
-        res = await this.exec('run', { command, ...opts }, timeoutMs);
+        // TASK23：setCwd <dir> 协议命令（显式设置会话 cwd；cd 命令的自动同步已覆盖交互路径）。
+        const setCwdMatch = /^setCwd\s+(.+)$/.exec(trimmed);
+        if (setCwdMatch) {
+          res = await this.exec('setCwd', { cwd: setCwdMatch[1].trim() }, timeoutMs);
+        } else {
+          res = await this.exec('run', { command, ...opts }, timeoutMs);
+        }
       }
     }
     // TASK12：命令执行采集点（INFO）——cmd/exit/runtime。协议命令无 runtime 字段，标 protocol。

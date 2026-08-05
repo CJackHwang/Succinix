@@ -9,6 +9,7 @@ import type { ProcInfo } from './host-procs.js';
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 export type { ProcInfo } from './host-procs.js';
+export { ensurePythonRuntime, PYTHON_RUNTIME_DIR } from './python-assets.js';
 
 // ─── 公开选项 / 接口（TASK21 契约）───
 

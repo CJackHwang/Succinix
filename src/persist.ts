@@ -47,6 +47,9 @@ const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git']);
 // host.js / lifo-core.js：运行时注入的 host 进程脚本，非用户数据（随 boot 重新注入）；
 // cmd.json：文件 RPC 通道文件；webunix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
 const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'webunix.engine.json']);
+// TASK23：内置语言运行时系统资产（/usr/lib/webunix —— python-runtime.js + wasm/zip，~13MB）。
+// 系统资产懒注入、随 boot 重建，非用户数据；排除避免每次快照遍历读 13MB 二进制。
+const EXCLUDED_PREFIXES = ['/usr/lib/webunix'];
 
 function isResultFile(name: string): boolean {
   return name.startsWith('result-') && name.endsWith('.json');
@@ -57,7 +60,9 @@ function isResultFile(name: string): boolean {
 // 部分恢复会损坏数据库导致 tinbase 启动崩溃；storage 是可重建缓存 —— 两者都不随快照持久，
 // 刷新后 tinbase 以全新数据目录启动，服务可用、数据不保留 —— 与 POC 文本快照边界一致）。
 // 文件按名跳过 host.js / lifo-core.js（boot 重新注入的 host 进程脚本）/ cmd.json / result-*.json（文件 RPC 临时文件）。
+// TASK23：/usr/lib/webunix 前缀整体跳过（python 运行时系统资产，懒注入重建）。
 function isExcludedPath(path: string): boolean {
+  if (EXCLUDED_PREFIXES.some((p) => path === p || path.startsWith(p + '/'))) return true;
   const segments = path.split('/').filter(Boolean);
   for (let i = 0; i < segments.length; i++) {
     if (EXCLUDED_DIRS.has(segments[i])) return true;

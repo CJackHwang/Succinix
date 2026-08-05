@@ -18,7 +18,9 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Full-screen terminal experience** — a centered DOM boot splash with system self-checks and graceful environment-exit (shows a professional error page instead of degrading), then an interactive shell (`guest@webunix:~$`).
 - **Unified command execution** — one terminal entry point:
   - `node`, `npm`, `npx` and project binaries run on a **real Node.js process** (WebContainer).
+  - `python` / `python3` run on a **built-in python-wasm runtime** (Python 3.11) — packaged as a system asset (zero install, cannot be broken by user `npm install`), injected lazily on first use. `python -c "<code>"` and `python <script.py>` are supported; the interactive REPL is not (WebContainer stdin boundary).
   - Everything else (`grep`, `sed`, `awk`, `cat`, `tar`, `curl`, pipes, redirects, ...) runs on **Lifo**, a clean-room TypeScript implementation of Unix.
+- **Session working directory (fusion)** — `cd` in the Lifo sandbox now drives a **session cwd** that the host persists (`/etc/webunix.cwd`, survives refresh) and applies to every real Node/Python child process (`spawn cwd`). `pwd` shows the session cwd, `node`/`python` see the same directory — no more `cd /ws/proj && npm install` installing into the container root. `cd` to a missing directory keeps the session cwd unchanged. `lang` lists the built-in runtimes and versions.
 - **Shared filesystem** — the browser (`wc.fs`) and Lifo commands operate on the *same* files. No bridge code; WebContainer virtualizes `node:fs` for processes, and Lifo consumes it via `NativeFsProvider`.
 - **Process management** — `ps` / `kill` over a unified process table (real child processes + tracked state), including background `spawn`.
 - **Port management** — services are detected via WebContainer `server-ready` events and listed by `ports` with their preview URLs.
@@ -49,8 +51,10 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 ┌───────────────▼───────────────────────────────────────────────────┐
 │  node host.js — TerminalExecutor (persistent daemon, PID 1)       │
 │    ├─ node|npm|npx ...  → child_process.spawn  (real Node.js)     │
+│    ├─ python|python3 ...→ node python-runtime.js (python-wasm)    │
 │    ├─ everything else   → Lifo sandbox.commands.run (Unix tools)  │
 │    ├─ ps / kill         → unified process registry                │
+│    ├─ cwd / setCwd      → session cwd (cd-synced, persisted)      │
 │    └─ spawn             → background long-running processes       │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -73,7 +77,7 @@ The page boots WebUnix: system self-checks, then a shell prompt. Type `help` for
 
 ```bash
 npx tsc -p tsconfig.json --noEmit   # type check (0 errors required)
-node scripts/build-host.mjs         # bundle the in-container host (host.js)
+node scripts/build-host.mjs         # bundle the in-container host (host.js + lifo-core.js + python runtime)
 npm run build                       # production build
 node scripts/verify-deploy.mjs      # deploy-readiness gate (build + preview + COOP/COEP + ?test=1)
 ```
@@ -86,9 +90,9 @@ WebUnix has a layered test setup that runs locally and in CI (GitHub Actions). N
 - **Typecheck** — `npm run typecheck` (`tsc -p tsconfig.json --noEmit`). Gate: **0 errors**.
 - **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist.ts`, `src/services.ts`, `src/pkg.ts`, `src/motd.ts`, `src/config.ts` against in-memory mocks (see `tests/`). `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on those core files.
 - **e2e** — `npm run test:e2e` builds once, then runs the three CDP scripts sequentially against `vite preview` in headless Chrome:
-  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥57 passed, 0 failed**);
+  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥67 passed, 0 failed**);
   2. `scripts/bench.mjs` — performance benchmark (JSON output);
-  3. `scripts/scenarios.mjs` — the 10 real-workflow scenario suite.
+  3. `scripts/scenarios.mjs` — the 13 real-workflow scenario suite.
   Playwright is intentionally not used: the CDP scripts keep the pipeline zero-dependency and identical to local runs.
 - **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; a scheduled nightly job runs the heavy scenario suite. See the CI badge at the top of this file.
 - **pre-commit (optional, zero-dependency)** — `npm run setup:hooks` writes a `.git/hooks/pre-commit` that runs `tsc --noEmit` and ESLint on the changed files only (`scripts/pre-commit.sh`). It is **not forced**: skipping `setup:hooks` leaves the project fully commit-ready.
@@ -171,23 +175,30 @@ node scripts/verify-deploy.mjs
 | `ip addr`      | Show virtual network identity — `lo: virtual loopback`, `eth0: <preview-domain> (virtual)`; no fabricated interfaces or IPs |
 | `uname`        | Show system identity: summary line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`); `uname -a` all fields, `-r` runtime version, `-m` architecture (from UA, `unknown` if absent) |
 | `motd`         | View the login banner (`/etc/webunix.motd`); `motd <text>` sets it (persisted), `motd reset` restores the default |
+| `lang`         | List built-in language runtimes: `lang` (table), `lang python` → `Python 3.11.1 (python-wasm 0.28)`, `lang node`, `lang typescript` |
+| `pwd`          | Show the session working directory (host-maintained, `cd`-synced, applied to node/python children) |
 
 ### Host commands (TerminalExecutor, unified routing)
 
 | Command                 | Route   | Description                                   |
 | ----------------------- | ------- | --------------------------------------------- |
-| `node ...` / `npm ...` / `npx ...` | Node | Real Node.js child process               |
+| `node ...` / `npm ...` / `npx ...` | Node | Real Node.js child process; when the command contains **shell metacharacters** (`&&`, `\|`, `>`, `2>&1`, ...) the whole chain runs through the **Lifo shell** (pipes/chains/redirects parsed there; each node/npm/npx segment is forwarded back to the real binary), result `runtime=lifo` |
+| `python ...` / `python3 ...` | Python | Built-in python-wasm runtime (`python -c "<code>"` / `python <script.py>`); when the command contains **shell metacharacters** the whole chain runs through the **Lifo shell** (pipes/redirects parsed there; each python segment is forwarded back to the real runtime), result `runtime=lifo` |
 | `grep`, `cat`, `tar`, `curl`, ...   | Lifo | Unix tools, pipes, redirects            |
 | `ps`                    | —       | List the unified process table                |
 | `kill <pid>`            | —       | Terminate a process (SIGTERM)                 |
-| `cwd` / `ping` / `exit` | —       | Protocol commands                              |
+| `cwd` / `setCwd <dir>` / `ping` / `exit` | — | Protocol commands (cwd = session cwd)    |
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **57 passed, 0 failed, 5 skipped** (TASK19 final run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **71 passed, 0 failed, 5 skipped** (TASK24 复审 run, 2026-08-05, against the minified host bundle; 67 → 71 with the re-review checks). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
+- Shell fusion (TASK24): node-prefixed commands with shell metacharacters fall back to the Lifo shell — `node -e "console.log(21*2)" | grep 42` -> `42` (`runtime=lifo`), `node --version && npm --version` -> both real versions on two lines; each node/npm/npx segment in the chain runs the real binary (forwarded from the Lifo shell, not the in-browser JS interpreter). Escaped quotes in `node -e` are preserved (`node -e "console.log(\"hi\")"` -> `hi`); an unterminated quote reports `unterminated quote in command` instead of silently truncating.
+- Python pipes (TASK24 复审): python commands with shell metacharacters are no longer silently truncated at the pipe — `python -c "print(1)" | grep 2` -> empty (`runtime=lifo`), `python -c "print(42)" | grep 42` -> `42`; each python segment in the chain runs the real python-wasm runtime.
+- Env merge (TASK24 复审): `env FOO=bar` truly reaches child processes — a `node -e "console.log(process.env.FOO)"` child reports `bar` (the env file lives under `process.cwd()/etc/webunix.env`, matching the browser write path).
+- Session cwd persistence (TASK24 复审): `cd`'s session cwd is persisted to `process.cwd()/etc/webunix.cwd` (previously the read-only virtual root — lost on refresh) and restored on host start, so `pwd` / node / python cwd survive a refresh.
 - Process lifecycle: `spawn` a background service, `ps` shows it, `kill` transitions it to `exited`.
 - Port registry: `server-ready` events surface preview URLs.
 - Database: tinbase (PGlite/WASM) boots and serves.
@@ -198,7 +209,10 @@ Result of the browser runtime verification suite (see `src/tests.ts`): **57 pass
 - Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
 - System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; the `-r`/`-m` flag parsing is additionally asserted through the command-dispatch path (not just the builders). `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
-- Smoke: all 23 safe built-in commands (help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
+- Smoke: all 25 safe built-in commands (help/clear/sysinfo/version/whoami/ports/pwd/lang/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
+- Languages (TASK23): `python -c "print(6*7)"` returns `42` via the built-in python-wasm runtime; stdlib imports (json/csv/re/math/os/sqlite3) work; `python3 --version` reports Python 3.11; `lang` lists node/python/typescript and `lang python` reports the bundled version.
+- Session cwd (TASK23): `cd /workspace` syncs the host session cwd and a `node -e "console.log(process.cwd())"` child follows it; `cd` into a missing directory keeps the session cwd unchanged. (TASK24: `/workspace` is the Lifo VFS view — real node/python subprocesses spawn in the mapped host directory, so `process.cwd()` inside a child reports the real path such as `/home/<wc-id>/proj`; `pwd`/`cwd` still report the Lifo view `/workspace/...`.)
+- EACCES hint (TASK24): `npm i -g` hitting the read-only `/usr/local` appends an actionable hint (`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`) to the error output; permission semantics are unchanged.
 - Stability: the RPC client serializes requests over the single-slot `/cmd.json` channel (no more parallel-channel race), retries read-only commands (ping/ps/cwd) once on transport failure, and the browser watchdog re-injects + respawns `host.js` after 2 consecutive failed pings.
 
 ## Known Boundaries
@@ -210,10 +224,13 @@ These are environmental constraints, not bugs:
 - **No package manager / native binaries**: there is no `apt`; native executables cannot run. This layer is reserved for a future v86-backed fallback.
 - **stdin for interactive processes**: unreliable in the WebContainer environment; the design uses file-based RPC instead.
 - **Streaming cross-runtime pipes**: cross-runtime pipes are buffered (fine for agent-style "run then read" workflows).
+- **`/workspace` is a Lifo VFS view; real node/python children see real paths**: the browser filesystem root (`wc.fs` `/`) and Lifo's `/workspace` both map to the host process cwd (`/home/<wc-id>`), and the container root `/` is a read-only system view. `pwd`/`cwd` report the Lifo view (`/workspace/...`), while `process.cwd()` inside a node/python child reports the real mapped path (`/home/<wc-id>/...`). They point at the same directory.
 - **Watchdog probe can be swallowed by a queued command**: the host liveness watchdog writes a direct `ping` probe to the single-slot `/cmd.json` channel; if a user command is enqueued in the same ~120 ms host-poll window it overwrites the probe, so that probe times out and the watchdog skips the round (neutral, not counted as a failure). This only delays liveness detection by one 30 s cycle in the rare overlap case; it does not kill a healthy host.
 - **Single-command output is capped at 1 MB**: to bound container memory and result-file size, each command's `stdout`/`stderr` keeps at most the last ~1 MB of output (large dumps are truncated to their tail). Normal use (`seq 1 5000`, `cat` mid-size files, `npm install` logs) is far below the cap.
 - **Declarative autostart (not a daemon)**: `service enable` only records the service for a boot-time restart. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
 - **`log -f` (tail -f) not implemented**: interactive streaming output is deferred (POC; interactive stdin is unreliable in WebContainer). Use `log` / `log -n <count>` instead. `log clear` wipes `/var/log/webunix.log` and is therefore not itself recorded in the log.
+- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`). An interactive `>>>` REPL needs persistent stdin, which is unreliable in WebContainer — use `python -c` instead. `pip` is also not available (python-wasm ships its standard library as a zip; installing third-party wheels is out of scope).
+- **First `python` command is slow**: the python-wasm runtime (~13 MB of JS + wasm + stdlib) is lazily injected into the container on first use, so the first `python` command can take a few seconds; subsequent commands are fast. It never depends on a user `npm install` (system asset), so it cannot be broken by user actions.
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
 - **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
 - **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
@@ -243,6 +260,8 @@ src/
     host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
     host-procs.ts    # unified process registry (was host-procs.ts)
     lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
+    python-runtime.ts   # python-wasm CLI entry (bundled to public/python/python-runtime.js, host-spawned)
+    python-assets.ts    # lazy python runtime asset injection (first-use, ~13 MB)
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test

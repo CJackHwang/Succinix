@@ -68,6 +68,12 @@ const VERSION = 'WebUnix 0.2.0 (browser-native Linux)';
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
+// TASK23：内置语言运行时版本（lang 命令）。
+// python 版本构建期固定：python-wasm 0.28.x 打包的 Python 3.11（sys.version 实测 3.11.1）；
+// node 版本实时查询（node --version）；typescript 走 node 22 的 strip-types。
+const PYTHON_BUNDLED_VERSION = '3.11.1 (python-wasm 0.28)';
+const TS_RUNTIME_NOTE = 'via node --experimental-strip-types (Node 22)';
+
 // M1 修复：db start 启动时解析的端口记录在案；db status/stop 用记录值而非每次现读 settings，
 // 避免运行中改 preview-port 后 status/stop 操作到错误的端口。本次会话未启动过 db 时为 null，
 // status/stop 回落现读 settings（此时没有在跑实例，读最新设置是合理的）。
@@ -119,14 +125,17 @@ function printHelp(term: Terminal): void {
   term.writeln(`  ip addr      show virtual network identity (browser platform + preview domain)`);
   term.writeln(`  uname        show system identity: kernel / runtime / arch (honest, no fake Linux)`);
   term.writeln(`  motd         view the login banner; 'motd <text>' sets, 'motd reset' restores default`);
+  term.writeln(`  lang         list built-in language runtimes (node / python / typescript)`);
+  term.writeln(`  pwd          show the session working directory (synced with node/python child cwd)`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
   term.writeln('');
   term.writeln('host side (TerminalExecutor unified routing)');
   term.writeln(`  node|npm|npx ...   real node subprocess (spawn for long-running background)`);
+  term.writeln(`  python ...         python-wasm runtime (python -c "<code>" | python <script.py>)`);
   term.writeln(`  other commands      Lifo sandbox: grep / cat / wc / echo / curl ...`);
   term.writeln(`  ps / kill <pid>    process table management`);
-  term.writeln(`  cwd / ping / exit  protocol commands`);
+  term.writeln(`  cwd / setCwd / ping / exit  protocol commands`);
 }
 
 function printPorts(term: Terminal, ports: Map<number, string>): void {
@@ -1250,6 +1259,44 @@ async function motdCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln(`motd set: ${text}`);
 }
 
+// ─── 内置语言运行时（TASK23）：lang 命令 ───
+// 列出系统内置语言与版本（系统资产，非用户安装）。python 版本构建期固定；node 实时查询。
+async function langCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === 'python' || sub === 'python3') {
+    term.writeln(`Python ${PYTHON_BUNDLED_VERSION}`);
+    return;
+  }
+  if (sub === 'node') {
+    term.writeln(`Node.js ${await nodeVersion(ctx)}`);
+    return;
+  }
+  if (sub === 'typescript' || sub === 'ts' || sub === 'tsx') {
+    term.writeln(`TypeScript ${TS_RUNTIME_NOTE}`);
+    return;
+  }
+  if (sub === '') {
+    term.writeln('Built-in language runtimes');
+    term.writeln(`  node        Node.js ${await nodeVersion(ctx)}`);
+    term.writeln(`  python      Python ${PYTHON_BUNDLED_VERSION}`);
+    term.writeln(`  typescript  ${TS_RUNTIME_NOTE}`);
+    return;
+  }
+  term.writeln(`lang: unknown language '${sub}' (known: node, python, typescript)`);
+}
+
+// node 版本实时查询（node --version 走 host 路由）；失败显示 --（不阻塞 lang 输出）。
+async function nodeVersion(ctx: CommandContext): Promise<string> {
+  try {
+    const r = await ctx.client.terminal('node --version', undefined, 15000);
+    if (r.ok) return String(r.stdout ?? '').trim();
+  } catch {
+    /* host 不可达：显示 -- */
+  }
+  return '--';
+}
+
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
   const { term } = ctx;
@@ -1275,6 +1322,16 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     case 'whoami':
       term.writeln('guest');
       return true;
+    case 'pwd': {
+      // TASK23：pwd 显示会话 cwd（host 维护，cd 同步后与 node 子进程口径一致）。
+      try {
+        const r = await ctx.client.terminal('cwd');
+        term.writeln(String(r.cwd ?? ''));
+      } catch (e) {
+        term.writeln(`${RED}${String(e)}${RESET}`);
+      }
+      return true;
+    }
     case 'db': {
       const sub = rest[0] ?? '';
       if (sub === 'start') await dbStart(ctx);
@@ -1340,6 +1397,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
       return true;
     case 'motd': {
       await motdCmd(ctx, rest);
+      return true;
+    }
+    case 'lang': {
+      await langCmd(ctx, rest);
       return true;
     }
     default:

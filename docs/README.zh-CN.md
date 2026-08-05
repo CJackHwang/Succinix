@@ -18,7 +18,9 @@
 - **全屏终端体验** — 居中的 DOM 启动画面（boot splash）带系统自检与环境不适配优雅退出（显示专业错误页而非降级），随后进入交互式 Shell（`guest@webunix:~$`）。
 - **统一命令执行** — 单一终端入口：
   - `node`、`npm`、`npx` 及项目二进制运行在**真实 Node.js 进程**上（WebContainer）。
+  - `python` / `python3` 运行在**内置 python-wasm 运行时**（Python 3.11）——作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；交互式 REPL 不支持（WebContainer stdin 边界）。
   - 其余一切（`grep`、`sed`、`awk`、`cat`、`tar`、`curl`、管道、重定向……）运行在 **Lifo**——一个 TypeScript 实现的 Unix 用户态。
+- **会话工作目录（融合基石）** — Lifo 里的 `cd` 现在驱动 host 维护的**会话 cwd**（持久化到 `/etc/webunix.cwd`，刷新恢复），并应用到每个真实 Node/Python 子进程（`spawn cwd`）。`pwd` 显示会话 cwd，`node`/`python` 看到同一目录——不再有 `cd /ws/proj && npm install` 装到容器根的问题。`cd` 到不存在目录时会话 cwd 不变。`lang` 列出内置运行时与版本。（TASK24：`/workspace` 是 Lifo 挂载视图，真实容器 FS 没有该路径；node/python 子进程实际 spawn 在映射后的 host 真实目录，子进程里 `process.cwd()` 报真实路径如 `/home/<wc-id>/proj`，`pwd`/`cwd` 仍显示 Lifo 视角 `/workspace/...`。）
 - **共享文件系统** — 浏览器（`wc.fs`）与 Lifo 命令操作的是**同一份文件**。无需桥接代码：WebContainer 为进程虚拟化 `node:fs`，Lifo 通过 `NativeFsProvider` 消费它。
 - **进程管理** — 统一进程表上的 `ps` / `kill`（真实子进程 + 状态跟踪），含后台 `spawn`。
 - **端口管理** — 通过 WebContainer `server-ready` 事件探测服务，`ports` 列出端口与预览 URL。
@@ -49,8 +51,10 @@
 ┌───────────────▼───────────────────────────────────────────────────┐
 │  node host.js — TerminalExecutor（常驻守护进程，PID 1）            │
 │    ├─ node|npm|npx ...  → child_process.spawn  （真实 Node.js）    │
+│    ├─ python|python3 ...→ node python-runtime.js（python-wasm）    │
 │    ├─ 其余一切           → Lifo sandbox.commands.run（Unix 工具）  │
 │    ├─ ps / kill         → 统一进程注册表                          │
+│    ├─ cwd / setCwd      → 会话 cwd（cd 同步、持久化）             │
 │    └─ spawn             → 后台长驻进程                            │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -176,7 +180,7 @@ node scripts/verify-deploy.mjs
 
 | 命令 | 路由 | 说明 |
 | ---- | ---- | ---- |
-| `node ...` / `npm ...` / `npx ...` | Node | 真实 Node.js 子进程 |
+| `node ...` / `npm ...` / `npx ...` | Node | 真实 Node.js 子进程；命令含 **shell 元字符**（`&&`、`\|`、`>`、`2>&1`……）时整条链经 **Lifo shell** 执行（管道/链/重定向由 shell 层解析，各 node/npm/npx 段再转回真二进制），结果 `runtime=lifo` |
 | `grep`、`cat`、`tar`、`curl`、…… | Lifo | Unix 工具、管道、重定向 |
 | `ps` | — | 列出统一进程表 |
 | `kill <pid>` | — | 终止进程（SIGTERM） |
@@ -184,10 +188,11 @@ node scripts/verify-deploy.mjs
 
 ## 已验证行为
 
-浏览器运行时验证套件结果（见 `src/tests.ts`）：**57 passed, 0 failed, 5 skipped**（TASK19 最终轮，2026-08-05，针对压缩 host bundle）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
+浏览器运行时验证套件结果（见 `src/tests.ts`）：**67 passed, 0 failed, 5 skipped**（TASK24 最终轮，2026-08-05，针对压缩 host bundle）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
 
 - 共享文件系统：浏览器 → Lifo 与 Lifo → 浏览器读写均工作。
 - 路由：`node -e "console.log(21*2)"` → `42`（`runtime=node`）；`npm --version` → 真实 npm 版本；`grep`/`cat`/`wc` → `runtime=lifo`。
+- Shell 融合（TASK24）：node 系命令含 shell 元字符时回退 Lifo shell —— `node -e "console.log(21*2)" | grep 42` → `42`（`runtime=lifo`），`node --version && npm --version` → 两行真实版本；链内各 node/npm/npx 段转回真二进制（非浏览器内 JS 解释器）。`node -e` 转义引号保真（`node -e "console.log(\"hi\")"` → `hi`）；未闭合引号报 `unterminated quote in command` 而非静默截断。
 - 进程生命周期：`spawn` 后台服务 → `ps` 可见 → `kill` 转 `exited`。
 - 端口注册表：`server-ready` 事件暴露预览 URL。
 - 数据库：tinbase（PGlite/WASM）启动并服务。
@@ -210,6 +215,8 @@ node scripts/verify-deploy.mjs
 - **无包管理器 / 原生二进制**：没有 `apt`；原生可执行文件无法运行。这层预留给未来 v86 后端。
 - **交互进程的 stdin**：WebContainer 环境不可靠；设计改用基于文件的 RPC。
 - **跨运行时流式管道**：跨运行时管道是缓冲的（对 agent 式"跑完再读"工作流足够）。
+- **`/workspace` 是 Lifo VFS 视图；真实 node/python 子进程看到真实路径**：浏览器文件系统根（`wc.fs` `/`）与 Lifo 的 `/workspace` 都映射到 host 进程 cwd（`/home/<wc-id>`），而容器根 `/` 是只读系统视图。`pwd`/`cwd` 报 Lifo 视角（`/workspace/...`），node/python 子进程里的 `process.cwd()` 报真实映射路径（`/home/<wc-id>/...`）——指向同一目录。
+- **`npm i -g` 到只读 `/usr/local` 会追加可操作提示**：`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`（权限语义不变）。
 - **看门狗探针可能被排队命令吞掉**：host 存活看门狗向单槽 `/cmd.json` 通道写直接 `ping` 探针；若用户命令在 ~120 ms host 轮询窗口内入队会覆盖探针，该探针超时、看门狗跳过该轮（中性，不算失败）。这只是在罕见重叠时把存活检测推迟一个 30s 周期；不会误杀健康 host。
 - **单命令输出上限 1 MB**：为约束容器内存与结果文件大小，每条命令 `stdout`/`stderr` 最多保留最后 ~1 MB（大输出截断到尾部）。正常使用（`seq 1 5000`、中等文件 `cat`、`npm install` 日志）远低于上限。
 - **声明式自启（非守护进程）**：`service enable` 只记录服务供 boot 重启。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。

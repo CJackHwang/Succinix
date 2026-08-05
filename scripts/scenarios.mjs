@@ -4,7 +4,8 @@
 //   S1 npm 项目开发闭环       S2 git 操作            S3 数据库全生命周期
 //   S4 服务自启               S5 多工作区隔离        S6 队列串行正确性
 //   S7 大输出                 S8 持久化压力          S9 错误路径
-//   S10 环境边界（reboot）
+//   S10 环境边界（reboot）    S11 python 脚本工作流  S12 cd + npm install cwd 同步
+//   S13 TS 生态工作流（npm i -D typescript tsx vitest → tsc → node → vitest 1 passed）
 //
 // 用法：
 //   node scripts/scenarios.mjs [--skip-build] [--port 7895]
@@ -642,9 +643,139 @@ async function s10(h) {
   return checks;
 }
 
+// ─── S11：python 脚本工作流（TASK23，内置语言运行时）───
+async function s11(h) {
+  const checks = [];
+  // 1. 写 .py 到浏览器 FS 根（= host /workspace 根，python 子进程 cwd 初始即此处）
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s11-hello.py', 'print("s11-python-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
+
+  // 2. python -c 真实执行（首用触发运行时资产懒注入，给足超时）
+  const rc = await h.run('python -c "print(21*2)"', 120000);
+  check(checks, 'python -c executes', rc.ok === true && String(rc.stdout).trim() === '42', `ok=${rc.ok} stdout=${String(rc.stdout).trim()}`);
+
+  // 3. python 脚本文件（绝对路径 /s11-hello.py）
+  const rs = await h.run('python /s11-hello.py', 120000);
+  const so = String(rs.stdout || '');
+  check(checks, 'python script runs', rs.ok === true && so.includes('s11-python-ok'), so.trim().slice(0, 120));
+
+  // 4. python3 别名 + 标准库（json/sqlite3/csv/re/math/os 可导入）
+  const rstd = await h.run('python3 -c "import json,csv,re,math,os,sqlite3; print(len([json,csv,re,math,os,sqlite3]))"', 120000);
+  check(checks, 'python3 alias + stdlib imports', rstd.ok === true && String(rstd.stdout).trim() === '6', `stdout=${String(rstd.stdout).trim()}`);
+
+  // 5. 真管道形态（TASK24 复审修复）：python 命令含 shell 元字符时经 Lifo shell 执行，python 段
+  //    转真运行时 —— 管道真工作：grep 命中保留输出、无匹配过滤为空。
+  const rg = await h.run("python -c \"print('hello-pipe')\" | grep pipe", 120000);
+  check(checks, 'python pipe (grep filters)', rg.ok === true && String(rg.stdout).includes('hello-pipe'), String(rg.stdout).trim().slice(0, 60));
+  const rgEmpty = await h.run("python -c \"print('abc')\" | grep zzz", 120000);
+  check(checks, 'python pipe filters empty (grep zzz)', String(rgEmpty.stdout).trim() === '', String(rgEmpty.stdout).trim().slice(0, 60));
+
+  // 清理
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s11-hello.py', { force: true })`);
+  return checks;
+}
+
+// ─── S12：cd + npm install 装到会话 cwd（TASK23 融合基石验证）───
+async function s12(h) {
+  const checks = [];
+  // 0. 复位会话 cwd（避免历史场景残留的持久化 cwd 影响断言）
+  await h.run('cd /workspace');
+  // TASK24（自检崩溃根因）：/workspace 是 Lifo 挂载视图，node 子进程实际 spawn 在 host 真实
+  // 路径（spawnCwd 映射 /workspace → process.cwd()）。先取真实 base，供后续断言映射后的 cwd。
+  const hostBase = String((await h.run('node -e "console.log(process.cwd())"')).stdout || '').trim();
+
+  // 1. 建项目目录（Lifo 的 /workspace 挂载 = 浏览器 FS 根 = host 会话 cwd 初始值）
+  const mk = await h.run('mkdir -p /workspace/s12-proj');
+  check(checks, 'mkdir project dir', mk.ok === true, `ok=${mk.ok}`);
+
+  // 2. cd 进项目目录（host 同步会话 cwd）
+  const cd = await h.run('cd /workspace/s12-proj');
+  check(checks, 'cd into project dir', cd.ok === true, `ok=${cd.ok}`);
+
+  // 3. node 子进程 cwd 跟随会话 cwd（核心断言：Lifo cd 影响 node 子进程，真实路径映射）
+  const s12Expected = `${hostBase}/s12-proj`;
+  const n = await h.run('node -e "console.log(process.cwd())"');
+  check(checks, 'node child cwd follows session cwd', n.ok === true && String(n.stdout).trim() === s12Expected, `node cwd=${String(n.stdout).trim()}`);
+
+  // 4. pwd（浏览器侧拦截 → host 会话 cwd）显示会话 cwd
+  const pwd = await h.run('pwd');
+  check(checks, 'pwd shows session cwd', pwd.handled === true && String(pwd.output).trim() === '/workspace/s12-proj', `pwd=${String(pwd.output).trim()}`);
+
+  // 5. npm init -y → package.json 落在项目目录（cwd 同步：npm 装到会话 cwd 而非容器根）
+  const init = await h.run('npm init -y', 120000);
+  check(checks, 'npm init -y runs in project dir', init.ok === true, `ok=${init.ok}`);
+  const pkgAt = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s12-proj/package.json','utf8').then(()=>true).catch(()=>false)`);
+  check(checks, 'package.json created in project dir (cwd sync)', pkgAt === true, `present=${pkgAt}`);
+
+  // 6. cd 到不存在目录：会话 cwd 不变（node 仍在上一个目录）
+  const cdBad = await h.run('cd /s12-does-not-exist-xyz');
+  const n2 = await h.run('node -e "console.log(process.cwd())"');
+  check(checks, 'failed cd keeps session cwd', cdBad.ok === false && String(n2.stdout).trim() === s12Expected, `exit=${cdBad.exitCode} node cwd=${String(n2.stdout).trim()}`);
+
+  // 清理：回 /workspace，删项目目录
+  await h.run('cd /workspace');
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s12-proj', { recursive: true, force: true })`);
+  return checks;
+}
+
+// ─── S13：TS 生态工作流（TASK24，复现用户浏览器实测：npm i -D typescript tsx vitest →
+// tsc 编译 → node 跑产物 → vitest 1 passed）───
+async function s13(h) {
+  const checks = [];
+  const PROJ = '/workspace/s13-proj';
+  // 0. 复位会话 cwd
+  await h.run('cd /workspace');
+
+  // 1. 建项目目录 + 进入（host 会话 cwd 同步）
+  const mk = await h.run(`mkdir -p ${PROJ}`);
+  check(checks, 'mkdir project dir', mk.ok === true, `ok=${mk.ok}`);
+  const cd = await h.run(`cd ${PROJ}`);
+  check(checks, 'cd into project dir', cd.ok === true, `ok=${cd.ok}`);
+
+  // 2. npm init -y（真实 npm，cwd = 项目目录）
+  const init = await h.run('npm init -y', 120000);
+  check(checks, 'npm init -y', init.ok === true, `ok=${init.ok}`);
+
+  // 3. npm i -D typescript tsx vitest（真实 npm 安装工具链 —— 重活，给足超时）
+  const inst = await h.run('npm i -D typescript tsx vitest', 240000);
+  check(checks, 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok} ${String(inst.stderr || inst.stdout || '').trim().split('\n').slice(-1)[0].slice(0, 80)}`);
+
+  // 4. 写 TS 源码 + tsconfig（浏览器 FS = 项目目录，与 host 会话 cwd 同一份文件）
+  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/s13-proj/src', { recursive: true })`);
+  // greet.ts 顶层调用使 `node dist/greet.js` 直接输出 hello ts（vitest 导入该模块时也触发，
+  // 仅多一行无害输出，不改变测试结果）。
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\nconsole.log(greet("ts"));\\n')`);
+  const tsconfig = JSON.stringify({
+    compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true, esModuleInterop: true },
+    include: ['src'],
+  }, null, 2);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+
+  // 5. tsc 编译 → 断言 dist 产物存在
+  const tsc = await h.run('npx tsc -p tsconfig.json', 180000);
+  check(checks, 'tsc compiles TS', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr || '').trim().slice(0, 120)}`);
+  const distExists = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s13-proj/dist/greet.js','utf8').then(()=>true).catch(()=>false)`);
+  check(checks, 'dist/greet.js artifact produced', distExists === true, `present=${distExists}`);
+
+  // 6. node 跑编译产物（真实 node 执行）
+  const run = await h.run('node dist/greet.js', 60000);
+  check(checks, 'node runs compiled artifact', run.ok === true && String(run.stdout).trim() === 'hello ts', `stdout=${String(run.stdout).trim()}`);
+
+  // 7. vitest 测试（真实 vitest，1 passed）
+  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/s13-proj/test', { recursive: true })`);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/test/greet.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
+  const vitest = await h.run('npx vitest run', 180000);
+  const vtOut = String(vitest.stdout || '') + String(vitest.stderr || '');
+  check(checks, 'vitest run: 1 passed', vitest.ok === true && /1 passed/.test(vtOut), vtOut.trim().split('\n').filter((l) => /passed|failed|Test Files/.test(l)).slice(-3).join(' | '));
+
+  // 清理：回 /workspace，删项目目录
+  await h.run('cd /workspace');
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s13-proj', { recursive: true, force: true })`);
+  return checks;
+}
+
 // ─── 主流程 ───
 async function main() {
-  note('WebUnix TASK19 scenario suite (real browser/container, 10 scenarios)');
+  note('WebUnix TASK24 scenario suite (real browser/container, 13 scenarios)');
 
   if (SKIP_BUILD) {
     note('skipping build (--skip-build), using existing dist/');
@@ -688,6 +819,9 @@ async function main() {
       { id: 'S8', name: 'persistence stress (300 files)', run: s8 },
       { id: 'S9', name: 'error paths', run: s9 },
       { id: 'S10', name: 'environment boundary (reboot)', run: s10 },
+      { id: 'S11', name: 'python script workflow', run: s11 },
+      { id: 'S12', name: 'cd + npm install cwd sync', run: s12 },
+      { id: 'S13', name: 'TS ecosystem workflow', run: s13 },
     ];
 
     for (const sc of SCENARIOS) {

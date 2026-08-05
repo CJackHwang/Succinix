@@ -23,6 +23,9 @@ export default defineConfig({
   },
   server: {
     port: 7892,
+    // TASK23：固定 7892，禁用端口漂移（WebContainer 需要稳定 origin；scripts/start-dev.mjs
+    // 启动前会释放被占用的 7892）。strictPort 让 vite 端口被占时直接报错而非漂到 7893。
+    strictPort: true,
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'credentialless',

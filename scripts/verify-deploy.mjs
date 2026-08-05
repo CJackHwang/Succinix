@@ -9,7 +9,7 @@
 //      —— 补 vite preview 头断言测的是 vite.config.ts 而非部署配置的缺口
 //   3. 启动 `vite preview --port <port>`（COOP/COEP 头来自 vite.config.ts 的 preview.headers）
 //   4. 断言响应头：Cross-Origin-Opener-Policy=same-origin / Cross-Origin-Embedder-Policy=credentialless
-//   5. 启动 headless Chrome -> 打开 /?test=1 -> 捕获自检汇总行 -> 断言 >=57 passed 且 0 failed
+//   5. 启动 headless Chrome -> 打开 /?test=1 -> 捕获自检汇总行 -> 断言 >=67 passed 且 0 failed
 //
 // 用法：
 //   node scripts/verify-deploy.mjs [--skip-build] [--port 7892]
@@ -26,7 +26,7 @@ const portIdx = args.indexOf('--port');
 const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7892;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口，避开 preview 端口
-const MIN_PASSED = 57; // TASK20 门禁：preview 模式下 ?test=1 必须 >=57 passed（0 failed）
+const MIN_PASSED = 67; // TASK24 复审门禁：preview 模式下 ?test=1 必须 >=67 passed（0 failed）
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -319,7 +319,7 @@ async function main() {
         `${path} -> COOP=${coop ?? '(missing)'} COEP=${coep ?? '(missing)'}`);
     }
 
-    // 5) headless Chrome 自检（?test=1 >=57 passed）
+    // 5) headless Chrome 自检（?test=1 >=67 passed）
     note('step 5/5: headless Chrome ?test=1 self-test');
     const result = await runHeadlessSelfTest();
     if (result) {

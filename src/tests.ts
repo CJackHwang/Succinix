@@ -42,6 +42,8 @@ import { readLog, readBootLog, clearLog, flushLogs } from './log.js';
 import { listPackages, formatPackageList, searchPackages } from './pkg.js';
 import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
+import { ensurePythonRuntime } from './engine/index.js';
+import { tokenize } from './engine/tokenize.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -128,6 +130,48 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   const fs4b = await client.terminal('pwd');
   verdict(term, 'Filesystem', 'lifo cwd persists across commands', fs4a.ok && fs4b.ok && String(fs4b.stdout ?? '').trim() === '/workspace', String(fs4b.stdout ?? '').trim());
 
+  // ─── 会话 cwd 同步（TASK23）：cd 成功后 host 会话 cwd 跟随，node 子进程 spawn cwd 一致 ───
+  const cdSync1 = await client.terminal('cd /workspace');
+  const cdSync2 = await client.exec('cwd');
+  // TASK24（自检崩溃根因）：/workspace 是 Lifo 挂载视图，真实容器 FS 没有该路径；host 对
+  // node 子进程用 spawnCwd() 映射回真实路径（/workspace → process.cwd()），node 的
+  // process.cwd() 报真实路径（= hostCwd），而不是 /workspace。
+  const cdSync3 = await client.terminal('node -e "console.log(process.cwd())"');
+  verdict(
+    term,
+    'Filesystem',
+    'cd syncs session cwd (node child cwd follows)',
+    cdSync1.ok && String(cdSync2.cwd ?? '') === '/workspace' && String(cdSync3.stdout ?? '').trim() === hostCwd,
+    `session=${String(cdSync2.cwd)} node=${String(cdSync3.stdout ?? '').trim()}`
+  );
+
+  // TASK24 复审（cwd 持久化双根修复）：cd 同步会话 cwd 后 host 把它写到浏览器可见的
+  // /etc/webunix.cwd（= host process.cwd()/etc/webunix.cwd，随快照持久）。若仍写 node 虚拟
+  // 系统根 /etc/...（只读），浏览器 wc.fs 读不到 → 刷新后 cwd 丢失。断言文件内容 = 会话 cwd。
+  const cwdFile = await wc.fs.readFile('/etc/webunix.cwd', 'utf8').catch(() => '');
+  verdict(
+    term,
+    'Filesystem',
+    'cwd persisted to /etc/webunix.cwd (browser view)',
+    cwdFile.trim() === '/workspace',
+    `cwdFile=${JSON.stringify(cwdFile.trim())}`
+  );
+
+  // cd 到不存在目录：Lifo 报错（exit≠0），会话 cwd 不变。
+  const cdBad = await client.terminal('cd /definitely-not-a-dir-xyz');
+  const cwdAfterBad = await client.exec('cwd');
+  verdict(
+    term,
+    'Filesystem',
+    'failed cd keeps session cwd',
+    cdBad.ok === false && String(cwdAfterBad.cwd ?? '') === '/workspace',
+    `exit=${cdBad.exitCode} session=${String(cwdAfterBad.cwd)}`
+  );
+
+  // 恢复原始会话 cwd（自检不残留 cwd 状态变更；原始值可能是真实路径（Lifo VFS 不可见），
+  // 统一回默认 /workspace，自检语义即"回到默认工作区"）。
+  await client.terminal('cd /workspace');
+
   // ─── 持久化（Persistence）───
   // 自检会真实写入快照 —— 这是特性（自检也验证了持久化）。断言放 Filesystem 区。
   const pers1 = await saveSnapshot(wc.fs);
@@ -188,6 +232,18 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     'env set/get lifecycle',
     cfgEnvRead === 'selftest-value' && cfgEnvFile === 'selftest-value',
     `TEST_VAR=${cfgEnvRead}`
+  );
+
+  // TASK24 复审（/etc 双根核对）：env 文件落在 process.cwd()/etc/webunix.env，host 必须读对位置
+  // 合并进子进程 env —— node 子进程能读到刚设置的变量即证明合并真生效（此前读虚拟系统根，
+  // 变量从未进子进程）。
+  const cfgEnvNode = await client.terminal('node -e "console.log(process.env.TEST_VAR)"');
+  verdict(
+    term,
+    'Config',
+    'env merged into node child (process.env)',
+    cfgEnvNode.ok && String(cfgEnvNode.stdout ?? '').trim() === 'selftest-value',
+    `TEST_VAR=${String(cfgEnvNode.stdout ?? '').trim()}`
   );
   const cfgEnvDel = await unsetEnvVar(wc.fs, cfgEnvKey);
   const cfgEnvAfter = await getEnvVar(wc.fs, cfgEnvKey);
@@ -377,6 +433,46 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
 
   const te5 = await client.terminal('cat /workspace/browser-wrote.txt | wc -c');
   verdict(term, 'Executor', 'lifo routing (cat|wc)', te5.ok && te5.runtime === 'lifo' && String(te5.stdout ?? '').trim() === '74', `runtime=${te5.runtime} stdout=${String(te5.stdout ?? '').trim()}`);
+
+  // ─── Shell 融合（TASK24）：转义引号分词 + node 系命令 shell 元字符回退 ───
+  // tokenize 是 host 与浏览器共享的纯函数（src/engine/tokenize.ts）：直接断言 shlex 语义。
+  const tk1 = tokenize('node -e "console.log(\\"hi\\")"');
+  const tkInner = tk1[0] === 'node' && tk1[1] === '-e' && tk1[2] === 'console.log("hi")';
+  const tkSpace = tokenize('echo "a b"');
+  const tkEsc = tokenize('echo "a\\"b"');
+  let tkUnterminated = false;
+  try {
+    tokenize('echo "unterminated');
+  } catch {
+    tkUnterminated = true;
+  }
+  verdict(
+    term,
+    'Shell',
+    'tokenize escape quotes',
+    tkInner && tkSpace.length === 2 && tkSpace[1] === 'a b' && tkEsc[1] === 'a"b' && tkUnterminated,
+    `inner=${JSON.stringify(tk1[2])} space=${JSON.stringify(tkSpace[1])} esc=${JSON.stringify(tkEsc[1])} unterminated=${tkUnterminated}`
+  );
+
+  // node 系命令含 shell 元字符 → 整条经 Lifo shell 执行（runtime=lifo），node 段转真 node。
+  const shellPipe = await client.terminal('node -e "console.log(21*2)" | grep 42');
+  verdict(
+    term,
+    'Shell',
+    'node pipe chain',
+    shellPipe.ok && shellPipe.runtime === 'lifo' && String(shellPipe.stdout ?? '').trim() === '42',
+    `runtime=${shellPipe.runtime} stdout=${String(shellPipe.stdout ?? '').trim()}`
+  );
+
+  const shellChain = await client.terminal('node --version && npm --version');
+  const chainLines = String(shellChain.stdout ?? '').trim().split('\n').filter((l) => l.length > 0);
+  verdict(
+    term,
+    'Shell',
+    'node && chain',
+    shellChain.ok && shellChain.runtime === 'lifo' && chainLines.length >= 2,
+    `runtime=${shellChain.runtime} lines=${chainLines.length}`
+  );
 
   try {
     await client.terminal('node -e "setInterval(()=>{},1000)"', undefined, 1500); // 预期超时：命令未结束
@@ -609,12 +705,94 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `handled=${handledM} out=${capM.lines.join('') || '(empty)'}`
   );
 
+  // ─── 内置语言运行时（Languages，TASK23）：python 真实执行 + lang 列表 ───
+  // python 资产首用懒注入：自检真实跑 python 前先确保运行时已注入（首次注入 ~13MB，稍慢）。
+  try {
+    await ensurePythonRuntime(wc);
+  } catch (e) {
+    verdict(term, 'Languages', 'python runtime inject', false, String(e).slice(0, 120));
+  }
+  const py1 = await client.terminal('python -c "print(6*7)"', undefined, 90000);
+  verdict(
+    term,
+    'Languages',
+    'python -c real execution',
+    py1.ok && String(py1.stdout ?? '').trim() === '42' && py1.runtime === 'node',
+    `runtime=${py1.runtime} stdout=${String(py1.stdout ?? '').trim()}`
+  );
+
+  // 标准库支持矩阵抽检：json/csv/re/math/os/sqlite3 全部可导入。
+  const py2 = await client.terminal(
+    'python -c "import json,csv,re,math,os,sqlite3; print(len([json,csv,re,math,os,sqlite3]))"',
+    undefined,
+    60000
+  );
+  verdict(
+    term,
+    'Languages',
+    'python stdlib imports (json/csv/re/math/os/sqlite3)',
+    py2.ok && String(py2.stdout ?? '').trim() === '6',
+    String(py2.stdout ?? '').trim()
+  );
+
+  // python3 别名 + --version 输出 Python 3.11。
+  const py3 = await client.terminal('python3 --version', undefined, 60000);
+  verdict(
+    term,
+    'Languages',
+    'python3 alias + version',
+    py3.ok && String(py3.stdout ?? '').includes('3.11'),
+    String(py3.stdout ?? '').trim().slice(0, 40)
+  );
+
+  // TASK24 复审（python 假管道修复）：含 shell 元字符的 python 命令经 Lifo shell 执行，python
+  // 段转真运行时 —— 管道真工作。grep 无匹配 → 空输出；grep 命中 → 输出保留。此前 `| grep ...`
+  // 被静默当 python 参数吞掉（print(1) | grep 2 会输出 1 而非空）。
+  const pyPipe1 = await client.terminal('python -c "print(1)" | grep 2', undefined, 60000);
+  verdict(
+    term,
+    'Languages',
+    'python pipe filters empty (grep 2)',
+    pyPipe1.runtime === 'lifo' && String(pyPipe1.stdout ?? '').trim() === '',
+    `runtime=${pyPipe1.runtime} stdout=${JSON.stringify(String(pyPipe1.stdout ?? '').trim())}`
+  );
+  const pyPipe2 = await client.terminal('python -c "print(42)" | grep 42', undefined, 60000);
+  verdict(
+    term,
+    'Languages',
+    'python pipe keeps match (grep 42)',
+    pyPipe2.ok && pyPipe2.runtime === 'lifo' && String(pyPipe2.stdout ?? '').trim() === '42',
+    `runtime=${pyPipe2.runtime} stdout=${String(pyPipe2.stdout ?? '').trim()}`
+  );
+
+  // lang 列表经命令分发路径断言（浏览器侧命令）。
+  const capLang = captureTerm();
+  const handledLang = await tryHandleLocalCommand({ ...dispatchBase, term: capLang.term }, 'lang');
+  const langText = capLang.lines.join('\n');
+  verdict(
+    term,
+    'Languages',
+    'lang list',
+    handledLang && langText.includes('python') && langText.includes('node') && langText.includes('typescript'),
+    langText.replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)
+  );
+
+  const capLangPy = captureTerm();
+  const handledLangPy = await tryHandleLocalCommand({ ...dispatchBase, term: capLangPy.term }, 'lang python');
+  verdict(
+    term,
+    'Languages',
+    'lang python version',
+    handledLangPy && capLangPy.lines.join('').includes('Python 3.11'),
+    capLangPy.lines.join('').trim()
+  );
+
   // ─── 内置命令冒烟（Smoke，TASK16）：help 全部条目里浏览器侧命令的取安全形态逐个跑 ───
   // 只跑非破坏性命令：reboot 会 reload、db start 会装 tinbase、snapshot now/clear 有副作用，均排除；
   // 其余全部经 tryHandleLocalCommand 分发，断言"被浏览器处理且不抛异常"。
   const smokeCtx = { wc, client, ports, term, fit: () => {} };
   const smokeCommands: string[] = [
-    'help', 'clear', 'sysinfo', 'version', 'whoami', 'ports',
+    'help', 'clear', 'sysinfo', 'version', 'whoami', 'ports', 'pwd', 'lang',
     'db status', 'db stop', // db start 排除（重型：安装+spawn）
     'snapshot', // 状态查看；snapshot now / clear 排除（副作用）
     'free', 'top', // top 3 次快照，约 4s，可接受

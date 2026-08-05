@@ -8,6 +8,7 @@ import '@fontsource/jetbrains-mono/700.css';
 import { bootWebUnix } from './boot.js';
 import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
+import { tokenize } from './engine/tokenize.js';
 import { log } from './log.js';
 import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
@@ -15,6 +16,7 @@ import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
 import type { ExecResult } from './engine/index.js';
+import { ensurePythonRuntime } from './engine/index.js';
 
 const AMBER = '\x1b[33m';
 const RED = '\x1b[31m';
@@ -202,6 +204,17 @@ async function execute(cmd: string): Promise<void> {
   }
 
   let res: ExecResult;
+  // TASK23：python 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
+  // 宽松触发（tokenize 后任一 token 为 python/python3）——注入幂等，12.6MB 仅一次。
+  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3')) {
+    try {
+      await ensurePythonRuntime(ctx.wc);
+    } catch (e) {
+      term.write(`${RED}${String(e)}${RESET}`);
+      void log('ERROR', `cmd: ${cmd} python asset inject failed: ${String(e)}`);
+      return;
+    }
+  }
   try {
     res = await ctx.client.terminal(cmd, undefined, 60000);
   } catch (e) {
@@ -257,6 +270,10 @@ async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000):
     return { handled: true, ok: true, output: lines.join('\n'), lines };
   }
   try {
+    // TASK23：python 命令（含链中段）首用前懒注入运行时资产（与 execute() 相同路径）。
+    if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3')) {
+      await ensurePythonRuntime(ctx.wc);
+    }
     const res = await ctx.client.terminal(cmd, undefined, timeoutMs);
     return {
       handled: false,

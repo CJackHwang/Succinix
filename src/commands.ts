@@ -64,7 +64,7 @@ const RESET = '\x1b[0m';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const VERSION = 'WebUnix 0.2.0 (browser-native Linux)';
+const VERSION = 'Succinix 0.2.0 (browser-native Linux)';
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
@@ -99,7 +99,7 @@ function fmtDateTime(d: Date): string {
 }
 
 function printHelp(term: Terminal): void {
-  term.writeln('WebUnix built-in commands');
+  term.writeln('Succinix built-in commands');
   term.writeln(`  help         show this help`);
   term.writeln(`  clear        clear the screen (Ctrl+L also works)`);
   term.writeln(`  sysinfo      re-print system information`);
@@ -116,8 +116,8 @@ function printHelp(term: Terminal): void {
   term.writeln(`  shutdown     power off (you can close this tab)`);
   term.writeln(`  cache        show cache usage; 'cache clear' cleans rebuildable caches`);
   term.writeln(`  workspace    list workspaces; create/switch/rm manage isolated workspaces`);
-  term.writeln(`  env          list / set / unset environment variables (persisted in /etc/webunix.env)`);
-  term.writeln(`  settings     view / set / reset system settings (persisted in /etc/webunix.settings)`);
+  term.writeln(`  env          list / set / unset environment variables (persisted in /etc/succinix.env)`);
+  term.writeln(`  settings     view / set / reset system settings (persisted in /etc/succinix.settings)`);
   term.writeln(`  service      list services; start/stop/status/enable/disable manage them (declarative autostart)`);
   term.writeln(`  log          show recent log entries (last 20); log -n <count> / log clear / log boot`);
   term.writeln(`  pkg          package management: list / search <term> / install <name> / remove <name> / info <name>`);
@@ -446,7 +446,7 @@ async function topCmd(ctx: CommandContext): Promise<void> {
 // reboot：重启系统 = 重建容器释放内存。最简单可靠的方式是 location.reload()——
 // 浏览器释放旧容器全部内存，重新 boot；持久化在 IndexedDB（浏览器侧），reload 保留。
 function rebootCmd(term: Terminal): void {
-  term.writeln('Rebooting WebUnix...');
+  term.writeln('Rebooting Succinix...');
   setTimeout(() => location.reload(), 300);
 }
 
@@ -646,7 +646,7 @@ async function workspaceCmd(ctx: CommandContext, args: string[]): Promise<void> 
 }
 
 // ─── 系统配置（TASK10）：env / settings ───
-// 两者都落在容器 FS（/etc/webunix.env、/etc/webunix.settings），随快照持久，重启保留。
+// 两者都落在容器 FS（/etc/succinix.env、/etc/succinix.settings），随快照持久，重启保留。
 
 // env：查看 / 设置 / 删除环境变量。
 //   env              列出全部（key=value 对齐，值可含 =）
@@ -767,7 +767,7 @@ function applySettingRuntime(ctx: CommandContext, key: string, value: string): v
 }
 
 // ─── 服务管理（TASK11）：service 命令族，spawn/ps/kill + 端口注册表的声明式封装 ───
-// 定义在 /etc/webunix.services（name|command|port），自启清单在 /etc/webunix.autostart，
+// 定义在 /etc/succinix.services（name|command|port），自启清单在 /etc/succinix.autostart，
 // 两者都随快照持久。状态由进程表 + 端口注册表联合判定（services.ts）。
 
 // 单个服务详情：state + pid + port/url（未匹配显示 unknown service）。
@@ -873,7 +873,7 @@ async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
   term.writeln('usage: service | service start <name> | service stop <name> | service status <name> | service enable <name> | service disable <name>');
 }
 
-// ─── 日志（TASK12）：log 命令族，读取 /var/log/webunix.log（journald 风格）───
+// ─── 日志（TASK12）：log 命令族，读取 /var/log/succinix.log（journald 风格）───
 //   log              最近 20 行（默认）
 //   log -n <count>   最近 N 行
 //   log boot         只看 BOOT 级
@@ -1170,8 +1170,8 @@ export function detectUnameArch(): string {
 
 interface UnameFields {
   s: string; // 系统名（uname -s）
-  n: string; // 主机名（uname -n，与提示符 guest@webunix 一致）
-  version: string; // WebUnix 版本
+  n: string; // 主机名（uname -n，与提示符 guest@succinix 一致）
+  version: string; // Succinix 版本
   v: string; // 内核标识（uname -v）
   r: string; // 运行时版本（uname -r）
   m: string; // 架构（uname -m）
@@ -1180,8 +1180,8 @@ interface UnameFields {
 
 function unameFields(): UnameFields {
   return {
-    s: 'WebUnix',
-    n: 'webunix',
+    s: 'Succinix',
+    n: 'succinix',
     version: '0.2.0',
     v: 'js-runtime+webcontainer',
     r: __UNAME_RUNTIME__,
@@ -1237,7 +1237,7 @@ function unameCmd(term: Terminal, args: string[]): void {
   term.writeln(parts.join(' '));
 }
 
-// motd：查看 / 设置 / 恢复登录横幅（/etc/webunix.motd，随快照持久）。
+// motd：查看 / 设置 / 恢复登录横幅（/etc/succinix.motd，随快照持久）。
 //   motd          查看当前内容
 //   motd <text>   设置（多词用空格 join）
 //   motd reset    恢复默认

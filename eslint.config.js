@@ -1,4 +1,4 @@
-// WebUnix ESLint flat config（TASK20）。
+// Succinix ESLint flat config（TASK20）。
 // 规则集：@eslint/js recommended + typescript-eslint recommended（仅 TS 文件）+ 项目定制：
 //   - 禁 any（error）
 //   - console.log 遗留（warn；console.warn/error 放行 —— 代码库用其做优雅降级；host 系文件例外）

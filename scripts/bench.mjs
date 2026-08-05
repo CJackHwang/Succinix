@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// WebUnix TASK18 性能基准：headless Chrome + CDP，零新依赖（仿 verify-deploy.mjs 的 CDP 模式）。
+// Succinix TASK18 性能基准：headless Chrome + CDP，零新依赖（仿 verify-deploy.mjs 的 CDP 模式）。
 // 测量并输出 JSON：boot 耗时、命令往返（Lifo echo hi / Node node -e 1）、快照开销（N=200/1000）、
 // xterm 大输出（seq 1 5000）。
 //
@@ -129,7 +129,7 @@ async function findChrome() {
 async function launchChrome() {
   const chromePath = await findChrome();
   if (!chromePath) throw new Error('headless Chrome not found');
-  const profileDir = mkdtempSync(join(tmpdir(), 'webunix-bench-'));
+  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-bench-'));
   const chrome = spawn(chromePath, [
     '--headless=new',
     `--remote-debugging-port=${DEBUG_PORT}`,
@@ -191,13 +191,13 @@ async function evalValue(cdp, expression) {
   return res.result.value;
 }
 
-// 等页面暴露 __webunixBench（boot 完成 + 提示符出现）。
+// 等页面暴露 __succinixBench（boot 完成 + 提示符出现）。
 async function waitForBenchHook(cdp, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   let lastErr;
   while (Date.now() < deadline) {
     try {
-      const v = await evalValue(cdp, `JSON.stringify({ hook: !!window.__webunixBench, prompt: window.__bootTimes && window.__bootTimes.prompt })`);
+      const v = await evalValue(cdp, `JSON.stringify({ hook: !!window.__succinixBench, prompt: window.__bootTimes && window.__bootTimes.prompt })`);
       const st = JSON.parse(v);
       if (st.hook && st.prompt !== null) return;
       lastErr = new Error(`hook not ready: ${v}`);
@@ -227,7 +227,7 @@ async function measureBoot(cdp) {
 
 async function measureCommands(cdp) {
   const res = await evalValue(cdp, `(async () => {
-    const b = window.__webunixBench;
+    const b = window.__succinixBench;
     const out = { lifo: [], node: [] };
     for (let i = 0; i < 10; i++) {
       const t0 = performance.now();
@@ -251,7 +251,7 @@ async function measureCommands(cdp) {
 // 构造 N 文件目录 → saveSnapshot(force) 计时。创建与快照分开计时，便于定位成本。
 async function measureSnapshot(cdp, n, dir) {
   return evalValue(cdp, `(async () => {
-    const b = window.__webunixBench;
+    const b = window.__succinixBench;
     const fs = b.wc.fs;
     let createMs = 0, snapshotMs = 0, files = 0;
     try {
@@ -275,14 +275,14 @@ async function measureSnapshot(cdp, n, dir) {
 async function measureXtermBig(cdp) {
   // 优先 seq（Lifo 原生）；若内核无 seq，回落 node 子进程生成 5000 行。
   const probe = await evalValue(cdp, `(async () => {
-    const b = window.__webunixBench;
+    const b = window.__succinixBench;
     const r = await b.client.terminal('seq 1 3');
     return { ok: r.ok, out: String(r.stdout ?? '').trim() };
   })()`);
   const cmd = probe.ok && probe.out === '1\n2\n3' ? 'seq 1 5000' : 'node -e "for(let i=1;i<=5000;i++)console.log(i)"';
   if (cmd !== 'seq 1 5000') warn('Lifo seq unavailable; falling back to node loop for xterm big-output');
   return evalValue(cdp, `(async () => {
-    const b = window.__webunixBench;
+    const b = window.__succinixBench;
     const t0 = performance.now();
     const res = await b.client.terminal(${JSON.stringify(cmd)});
     const ms = performance.now() - t0;
@@ -301,7 +301,7 @@ async function measureXtermBig(cdp) {
 
 // ─── 主流程 ───
 async function main() {
-  note('WebUnix performance benchmark (TASK18)');
+  note('Succinix performance benchmark (TASK18)');
 
   // 1) 构建
   if (SKIP_BUILD) {

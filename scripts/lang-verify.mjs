@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// WebUnix TASK25 语言生态验证（lang-verify）：headless Chrome + CDP 驱动真实浏览器/容器执行。
+// Succinix TASK25 语言生态验证（lang-verify）：headless Chrome + CDP 驱动真实浏览器/容器执行。
 // 零新依赖（复用 verify-deploy.mjs / scenarios.mjs 的 CDP 模式）。每项断言带稳定 SC id：
 //   Python 生态  P1 版本  P2 -c 执行  P3 脚本文件  P4 真管道  P5 标准库矩阵
 //                P6 pip 不可用报错明确  P7 共享 FS 读写（python/node/lifo 同一文件）
@@ -126,7 +126,7 @@ async function findChrome() {
 async function launchChrome() {
   const chromePath = await findChrome();
   if (!chromePath) throw new Error('headless Chrome not found');
-  const profileDir = mkdtempSync(join(tmpdir(), 'webunix-lang-verify-'));
+  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-lang-verify-'));
   const chrome = spawn(chromePath, [
     '--headless=new',
     `--remote-debugging-port=${DEBUG_PORT}`,
@@ -194,7 +194,7 @@ function makeHarness(cdp) {
       return evalValue(cdp, expression);
     },
     async run(cmd, timeoutMs) {
-      const expr = `(async () => JSON.stringify(await window.__webunixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
+      const expr = `(async () => JSON.stringify(await window.__succinixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
       return JSON.parse(await evalValue(cdp, expr));
     },
     async waitFor(condExpr, timeoutMs) {
@@ -216,7 +216,7 @@ function makeHarness(cdp) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         try {
-          const v = await evalValue(cdp, '!!window.__webunixScenario && window.__webunixScenario.booted === true');
+          const v = await evalValue(cdp, '!!window.__succinixScenario && window.__succinixScenario.booted === true');
           if (v) return;
         } catch {
           /* 导航期间上下文销毁：下一轮再试 */
@@ -241,7 +241,7 @@ async function pySection(h) {
   check('P2', 'python -c executes (print(6*7) == 42)', p2.ok && String(p2.stdout ?? '').trim() === '42', String(p2.stdout ?? '').trim());
 
   // P3: 写 .py 脚本 → python 跑 → 输出正确（含 os.getcwd()）
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-p3.py', 'print("p3-script-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/lang-p3.py', 'print("p3-script-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
   const p3 = await h.run('python /lang-p3.py', 90000);
   const p3Out = String(p3.stdout ?? '');
   check('P3', 'python script file runs (write .py -> python)', p3.ok && p3Out.includes('p3-script-ok'), p3Out.trim().split('\n')[0] ?? '');
@@ -253,7 +253,7 @@ async function pySection(h) {
   check('P4', 'python pipe filters empty (grep zzz)', p4b.runtime === 'lifo' && String(p4b.stdout ?? '').trim() === '', `runtime=${p4b.runtime} stdout=${JSON.stringify(String(p4b.stdout ?? '').trim())}`);
 
   // P5: 标准库矩阵（支持矩阵数据源）—— 逐项 import 并报告
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-p5.py', 'import importlib\\nmods = [\\'json\\',\\'csv\\',\\'re\\',\\'math\\',\\'os\\',\\'sqlite3\\',\\'subprocess\\',\\'collections\\',\\'datetime\\',\\'hashlib\\',\\'urllib\\']\\nok = []\\nbad = []\\nfor m in mods:\\n    try:\\n        importlib.import_module(m)\\n        ok.append(m)\\n    except Exception:\\n        bad.append(m)\\nprint(\\'OK=\\' + \\',\\'.join(ok))\\nprint(\\'BAD=\\' + \\',\\'.join(bad))\\nprint(\\'COUNT=\\' + str(len(ok)))\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/lang-p5.py', 'import importlib\\nmods = [\\'json\\',\\'csv\\',\\'re\\',\\'math\\',\\'os\\',\\'sqlite3\\',\\'subprocess\\',\\'collections\\',\\'datetime\\',\\'hashlib\\',\\'urllib\\']\\nok = []\\nbad = []\\nfor m in mods:\\n    try:\\n        importlib.import_module(m)\\n        ok.append(m)\\n    except Exception:\\n        bad.append(m)\\nprint(\\'OK=\\' + \\',\\'.join(ok))\\nprint(\\'BAD=\\' + \\',\\'.join(bad))\\nprint(\\'COUNT=\\' + str(len(ok)))\\n')`);
   const p5 = await h.run('python /lang-p5.py', 90000);
   const p5Out = String(p5.stdout ?? '');
   const p5OkLine = p5Out.split('\n').find((l) => l.startsWith('OK=')) ?? '';
@@ -285,7 +285,7 @@ async function pySection(h) {
   // P7: 共享 FS 读写（python / node / lifo 同一文件）
   await h.run('cd /workspace', 15000);
   const p7a = await h.run('python -c "open(\'lang-p7-py.txt\',\'w\').write(\'python-wrote-this\')"', 90000);
-  const p7b = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-p7-py.txt','utf8').then(t=>t).catch(()=>'MISSING')`);
+  const p7b = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/lang-p7-py.txt','utf8').then(t=>t).catch(()=>'MISSING')`);
   check('P7', 'python writes shared-FS file (browser reads)', p7a.ok && p7b === 'python-wrote-this', `browser=${JSON.stringify(p7b)}`);
   const p7c = await h.run('node -e "const fs=require(\'fs\');console.log(fs.readFileSync(\'lang-p7-py.txt\',\'utf8\'))"', 60000);
   check('P7', 'node reads the same file', p7c.ok && String(p7c.stdout ?? '').trim() === 'python-wrote-this', String(p7c.stdout ?? '').trim());
@@ -314,7 +314,7 @@ async function nodeSection(h) {
 
   // N2: node -e 嵌套双引号写 TS 文件 → 文件引号保真 + 可编译（tsc 在 N3 里编译）
   const n2 = await h.run(`node -e "require('fs').writeFileSync('src/quote.ts', 'export const msg: string = \\"n2-quote-ok\\";\\nconsole.log(msg);')"`, 60000);
-  const n2Content = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-node-proj/src/quote.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
+  const n2Content = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/lang-node-proj/src/quote.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
   check('N2', 'node -e nested double quotes write file (quotes preserved)', n2.ok && typeof n2Content === 'string' && n2Content.includes('"n2-quote-ok"'), `content=${JSON.stringify(n2Content).slice(0, 80)}`);
 
   // N3: npm i -D typescript tsx vitest → tsc → node 跑产物 → vitest（复刻 S13）
@@ -327,19 +327,19 @@ async function nodeSection(h) {
     compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true, esModuleInterop: true },
     include: ['src'],
   }, null, 2);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/lang-node-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
 
   const tsc = await h.run(`cd ${PROJ} && npx tsc -p tsconfig.json`, 180000);
   check('N3', 'tsc compiles TS (incl. quote.ts)', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr ?? '').trim().slice(0, 100)}`);
-  const distQuote = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-node-proj/dist/quote.js','utf8').then(()=>true).catch(()=>false)`);
+  const distQuote = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/lang-node-proj/dist/quote.js','utf8').then(()=>true).catch(()=>false)`);
   check('N3', 'dist/quote.js artifact produced', distQuote === true, `present=${distQuote}`);
 
   const runQ = await h.run(`cd ${PROJ} && node dist/quote.js`, 60000);
   check('N3', 'node runs compiled artifact (quote preserved through tsc)', runQ.ok && String(runQ.stdout ?? '').trim() === 'n2-quote-ok', String(runQ.stdout ?? '').trim());
 
-  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/lang-node-proj/test', { recursive: true })`);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\n')`);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/test/quote.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.mkdir('/lang-node-proj/test', { recursive: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/lang-node-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/lang-node-proj/test/quote.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
   const vitest = await h.run(`cd ${PROJ} && npx vitest run`, 180000);
   const vtOut = String(vitest.stdout ?? '') + String(vitest.stderr ?? '');
   check('N3', 'vitest run: 1 passed', vitest.ok && /1 passed/.test(vtOut), vtOut.trim().split('\n').filter((l) => /passed|failed|Test Files/.test(l)).slice(-3).join(' | '));
@@ -351,13 +351,13 @@ async function nodeSection(h) {
 
   // N5: cwd 同步装包 → 包装进项目目录（非根 node_modules）
   const n5 = await h.run(`cd ${PROJ} && npm i left-pad`, 180000);
-  const n5InProj = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/lang-node-proj/node_modules/left-pad').then(()=>true).catch(()=>false)`);
-  const n5InRoot = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/node_modules/left-pad').then(()=>true).catch(()=>false)`);
+  const n5InProj = await h.evalValue(`window.__succinixScenario.wc.fs.readdir('/lang-node-proj/node_modules/left-pad').then(()=>true).catch(()=>false)`);
+  const n5InRoot = await h.evalValue(`window.__succinixScenario.wc.fs.readdir('/node_modules/left-pad').then(()=>true).catch(()=>false)`);
   check('N5', 'npm i in project dir installs to project node_modules', n5.ok === true && n5InProj === true && n5InRoot === false, `proj=${n5InProj} root=${n5InRoot}`);
 
   // 清理
   await h.run('cd /workspace', 15000);
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/lang-node-proj', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/lang-node-proj', { recursive: true, force: true })`);
 }
 
 // ─── 其他语言（可行性探测，报告即可）───
@@ -390,12 +390,12 @@ async function otherSection(h) {
     check('R1', 'Ruby @ruby/wasm-wasi runs in-container (6*7 == 42)', false, `npm install failed: ${String(r1inst.stderr ?? r1inst.stdout ?? '').trim().split('\n').slice(-1)[0]?.slice(0, 100)}`);
   }
   await h.run('cd /workspace', 15000);
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/lang-ruby-proj', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/lang-ruby-proj', { recursive: true, force: true })`);
 }
 
 // ─── 主流程 ───
 async function main() {
-  note('WebUnix TASK25 language-ecosystem verification (real browser/container)');
+  note('Succinix TASK25 language-ecosystem verification (real browser/container)');
 
   if (SKIP_BUILD) {
     note('skipping build (--skip-build), using existing dist/');

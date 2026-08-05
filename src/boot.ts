@@ -11,7 +11,7 @@ import { ensureServicesFiles, readAutostart, startService } from './services.js'
 import { initLogger, log } from './log.js';
 import { ensureMotd } from './motd.js';
 
-export interface WebUnixServices {
+export interface SuccinixServices {
   wc: WebContainer;
   client: TerminalClient;
   /** 端口注册表：port → 预览 URL（来自 WebContainer 的 server-ready 事件，每次 boot 重建） */
@@ -28,7 +28,7 @@ function bootPhase(name: string): void {
 }
 
 // systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息（渲染到覆盖层日志区）。
-// TASK12：同步写 BOOT 级日志到 /var/log/webunix.log（initLogger 之后生效；之前为 no-op）。
+// TASK12：同步写 BOOT 级日志到 /var/log/succinix.log（initLogger 之后生效；之前为 no-op）。
 function ok(ui: BootUI, msg: string): void {
   ui.log(`[  OK  ] ${msg}`, 'ok');
   void log('BOOT', msg);
@@ -132,7 +132,7 @@ async function initWorkspace(ui: BootUI, fs: FileSystemAPI, defaultWorkspace: st
 // waitForHostReady 负责就绪探活。前端只负责：构造 TerminalClient、注入命令日志采集点、
 // 用 onServerReady/onServerClosed 维护自己的预览端口注册表。日志采集在这里接线：
 // 采集条目类型用引擎导出的 CommandLogEntry（结构性兼容），前端过滤纯轮询 ps（避免刷屏）
-// 并落盘 /var/log/webunix.log。
+// 并落盘 /var/log/succinix.log。
 function makeClientLogger(): (entry: CommandLogEntry) => void {
   return (entry) => {
     if (entry.command.trim() !== 'ps') {
@@ -147,7 +147,7 @@ function makeClientLogger(): (entry: CommandLogEntry) => void {
 // ─── 主启动流程 ───
 
 // boot 完成信号 = Promise 解析（null 表示环境不适配，错误页已由 ui.fail 显示）。
-export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
+export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null> {
   // 任何 WebContainer 操作之前：最小必要环境检测，不满足直接错误页退出，不做降级/兜底。
   const failures = checkEnvironment();
   if (failures.length > 0) {
@@ -177,7 +177,7 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   bootPhase('wc-booted');
 
   // TASK16 R3：先 loadSnapshot 再 initLogger —— 消除恢复期日志写竞争。
-  // loadSnapshot 会把旧 /var/log/webunix.log 写回容器 FS；若日志系统先初始化，
+  // loadSnapshot 会把旧 /var/log/succinix.log 写回容器 FS；若日志系统先初始化，
   // 恢复写回会与并发日志写互相覆盖（恢复前的 boot 事件不落盘，可接受）。
   // initLogger 之后所有 boot / 快照 / 命令事件照常落盘。
   try {
@@ -241,7 +241,7 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
     note(ui, `Service files init failed (${String(e).slice(0, 80)})`);
   }
 
-  // 登录横幅（TASK15）：确保 /etc/webunix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
+  // 登录横幅（TASK15）：确保 /etc/succinix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
   try {
     await ensureMotd(wc.fs);
   } catch (e) {
@@ -264,7 +264,7 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   bootPhase('host-ready');
   ok(ui, 'TerminalExecutor ready');
 
-  // 服务自启（TASK11）：声明式重启 —— boot 后按 /etc/webunix.autostart 逐个拉起。
+  // 服务自启（TASK11）：声明式重启 —— boot 后按 /etc/succinix.autostart 逐个拉起。
   // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
   try {
     const autostart = await readAutostart(wc.fs);

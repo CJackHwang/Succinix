@@ -1,11 +1,11 @@
-// WebUnix 入口：全屏暗橙终端 + DOM 居中启动覆盖层 + REPL。
+// Succinix 入口：全屏暗橙终端 + DOM 居中启动覆盖层 + REPL。
 // 默认进入终端；URL 带 ?test=1 时在覆盖层日志区自动跑完整系统自检（boot diagnostics）。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
-import { bootWebUnix } from './boot.js';
+import { bootSuccinix } from './boot.js';
 import { createBootUI, overlayTerminalShim } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
@@ -26,10 +26,10 @@ const RESET = '\x1b[0m';
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // 欢迎横幅：覆盖层淡出后显示在终端里（TASK3 的"启动后进入系统首页"）。
-// TASK15：默认横幅改由 /etc/webunix.motd 提供（可编辑、随快照持久）；此处仅作
+// TASK15：默认横幅改由 /etc/succinix.motd 提供（可编辑、随快照持久）；此处仅作
 // motd 文件缺失时的兜底。
 const WELCOME_BANNER =
-  `WebUnix 0.2.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
+  `Succinix 0.2.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
   `Type 'help' to see available commands.`;
 
 // ─── xterm：全屏暗橙终端（JetBrains Mono，暖色暗调色板）───
@@ -72,7 +72,7 @@ fitAddon.fit();
 window.addEventListener('resize', () => fitAddon.fit());
 
 // ─── REPL 状态 ───
-const promptStr = 'guest@webunix:~$ ';
+const promptStr = 'guest@succinix:~$ ';
 let line = '';
 let busy = false;
 const queue: string[] = [];
@@ -83,7 +83,7 @@ const testMode = new URLSearchParams(location.search).get('test') === '1';
 // 正常走 boot 全流程（无自检），仅多暴露内部句柄 + 记录首提示符时间戳，供 headless Chrome 测量。
 const benchMode = new URLSearchParams(location.search).get('bench') === '1';
 // TASK19：场景测试驱动模式（scripts/scenarios.mjs 用 ?scenario=1 打开）。与 ?test=1 / ?bench=1
-// 独立：正常走 boot 全流程，暴露 window.__webunixScenario 供 headless Chrome 驱动真实命令。
+// 独立：正常走 boot 全流程，暴露 window.__succinixScenario 供 headless Chrome 驱动真实命令。
 const scenarioMode = new URLSearchParams(location.search).get('scenario') === '1';
 
 // TASK18：bench 模式记录首提示符出现时间（基准脚本读 window.__bootTimes.prompt）。
@@ -422,7 +422,7 @@ async function restartHost(ctx: CommandContext): Promise<void> {
 async function main(): Promise<void> {
   const ui = createBootUI();
   try {
-    const services = await bootWebUnix(ui);
+    const services = await bootSuccinix(ui);
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
     if (!services) return;
     ctx = { wc: services.wc, client: services.client, ports: services.ports, term, fit: () => fitAddon.fit(), hostProc: services.hostProc };
@@ -430,7 +430,7 @@ async function main(): Promise<void> {
     // TASK18：?bench=1 时暴露内部句柄（RPC 客户端 / 容器 FS / 终端 / 快照）供 scripts/bench.mjs
     // 测量命令往返、快照开销、大输出；正常会话不暴露任何内部对象。
     if (benchMode) {
-      (window as unknown as { __webunixBench?: unknown }).__webunixBench = {
+      (window as unknown as { __succinixBench?: unknown }).__succinixBench = {
         client: ctx.client,
         wc: ctx.wc,
         term,
@@ -441,7 +441,7 @@ async function main(): Promise<void> {
     // TASK19：?scenario=1 时暴露场景驱动句柄（scripts/scenarios.mjs 用）。与 bench 句柄独立：
     // run() 走与 execute() 相同的分发路径（browser 拦截 → host RPC），是真实命令执行的驱动面。
     if (scenarioMode) {
-      (window as unknown as { __webunixScenario?: unknown }).__webunixScenario = {
+      (window as unknown as { __succinixScenario?: unknown }).__succinixScenario = {
         booted: true,
         client: ctx.client,
         wc: ctx.wc,

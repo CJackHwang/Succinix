@@ -102,7 +102,7 @@ describe('services autostart', () => {
     await writeServicesText(f, '');
     // 直接写自启文件（用 enableAutostart 会触发 forcePersist，分开测）
     const raw = f as unknown as FakeFS;
-    await raw.writeFile('/etc/webunix.autostart', 'tinbase\ntinbase\nother\n');
+    await raw.writeFile('/etc/succinix.autostart', 'tinbase\ntinbase\nother\n');
     expect(await readAutostart(f)).toEqual(['tinbase', 'other']);
   });
 
@@ -131,7 +131,7 @@ describe('services port rendering', () => {
     const f = fs();
     await writeServicesText(f, ''); // ensure /etc dir exists? no—use settings
     const raw = f as unknown as FakeFS;
-    await raw.writeFile('/etc/webunix.settings', 'preview-port=4100\n');
+    await raw.writeFile('/etc/succinix.settings', 'preview-port=4100\n');
     expect(await resolvePreviewPort(f)).toBe(4100);
   });
 

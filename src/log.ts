@@ -1,4 +1,4 @@
-// 日志模块（TASK12）：journald 风格，落盘 /var/log/webunix.log（容器 FS，随快照持久）。
+// 日志模块（TASK12）：journald 风格，落盘 /var/log/succinix.log（容器 FS，随快照持久）。
 // 行格式：2026-08-05T04:00:00Z [level] message（level: INFO/WARN/ERROR/BOOT）。
 // 采集点：boot 事件 / 命令执行 / 服务事件 / 快照事件 / 错误，全部经 log() 落盘。
 // 约束：日志写入失败绝不影响主流程（内部全捕获静默降级）。
@@ -7,7 +7,7 @@
 // 因此追加实现为"读现有内容 + 写回"（POC 文件小，~200KB 上限内全量读改写可接受）。
 import type { FileSystemAPI } from '@webcontainer/api';
 
-export const LOG_FILE = '/var/log/webunix.log';
+export const LOG_FILE = '/var/log/succinix.log';
 /** 简化 log rotate：超过 ~200KB 时截断保留尾部 */
 const MAX_LOG_BYTES = 200 * 1024;
 

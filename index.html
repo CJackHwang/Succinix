@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebUnix — browser-native Linux</title>
+  <title>Succinix — browser-native Linux</title>
   <style>
     /* ─── 基础：全屏黑底；终端在覆盖层之下，boot 期间不可见 ─── */
     html, body {
@@ -53,13 +53,13 @@
 
     /* 大标题：figlet 风格 ASCII art，等宽字符随字号等比缩放不变形。
        clamp(18px, 4.5vw, 44px) 为标称公式；叠加"恰好适配容器宽"上限：
-       字符画 56 列 * 0.6em = 33.6em，字号 = 容器宽 / 34 即不溢出。
-       再叠可读性下限 max(13px, ...)：窄屏（375px）适配公式降到 ~10px 太小，
+       字符画 66 列 * 0.6em = 39.6em，字号 = 容器宽 / 40 即不溢出。
+       再叠可读性下限 max(13px, ...)：窄屏（375px）适配公式降到 ~9px 太小，
        宁可横向裁掉字符画边缘也保证 13px 可读（overflow hidden 已兜底）。 */
     .boot-title {
       margin: 0;
       color: #c2702a;
-      font-size: max(13px, min(clamp(18px, 4.5vw, 44px), calc(min(92vw, 860px) / 34)));
+      font-size: max(13px, min(clamp(18px, 4.5vw, 44px), calc(min(92vw, 860px) / 40)));
       line-height: 1.15;
       text-align: center;
       white-space: pre;
@@ -174,13 +174,13 @@
   <!-- DOM 居中启动覆盖层：boot-ui.ts 驱动（日志/系统信息/错误页/淡出），boot 完成淡出显示 xterm -->
   <div id="boot-overlay" role="status" aria-live="polite">
     <div class="boot-inner">
-      <pre id="boot-title" class="boot-title">██╗    ██╗███████╗██████╗ ██╗   ██╗███╗   ██╗██╗██╗  ██╗
-██║    ██║██╔════╝██╔══██╗██║   ██║████╗  ██║██║╚██╗██╔╝
-██║ █╗ ██║█████╗  ██████╔╝██║   ██║██╔██╗ ██║██║ ╚███╔╝
-██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║╚██╗██║██║ ██╔██╗
-╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║ ╚████║██║██╔╝ ██╗
- ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝</pre>
-      <div id="boot-version" class="boot-version">WebUnix 0.2.0 — browser-native Linux</div>
+      <pre id="boot-title" class="boot-title">██████╗  ██╗   ██╗  ██████╗   ██████╗  ██╗ ███╗   ██╗ ██╗ ██╗  ██╗
+██╔══██╗ ██║   ██║ ██╔════╝  ██╔════╝  ██║ ████╗  ██║ ██║ ╚██╗██╔╝
+██████╔╝ ██║   ██║ ██║       ██║       ██║ ██╔██╗ ██║ ██║  ╚███╔╝
+██╔══██╗ ██║   ██║ ██║       ██║       ██║ ██║╚██╗██║ ██║  ██╔██╗
+██████╔╝ ╚██████╔╝ ╚██████╗  ╚██████╗  ██║ ██║ ╚████║ ██║ ██╔╝ ██╗
+╚═════╝   ╚═════╝   ╚═════╝   ╚═════╝  ╚═╝ ╚═╝  ╚═══╝ ╚═╝ ╚═╝  ╚═╝</pre>
+      <div id="boot-version" class="boot-version">Succinix 0.2.0 — browser-native Linux</div>
       <div id="boot-sysinfo" class="boot-sysinfo"></div>
       <div class="boot-divider"></div>
       <div id="boot-log-head" class="boot-log-head">System self-check</div>
@@ -190,7 +190,7 @@
         <div id="boot-error-head" class="boot-error-head">Environment check failed</div>
         <div id="boot-error-list" class="boot-error-list"></div>
         <div id="boot-error-foot" class="boot-error-foot">
-          WebUnix requires a Chromium-based browser with cross-origin isolation.<br />
+          Succinix requires a Chromium-based browser with cross-origin isolation.<br />
           See README for deployment requirements.
         </div>
       </div>

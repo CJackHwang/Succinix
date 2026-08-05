@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// WebUnix TASK19 高级复杂功能场景测试：headless Chrome + CDP 驱动真实工作流。
+// Succinix TASK19 高级复杂功能场景测试：headless Chrome + CDP 驱动真实工作流。
 // 零新依赖（仿 verify-deploy.mjs / bench.mjs 的 CDP 模式）。每个场景真实执行、真实断言：
 //   S1 npm 项目开发闭环       S2 git 操作            S3 数据库全生命周期
 //   S4 服务自启               S5 多工作区隔离        S6 队列串行正确性
@@ -12,7 +12,7 @@
 //   node scripts/scenarios.mjs [--skip-build] [--port 7895]
 //   （默认先 npm run build 再用 vite preview 托管 dist/；--skip-build 要求 dist/ 已是最新。）
 //
-// 页面驱动：?scenario=1 时 main.ts 暴露 window.__webunixScenario = { run, client, wc, ports, saveSnapshot }，
+// 页面驱动：?scenario=1 时 main.ts 暴露 window.__succinixScenario = { run, client, wc, ports, saveSnapshot }，
 // run(cmd) 走与真实终端 execute() 相同的分发路径（browser 拦截 → host RPC），输出结构化返回。
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
@@ -137,7 +137,7 @@ async function findChrome() {
 async function launchChrome() {
   const chromePath = await findChrome();
   if (!chromePath) throw new Error('headless Chrome not found');
-  const profileDir = mkdtempSync(join(tmpdir(), 'webunix-scenarios-'));
+  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-scenarios-'));
   const chrome = spawn(chromePath, [
     '--headless=new',
     `--remote-debugging-port=${DEBUG_PORT}`,
@@ -209,12 +209,12 @@ function makeHarness(cdp) {
     },
     // 跑一条真实命令：与终端 execute() 同分发路径（browser 拦截 → host RPC）。
     async run(cmd, timeoutMs) {
-      const expr = `(async () => JSON.stringify(await window.__webunixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
+      const expr = `(async () => JSON.stringify(await window.__succinixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
       return JSON.parse(await evalValue(cdp, expr));
     },
     // spawn 后台进程（真实 client.spawn 路径）。
     async spawn(cmd) {
-      const expr = `(async () => JSON.stringify(await window.__webunixScenario.client.spawn(${JSON.stringify(cmd)})))()`;
+      const expr = `(async () => JSON.stringify(await window.__succinixScenario.client.spawn(${JSON.stringify(cmd)})))()`;
       return JSON.parse(await evalValue(cdp, expr));
     },
     // 轮询页面条件，满足返回真值；超时抛错。
@@ -238,7 +238,7 @@ function makeHarness(cdp) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         try {
-          const v = await evalValue(cdp, '!!window.__webunixScenario && window.__webunixScenario.booted === true');
+          const v = await evalValue(cdp, '!!window.__succinixScenario && window.__succinixScenario.booted === true');
           if (v) return;
         } catch {
           /* 导航期间上下文销毁：下一轮再试 */
@@ -267,19 +267,19 @@ async function s1(h) {
   // 1. npm init -y（真实 node 子进程，cwd = 容器项目主目录 = 浏览器根）
   const init = await h.run('npm init -y', 120000);
   check(checks, 'npm init -y succeeds', init.ok === true && init.runtime === 'node', `ok=${init.ok} runtime=${init.runtime}`);
-  const pkg = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/package.json','utf8').catch(()=>'')`);
+  const pkg = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/package.json','utf8').catch(()=>'')`);
   check(checks, 'package.json artifact real', typeof pkg === 'string' && pkg.includes('"name"'), pkg.slice(0, 60));
 
   // 2. 写 server.js（http 服务，带 CORS 头使浏览器可直取预览 URL）
   const serverJs = `const http=require('http');http.createServer((q,s)=>{s.setHeader('Access-Control-Allow-Origin','*');s.end('s1-http-ok')}).listen(${PORT_S1})`;
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/server.js', ${JSON.stringify(serverJs)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/server.js', ${JSON.stringify(serverJs)})`);
 
   // 3. node 启动后台
   const sp = await h.spawn('node server.js');
   check(checks, 'node server spawn returns pid', sp.ok === true && Number(sp.pid) > 0, `pid=${sp.pid} runtime=${sp.runtime}`);
 
   // 4. 等端口就绪 → 预览 URL 真实注册
-  const url = await h.waitFor(`window.__webunixScenario.ports.get(${PORT_S1}) || null`, 20000);
+  const url = await h.waitFor(`window.__succinixScenario.ports.get(${PORT_S1}) || null`, 20000);
   check(checks, 'server-ready -> preview URL registered', typeof url === 'string' && /^https?:\/\//.test(url), url);
 
   // 5. 真实 HTTP 200：node 子进程在容器内 fetch 预览 URL（容器内无 CORS 限制，走 WebContainer
@@ -290,11 +290,11 @@ async function s1(h) {
     const url = ${JSON.stringify(url)};
     const fetchScript = 'node -e "fetch(process.argv[1]).then(async r=>console.log(r.status+\\' \\'+await r.text())).catch(e=>console.log(\\'ERR \\'+e.message))"';
     try {
-      const r = await window.__webunixScenario.client.terminal(fetchScript + ' ' + url, undefined, 20000);
+      const r = await window.__succinixScenario.client.terminal(fetchScript + ' ' + url, undefined, 20000);
       out.preview = { ok: r.ok, stdout: String(r.stdout || '') };
     } catch (e) { out.preview = { ok: false, error: String(e) }; }
     try {
-      const r = await window.__webunixScenario.client.terminal('node -e "fetch(\\'http://127.0.0.1:${PORT_S1}\\').then(async r=>console.log(r.status+\\' \\'+await r.text()))"', undefined, 15000);
+      const r = await window.__succinixScenario.client.terminal('node -e "fetch(\\'http://127.0.0.1:${PORT_S1}\\').then(async r=>console.log(r.status+\\' \\'+await r.text()))"', undefined, 15000);
       out.local = { ok: r.ok, stdout: String(r.stdout || '') };
     } catch (e) { out.local = { ok: false, error: String(e) }; }
     try {
@@ -318,7 +318,7 @@ async function s1(h) {
   check(checks, 'kill stops background server', k.killed === true, `killed=${k.killed} ${k.message ?? ''}`);
 
   // 清理
-  await h.evalValue(`(async () => { const fs = window.__webunixScenario.wc.fs; for (const f of ['/server.js','/package.json','/package-lock.json']) { try { await fs.rm(f); } catch {} } return true; })()`);
+  await h.evalValue(`(async () => { const fs = window.__succinixScenario.wc.fs; for (const f of ['/server.js','/package.json','/package-lock.json']) { try { await fs.rm(f); } catch {} } return true; })()`);
   return checks;
 }
 
@@ -343,7 +343,7 @@ async function s2(h) {
   check(checks, 'git init', gi.ok === true, String(gi.stdout || gi.stderr || '').trim().slice(0, 80));
 
   // 4. identity + add + commit
-  await h.run('git config user.email "s2@webunix.dev"');
+  await h.run('git config user.email "s2@succinix.dev"');
   await h.run('git config user.name "s2"');
   const ga = await h.run('git add README.md');
   check(checks, 'git add', ga.ok === true, `ok=${ga.ok}`);
@@ -367,7 +367,7 @@ async function s3(h) {
   // 1. db start（首次含 npm install tinbase，重活）
   const ds = await h.run('db start', 200000);
   check(checks, 'db start (wasm)', ds.handled === true && ds.output.includes('Database ready'), ds.output ? ds.output.slice(-120) : '');
-  const url = await h.waitFor('window.__webunixScenario.ports.get(3001) || null', 15000);
+  const url = await h.waitFor('window.__succinixScenario.ports.get(3001) || null', 15000);
   check(checks, 'port 3001 in ready list', typeof url === 'string', url);
 
   // 2. node 脚本：建表 + 插数据 + 读回（真实 SQL / REST）
@@ -384,7 +384,7 @@ const H={'apikey':KEY,'content-type':'application/json'};
   } catch(e) { console.log('ERR '+String(e)); }
 })();
 `;
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s3-db.mjs', ${JSON.stringify(script)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s3-db.mjs', ${JSON.stringify(script)})`);
   const r = await h.run('node s3-db.mjs', 60000);
   const so = String(r.stdout || '');
   check(checks, 'SQL create + REST insert + read real', r.ok === true && so.includes('CREATE=200') && so.includes('INSERT=201') && so.includes('s3-persist-marker'), so.trim().slice(0, 160));
@@ -409,14 +409,14 @@ const H={'apikey':KEY,'content-type':'application/json'};
   } catch(e) { console.log('ERR '+String(e)); }
 })();
 `;
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s3-read.mjs', ${JSON.stringify(readScript)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s3-read.mjs', ${JSON.stringify(readScript)})`);
   const r2 = await h.run('node s3-read.mjs', 60000);
   const so2 = String(r2.stdout || '');
   check(checks, 'data persists across db restart', r2.ok === true && so2.includes('READ_STATUS=200') && so2.includes('s3-persist-marker'), so2.trim().slice(0, 160));
 
   // 清理
   await h.run('db stop');
-  await h.evalValue(`(async () => { const fs = window.__webunixScenario.wc.fs; for (const f of ['/s3-db.mjs','/s3-read.mjs']) { try { await fs.rm(f); } catch {} } return true; })()`);
+  await h.evalValue(`(async () => { const fs = window.__succinixScenario.wc.fs; for (const f of ['/s3-db.mjs','/s3-read.mjs']) { try { await fs.rm(f); } catch {} } return true; })()`);
   return checks;
 }
 
@@ -453,7 +453,7 @@ async function s5(h) {
   const checks = [];
   // 诊断：boot 后 /ws 初始内容（确认 main 是否存在）
   const wsInit = await h.evalValue(`(async () => {
-    const fs = window.__webunixScenario.wc.fs;
+    const fs = window.__succinixScenario.wc.fs;
     let entries = [];
     try { entries = await fs.readdir('/ws', { withFileTypes: true }); } catch (e) { return 'NO_WS: ' + String(e); }
     return entries.map((e) => e.name + (e.isDirectory() ? '/' : '')).join(',');
@@ -462,31 +462,31 @@ async function s5(h) {
   await h.run('workspace create proj-a');
   await h.run('workspace create proj-b');
   await h.run('workspace switch proj-a');
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/ws/proj-a/a.txt','a-file-content')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/ws/proj-a/a.txt','a-file-content')`);
 
   await h.run('workspace switch proj-b');
-  const aInB = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/ws/proj-b/a.txt','utf8').then(()=>true).catch(()=>false)`);
+  const aInB = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-b/a.txt','utf8').then(()=>true).catch(()=>false)`);
   check(checks, 'proj-b does not see proj-a file', aInB === false, `a.txt visible in proj-b: ${aInB}`);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/ws/proj-b/b.txt','b-file-content')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/ws/proj-b/b.txt','b-file-content')`);
 
   await h.run('workspace switch proj-a');
-  const aTxt = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/ws/proj-a/a.txt','utf8').catch(()=>'MISSING')`);
+  const aTxt = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-a/a.txt','utf8').catch(()=>'MISSING')`);
   check(checks, 'proj-a file intact after switch', aTxt === 'a-file-content', aTxt);
-  const bInA = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/ws/proj-a/b.txt','utf8').then(()=>true).catch(()=>false)`);
+  const bInA = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-a/b.txt','utf8').then(()=>true).catch(()=>false)`);
   check(checks, 'proj-a does not see proj-b file', bInA === false, `b.txt visible in proj-a: ${bInA}`);
 
   // 刷新后状态保留
   await h.reloadAndWait(120000);
   const wsDiag = await h.evalValue(`(async () => {
-    const fs = window.__webunixScenario.wc.fs;
+    const fs = window.__succinixScenario.wc.fs;
     let entries = [];
     try { entries = await fs.readdir('/ws', { withFileTypes: true }); } catch (e) { return 'NO_WS: ' + String(e); }
     return entries.map((e) => e.name + (e.isDirectory() ? '/' : '')).join(',');
   })()`);
   note(`[S5] /ws after refresh: ${wsDiag}`);
-  const cur = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/ws/.current','utf8').catch(()=>'')`);
+  const cur = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/.current','utf8').catch(()=>'')`);
   check(checks, 'current workspace retained after refresh', cur.trim() === 'proj-a', `current=${cur.trim()}`);
-  const aAfter = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/ws/proj-a/a.txt','utf8').catch(()=>'MISSING')`);
+  const aAfter = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-a/a.txt','utf8').catch(()=>'MISSING')`);
   check(checks, 'proj-a file retained after refresh', aAfter === 'a-file-content', aAfter);
 
   // 清理：切回 main，删除两个测试工作区
@@ -508,7 +508,7 @@ async function s5(h) {
 async function s6(h) {
   const checks = [];
   const expr = `(async () => {
-    const s = window.__webunixScenario;
+    const s = window.__succinixScenario;
     const cmds = [
       'node -e "setTimeout(()=>console.log(\\'OUT-A\\'),1200)"',
       'node -e "setTimeout(()=>console.log(\\'OUT-B\\'),300)"',
@@ -560,7 +560,7 @@ async function s8(h) {
   const checks = [];
   // 写 300 个文件
   const n = await h.evalValue(`(async () => {
-    const fs = window.__webunixScenario.wc.fs;
+    const fs = window.__succinixScenario.wc.fs;
     await fs.mkdir('/pstress', { recursive: true });
     for (let i = 0; i < 300; i++) await fs.writeFile('/pstress/f' + i + '.txt', 'content-' + i + '-padding-padding-padding');
     return 300;
@@ -574,7 +574,7 @@ async function s8(h) {
   // 刷新 → 全恢复 + 抽样校验
   await h.reloadAndWait(120000);
   const counts = await h.evalValue(`(async () => {
-    const fs = window.__webunixScenario.wc.fs;
+    const fs = window.__succinixScenario.wc.fs;
     let entries = [];
     try { entries = await fs.readdir('/pstress'); } catch { return { count: -1, samples: {} }; }
     const samples = {};
@@ -591,7 +591,7 @@ async function s8(h) {
   check(checks, 'sampled file content consistent', sampleOk === true, JSON.stringify(counts.samples));
 
   // 清理
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/pstress', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/pstress', { recursive: true, force: true })`);
   await h.run('snapshot now', 60000);
   return checks;
 }
@@ -619,7 +619,7 @@ async function s9(h) {
 async function s10(h) {
   const checks = [];
   // 写标记文件 + 强制落盘
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s10-marker.txt','s10-survives')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s10-marker.txt','s10-survives')`);
   await h.run('snapshot now', 60000);
 
   // reboot → 页面真实 reload
@@ -633,7 +633,7 @@ async function s10(h) {
   const navDeadline = Date.now() + 15000;
   while (Date.now() < navDeadline && !navigating) {
     try {
-      const alive = await evalValue(h.cdp, '!!window.__webunixScenario');
+      const alive = await evalValue(h.cdp, '!!window.__succinixScenario');
       if (alive === false) navigating = true;
     } catch {
       navigating = true; // context destroyed == 导航已开始
@@ -646,7 +646,7 @@ async function s10(h) {
   await h.waitForScenario(120000);
 
   // 文件仍在
-  const m = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s10-marker.txt','utf8').catch(()=>'MISSING')`);
+  const m = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/s10-marker.txt','utf8').catch(()=>'MISSING')`);
   check(checks, 'file survives reboot', m === 's10-survives', m);
 
   // 服务状态合理：进程表可用且干净（无孤儿 running）
@@ -656,7 +656,7 @@ async function s10(h) {
   check(checks, 'process table clean after reboot', Array.isArray(procs) && running.length === 0, `total=${procs.length} running=${running.length}`);
 
   // 清理
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s10-marker.txt', { force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s10-marker.txt', { force: true })`);
   return checks;
 }
 
@@ -664,7 +664,7 @@ async function s10(h) {
 async function s11(h) {
   const checks = [];
   // 1. 写 .py 到浏览器 FS 根（= host /workspace 根，python 子进程 cwd 初始即此处）
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s11-hello.py', 'print("s11-python-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s11-hello.py', 'print("s11-python-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
 
   // 2. python -c 真实执行（首用触发运行时资产懒注入，给足超时）
   const rc = await h.run('python -c "print(21*2)"', 120000);
@@ -687,7 +687,7 @@ async function s11(h) {
   check(checks, 'python pipe filters empty (grep zzz)', String(rgEmpty.stdout).trim() === '', String(rgEmpty.stdout).trim().slice(0, 60));
 
   // 清理
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s11-hello.py', { force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s11-hello.py', { force: true })`);
   return checks;
 }
 
@@ -720,7 +720,7 @@ async function s12(h) {
   // 5. npm init -y → package.json 落在项目目录（cwd 同步：npm 装到会话 cwd 而非容器根）
   const init = await h.run('npm init -y', 120000);
   check(checks, 'npm init -y runs in project dir', init.ok === true, `ok=${init.ok}`);
-  const pkgAt = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s12-proj/package.json','utf8').then(()=>true).catch(()=>false)`);
+  const pkgAt = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/s12-proj/package.json','utf8').then(()=>true).catch(()=>false)`);
   check(checks, 'package.json created in project dir (cwd sync)', pkgAt === true, `present=${pkgAt}`);
 
   // 6. cd 到不存在目录：会话 cwd 不变（node 仍在上一个目录）
@@ -730,7 +730,7 @@ async function s12(h) {
 
   // 清理：回 /workspace，删项目目录
   await h.run('cd /workspace');
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s12-proj', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s12-proj', { recursive: true, force: true })`);
   return checks;
 }
 
@@ -757,20 +757,20 @@ async function s13(h) {
   check(checks, 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok} ${String(inst.stderr || inst.stdout || '').trim().split('\n').slice(-1)[0].slice(0, 80)}`);
 
   // 4. 写 TS 源码 + tsconfig（浏览器 FS = 项目目录，与 host 会话 cwd 同一份文件）
-  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/s13-proj/src', { recursive: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.mkdir('/s13-proj/src', { recursive: true })`);
   // greet.ts 顶层调用使 `node dist/greet.js` 直接输出 hello ts（vitest 导入该模块时也触发，
   // 仅多一行无害输出，不改变测试结果）。
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\nconsole.log(greet("ts"));\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s13-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\nconsole.log(greet("ts"));\\n')`);
   const tsconfig = JSON.stringify({
     compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true, esModuleInterop: true },
     include: ['src'],
   }, null, 2);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s13-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
 
   // 5. tsc 编译 → 断言 dist 产物存在
   const tsc = await h.run('npx tsc -p tsconfig.json', 180000);
   check(checks, 'tsc compiles TS', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr || '').trim().slice(0, 120)}`);
-  const distExists = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s13-proj/dist/greet.js','utf8').then(()=>true).catch(()=>false)`);
+  const distExists = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/s13-proj/dist/greet.js','utf8').then(()=>true).catch(()=>false)`);
   check(checks, 'dist/greet.js artifact produced', distExists === true, `present=${distExists}`);
 
   // 6. node 跑编译产物（真实 node 执行）
@@ -778,15 +778,15 @@ async function s13(h) {
   check(checks, 'node runs compiled artifact', run.ok === true && String(run.stdout).trim() === 'hello ts', `stdout=${String(run.stdout).trim()}`);
 
   // 7. vitest 测试（真实 vitest，1 passed）
-  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/s13-proj/test', { recursive: true })`);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s13-proj/test/greet.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.mkdir('/s13-proj/test', { recursive: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s13-proj/test/greet.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
   const vitest = await h.run('npx vitest run', 180000);
   const vtOut = String(vitest.stdout || '') + String(vitest.stderr || '');
   check(checks, 'vitest run: 1 passed', vitest.ok === true && /1 passed/.test(vtOut), vtOut.trim().split('\n').filter((l) => /passed|failed|Test Files/.test(l)).slice(-3).join(' | '));
 
   // 清理：回 /workspace，删项目目录
   await h.run('cd /workspace');
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s13-proj', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s13-proj', { recursive: true, force: true })`);
   return checks;
 }
 
@@ -815,7 +815,7 @@ async function s14(h) {
   const cd = await h.run(`cd ${PROJ}`);
   check(checks, 'S14 cd into project dir', cd.ok === true, `ok=${cd.ok}`);
   const n2 = await h.run(`node -e "require('fs').writeFileSync('src/s14.ts', 'export const msg: string = \\"s14-quote-ok\\";\\nconsole.log(msg);')"`, 60000);
-  const s14Content = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s14-proj/src/s14.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
+  const s14Content = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/s14-proj/src/s14.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
   check(checks, 'S14 node -e nested quotes preserved in file', n2.ok === true && typeof s14Content === 'string' && s14Content.includes('"s14-quote-ok"'), `content=${JSON.stringify(s14Content).slice(0, 70)}`);
 
   // 3. npm init + 装 typescript（cwd = 项目目录）→ 证明"可编译"
@@ -826,15 +826,15 @@ async function s14(h) {
 
   // tsc 编译引号文件 → node 跑产物（引号保真贯通编译）
   const tsconfig = JSON.stringify({ compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true }, include: ['src'] }, null, 2);
-  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s14-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s14-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
   const tsc = await h.run('npx tsc -p tsconfig.json', 180000);
   check(checks, 'S14 tsc compiles quote.ts (compilable)', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr || '').trim().slice(0, 80)}`);
   const runQ = await h.run('node dist/s14.js', 60000);
   check(checks, 'S14 node runs compiled artifact', runQ.ok === true && String(runQ.stdout).trim() === 's14-quote-ok', String(runQ.stdout).trim());
 
   // 4. cwd 装包：typescript 装进 /s14-proj/node_modules，根 /node_modules 没有
-  const inProj = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/s14-proj/node_modules/typescript').then(()=>true).catch(()=>false)`);
-  const inRoot = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/node_modules/typescript').then(()=>true).catch(()=>false)`);
+  const inProj = await h.evalValue(`window.__succinixScenario.wc.fs.readdir('/s14-proj/node_modules/typescript').then(()=>true).catch(()=>false)`);
+  const inRoot = await h.evalValue(`window.__succinixScenario.wc.fs.readdir('/node_modules/typescript').then(()=>true).catch(()=>false)`);
   check(checks, 'S14 npm install packages into project dir (cwd sync)', inProj === true && inRoot === false, `proj=${inProj} root=${inRoot}`);
 
   // 5. npm i -g → EACCES + hint 行
@@ -850,13 +850,13 @@ async function s14(h) {
 
   // 清理：回 /workspace，删项目目录
   await h.run('cd /workspace');
-  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s14-proj', { recursive: true, force: true })`);
+  await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s14-proj', { recursive: true, force: true })`);
   return checks;
 }
 
 // ─── 主流程 ───
 async function main() {
-  note('WebUnix TASK25 scenario suite (real browser/container, 14 scenarios)');
+  note('Succinix TASK25 scenario suite (real browser/container, 14 scenarios)');
 
   if (SKIP_BUILD) {
     note('skipping build (--skip-build), using existing dist/');

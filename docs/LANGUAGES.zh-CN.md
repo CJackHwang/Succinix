@@ -1,4 +1,4 @@
-# WebUnix 语言生态 — 实测支持矩阵
+# Succinix 语言生态 — 实测支持矩阵
 
 > **权威、以实测为准。** 矩阵里的每一项状态都有可复现的实测来源——`scripts/lang-verify.mjs`
 > 的检查 id（`LV·P1` … `LV·R3`）、`?test=1` 自检（`ST`）、或 `scripts/scenarios.mjs`

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WebUnix pre-commit hook（TASK20，零依赖方案）：
+# Succinix pre-commit hook（TASK20，零依赖方案）：
 #   1) tsc 快查（--noEmit，0 error）
 #   2) eslint 只检查变更文件（暂存区 + 工作区，.ts/.tsx/.mjs/.js）
 # 安装：npm run setup:hooks（写 .git/hooks/pre-commit 指向本脚本）。

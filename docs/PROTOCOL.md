@@ -1,6 +1,6 @@
-# WebUnix TerminalExecutor — File RPC Protocol (authoritative)
+# Succinix TerminalExecutor — File RPC Protocol (authoritative)
 
-> This is the **contract** for the WebUnix command-execution engine (`src/engine/`).
+> This is the **contract** for the Succinix command-execution engine (`src/engine/`).
 > Ecosystem consumers should be able to build an alternative client or host against this
 > document alone, without reading the implementation. The in-repo implementation is the
 > reference: `src/engine/client.ts` (browser side) and `src/engine/host.ts` (in-container
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-WebUnix runs a persistent **host daemon** (`node host.js`) inside a WebContainer.
+Succinix runs a persistent **host daemon** (`node host.js`) inside a WebContainer.
 The browser holds a **TerminalClient** that sends commands and receives results through
 the container's shared filesystem. There is no socket, no stdin pipe, and no shared
 result file — every request gets its own file. This is what makes commands reliable in an
@@ -98,7 +98,7 @@ Per-command response fields:
 ### Session cwd (`cwd` / `setCwd`)
 
 The host maintains a **session cwd** (initial value `process.cwd()`, persisted to
-`/etc/webunix.cwd` and restored on host start). Every real Node/Python child process is
+`/etc/succinix.cwd` and restored on host start). Every real Node/Python child process is
 spawned with `cwd = session cwd`. When a `run` command that starts with `cd` succeeds in
 the Lifo sandbox **and** the new cwd is under the `/workspace` mount, the host syncs the
 session cwd to it and includes the new value as a `cwd` field on the `run` result.
@@ -110,7 +110,7 @@ same sync and is optional for clients (interactive `cd` already syncs automatica
 
 The host prunes stale `result-*.json` files (requests the browser abandoned by timing
 out) every **60 s**, deleting any file older than the result TTL (**120 s** by default).
-The TTL can be overridden by writing `{ "resultTtlMs": <ms> }` to `/etc/webunix.engine.json`
+The TTL can be overridden by writing `{ "resultTtlMs": <ms> }` to `/etc/succinix.engine.json`
 before the host starts (the engine's `boot` writes it only when `resultTtlMs` is passed).
 
 ## 4. Command routing
@@ -249,12 +249,12 @@ read it yet). `true` = pong, `false` = timeout (host unreachable), `null` = skip
 The engine is consumed through `src/engine/index.ts`:
 
 - `TerminalClient` — the file-RPC client (rich: `terminal`, `exec`, `spawn`,
-  `pingDirect`); used by the WebUnix frontend.
+  `pingDirect`); used by the Succinix frontend.
 - `createTerminalExecutor(): TerminalExecutor` — clean command-style facade for
   ecosystem consumers: `boot(wc, opts)`, `exec(command, opts)`, `spawn(command, opts)`,
   `listProcesses()`, `kill(pid)`, `ping()`, `dispose()`.
 - `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` — low-level boot
-  helpers shared by the facade and the WebUnix boot sequence.
+  helpers shared by the facade and the Succinix boot sequence.
 
 `TerminalExecutor.exec` returns `{ ok: false, timedOut: true }` instead of throwing when
 the RPC wait expires (the raw `TerminalClient.exec` still throws). `spawn` returns the

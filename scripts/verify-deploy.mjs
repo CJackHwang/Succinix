@@ -113,18 +113,18 @@ class CDP {
   }
 }
 
-// 注入页面的观察脚本：把 ?test=1 自检汇总行与错误页状态记录到 window.__webunixResult / __webunixError。
+// 注入页面的观察脚本：把 ?test=1 自检汇总行与错误页状态记录到 window.__succinixResult / __succinixError。
 // 覆盖层淡出后 #boot-log 会被移除，所以用 MutationObserver 在汇总行出现的第一时间抓取。
 const INJECT_SCRIPT = `(() => {
-  if (window.__webunixResult !== undefined) return;
-  window.__webunixResult = null;
-  window.__webunixError = null;
+  if (window.__succinixResult !== undefined) return;
+  window.__succinixResult = null;
+  window.__succinixError = null;
   const grab = () => {
     const logEl = document.getElementById('boot-log');
     const text = logEl ? logEl.innerText || '' : '';
     const m = text.match(/Self-test result:\\s*(\\d+)\\s+passed,\\s*(\\d+)\\s+failed,\\s*(\\d+)\\s+skipped/);
     if (m) {
-      window.__webunixResult = {
+      window.__succinixResult = {
         passed: Number(m[1]),
         failed: Number(m[2]),
         skipped: Number(m[3]),
@@ -136,13 +136,13 @@ const INJECT_SCRIPT = `(() => {
     if (ov && ov.classList.contains('boot-error-mode')) {
       const head = document.getElementById('boot-error-head');
       const list = document.getElementById('boot-error-list');
-      window.__webunixError = {
+      window.__succinixError = {
         head: head ? head.textContent : '',
         list: list ? list.textContent : '',
         log: text.slice(-800),
       };
     } else if (/Startup failed/.test(text)) {
-      window.__webunixError = { head: 'Startup failed', list: text.slice(-800) };
+      window.__succinixError = { head: 'Startup failed', list: text.slice(-800) };
     }
   };
   const obs = new MutationObserver(grab);
@@ -167,7 +167,7 @@ async function runHeadlessSelfTest() {
     fail('headless Chrome not found — ?test=1 self-test must be run manually in a browser at ' + `${BASE}/?test=1`);
     return null;
   }
-  const profileDir = mkdtempSync(join(tmpdir(), 'webunix-verify-'));
+  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-verify-'));
   const chrome = spawn(chromePath, [
     '--headless=new',
     `--remote-debugging-port=${DEBUG_PORT}`,
@@ -227,7 +227,7 @@ async function runHeadlessSelfTest() {
     while (Date.now() < testDeadline) {
       await sleep(500);
       const res = await cdp.send('Runtime.evaluate', {
-        expression: 'JSON.stringify({ result: window.__webunixResult, error: window.__webunixError })',
+        expression: 'JSON.stringify({ result: window.__succinixResult, error: window.__succinixError })',
         returnByValue: true,
       });
       let state = null;

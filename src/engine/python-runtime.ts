@@ -1,4 +1,4 @@
-// WebUnix python runtime — CLI entry for the built-in language runtime (TASK23).
+// Succinix python runtime — CLI entry for the built-in language runtime (TASK23).
 // System asset: bundled by scripts/build-host.mjs into public/python/python-runtime.js,
 // then lazily injected into the container next to its runtime assets (python.wasm,
 // python-stdlib.zip, kernel.wasm) on first use. Runs python-wasm (Python 3.11) inside a

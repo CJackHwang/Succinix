@@ -1,7 +1,7 @@
 // 快照持久化模块（TASK5）：把容器共享文件系统（wc.fs）的文本文件快照到 IndexedDB，
 // boot 时恢复，实现"刷新/重开不丢数据"。核心洞察：容器 FS 快照 = 一切持久化。
 //
-// 存储：库 webunix-persist / store snapshots / key current，值为 { meta, files }。
+// 存储：库 succinix-persist / store snapshots / key current，值为 { meta, files }。
 // POC 阶段文本为主：二进制文件跳过并计数（console.warn 报告），不做 base64。
 // 尺寸保护：超过 ~50MB 跳过本次写（README 注明）。
 import type { FileSystemAPI } from '@webcontainer/api';
@@ -13,7 +13,7 @@ export interface SnapshotMeta {
   savedAt: number;
   fileCount: number;
   totalBytes: number;
-  /** 签名用文件数/总字节（不含 /var/log/webunix.log；旧快照无此字段时回落 fileCount/totalBytes） */
+  /** 签名用文件数/总字节（不含 /var/log/succinix.log；旧快照无此字段时回落 fileCount/totalBytes） */
   sigFileCount?: number;
   sigTotalBytes?: number;
 }
@@ -32,7 +32,7 @@ export interface SaveResult {
   skipped: boolean;
 }
 
-const DB_NAME = 'webunix-persist';
+const DB_NAME = 'succinix-persist';
 const STORE_NAME = 'snapshots';
 const KEY = 'current';
 
@@ -45,11 +45,11 @@ const EMPTY_META: SnapshotMeta = { version: 1, savedAt: 0, fileCount: 0, totalBy
 // ─── 排除规则（快照遍历时跳过，避免 node_modules 巨量 & RPC 临时文件 & 重建缓存）───
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git']);
 // host.js / lifo-core.js：运行时注入的 host 进程脚本，非用户数据（随 boot 重新注入）；
-// cmd.json：文件 RPC 通道文件；webunix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
-const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'webunix.engine.json']);
-// TASK23：内置语言运行时系统资产（/usr/lib/webunix —— python-runtime.js + wasm/zip，~13MB）。
+// cmd.json：文件 RPC 通道文件；succinix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
+const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'succinix.engine.json']);
+// TASK23：内置语言运行时系统资产（/usr/lib/succinix —— python-runtime.js + wasm/zip，~13MB）。
 // 系统资产懒注入、随 boot 重建，非用户数据；排除避免每次快照遍历读 13MB 二进制。
-const EXCLUDED_PREFIXES = ['/usr/lib/webunix'];
+const EXCLUDED_PREFIXES = ['/usr/lib/succinix'];
 
 function isResultFile(name: string): boolean {
   return name.startsWith('result-') && name.endsWith('.json');
@@ -60,7 +60,7 @@ function isResultFile(name: string): boolean {
 // 部分恢复会损坏数据库导致 tinbase 启动崩溃；storage 是可重建缓存 —— 两者都不随快照持久，
 // 刷新后 tinbase 以全新数据目录启动，服务可用、数据不保留 —— 与 POC 文本快照边界一致）。
 // 文件按名跳过 host.js / lifo-core.js（boot 重新注入的 host 进程脚本）/ cmd.json / result-*.json（文件 RPC 临时文件）。
-// TASK23：/usr/lib/webunix 前缀整体跳过（python 运行时系统资产，懒注入重建）。
+// TASK23：/usr/lib/succinix 前缀整体跳过（python 运行时系统资产，懒注入重建）。
 function isExcludedPath(path: string): boolean {
   if (EXCLUDED_PREFIXES.some((p) => path === p || path.startsWith(p + '/'))) return true;
   const segments = path.split('/').filter(Boolean);
@@ -76,9 +76,9 @@ function isExcludedPath(path: string): boolean {
 interface Collected {
   files: Array<{ path: string; content: string }>;
   totalBytes: number;
-  /** 签名用文件数（不含 /var/log/webunix.log —— TASK16 R1：日志每条命令都在增长，计入签名会让自动快照每次全量重写） */
+  /** 签名用文件数（不含 /var/log/succinix.log —— TASK16 R1：日志每条命令都在增长，计入签名会让自动快照每次全量重写） */
   sigFileCount: number;
-  /** 签名用总字节（不含 /var/log/webunix.log） */
+  /** 签名用总字节（不含 /var/log/succinix.log） */
   sigTotalBytes: number;
   skipped: number;
   /** 空目录路径（TASK19：空目录要随快照收录，否则刷新后丢失） */
@@ -264,7 +264,7 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
 
   const fileCount = collected.files.length;
   const totalBytes = collected.totalBytes;
-  // 签名用计数：不含 /var/log/webunix.log（日志每条命令都在增长，计入则自动快照每次全量重写）。
+  // 签名用计数：不含 /var/log/succinix.log（日志每条命令都在增长，计入则自动快照每次全量重写）。
   const sigFileCount = collected.sigFileCount;
   const sigTotalBytes = collected.sigTotalBytes;
   // N2：空目录参与去重签名（排序拼接，顺序无关）——裸 mkdir + 刷新的空目录变化必须写 IDB。

@@ -3,11 +3,11 @@
 // 发布到 public/python/；这里在首次 python 命令前把资产写入容器 FS（复用 lifo-core.js 的
 // 懒加载模式：首用才注入，注入完成后后续命令零开销）。
 // 容器布局与 host.ts 的 PYTHON_RUNTIME_JS 约定一致：
-//   /usr/lib/webunix/python/  python-runtime.js + 二进制资产（__dirname 同目录解析）
-//   /usr/lib/webunix/termcap  父目录（@cowasm/kernel 从 join(__dirname,'..','termcap') 读取）
+//   /usr/lib/succinix/python/  python-runtime.js + 二进制资产（__dirname 同目录解析）
+//   /usr/lib/succinix/termcap  父目录（@cowasm/kernel 从 join(__dirname,'..','termcap') 读取）
 import type { FileSystemAPI } from '@webcontainer/api';
 
-export const PYTHON_RUNTIME_DIR = '/usr/lib/webunix/python';
+export const PYTHON_RUNTIME_DIR = '/usr/lib/succinix/python';
 
 interface PythonAssetSpec {
   /** 容器内路径 */
@@ -21,7 +21,7 @@ const PYTHON_ASSETS: PythonAssetSpec[] = [
   { path: `${PYTHON_RUNTIME_DIR}/python.wasm`, url: '/python/python.wasm' },
   { path: `${PYTHON_RUNTIME_DIR}/python-stdlib.zip`, url: '/python/python-stdlib.zip' },
   { path: `${PYTHON_RUNTIME_DIR}/kernel.wasm`, url: '/python/kernel.wasm' },
-  { path: '/usr/lib/webunix/termcap', url: '/python/termcap' },
+  { path: '/usr/lib/succinix/termcap', url: '/python/termcap' },
 ];
 
 let injecting: Promise<void> | null = null;

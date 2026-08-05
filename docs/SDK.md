@@ -1,13 +1,13 @@
-# WebUnix Engine — SDK Form Design (recommendation)
+# Succinix Engine — SDK Form Design (recommendation)
 
 > This is a **design document**, not a shipped package. It evaluates how to let *other*
-> frontend projects embed the WebUnix engine as a sandbox, and recommends a path.
+> frontend projects embed the Succinix engine as a sandbox, and recommends a path.
 > The in-repo decoupling is already done (`src/engine/`, see [PROTOCOL.md](./PROTOCOL.md)
 > for the wire contract); this document decides what the *distribution* should look like.
 
 ## Target scenario
 
-> **"Embed the WebUnix engine into different people's frontend projects to provide a
+> **"Embed the Succinix engine into different people's frontend projects to provide a
 > sandbox."**
 
 The host app already runs in a Chromium browser and can create a WebContainer. It wants a
@@ -16,14 +16,14 @@ userland, sharing the app's files — without building that itself.
 
 ## The three candidate forms
 
-### Form A — npm package `@webunix/engine`
+### Form A — npm package `@succinix/engine`
 
 Package the engine directory (browser client + the two in-container host assets) and
 publish it. A consumer installs it and does:
 
 ```ts
 import { WebContainer } from '@webcontainer/api';
-import { createTerminalExecutor } from '@webunix/engine';
+import { createTerminalExecutor } from '@succinix/engine';
 
 const wc = await WebContainer.boot();
 const term = createTerminalExecutor();
@@ -49,9 +49,9 @@ await term.dispose();
   (~1 MB) loads lazily on first Lifo command.
 - **Maintenance:** one repo, one version; host and client ship together. Versioned by npm.
 
-### Form B — iframe sandbox (WebUnix as a deployed page)
+### Form B — iframe sandbox (Succinix as a deployed page)
 
-Deploy WebUnix as a standalone sandbox page; the host app embeds it with an `<iframe>`
+Deploy Succinix as a standalone sandbox page; the host app embeds it with an `<iframe>`
 and talks to it over `postMessage`.
 
 - **How it embeds:** an iframe + a message bridge (command → result, port events relayed).
@@ -66,7 +66,7 @@ and talks to it over `postMessage`.
 - **Maintenance:** run/deploy/version the sandbox page independently; keep the bridge
   schema in sync.
 
-### Form C — scaffolding `create-webunix-app`
+### Form C — scaffolding `create-succinix-app`
 
 A CLI/template that generates a "host + engine" project skeleton (Vite host app, engine
 pre-wired, optional terminal UI, port registry, PROTOCOL-aware client).
@@ -87,12 +87,12 @@ pre-wired, optional terminal UI, port registry, PROTOCOL-aware client).
 
 ## Recommendation: **Form A**, then evolve toward B and C
 
-**Recommended primary form is A (`@webunix/engine`).** The target scenario is same-page
+**Recommended primary form is A (`@succinix/engine`).** The target scenario is same-page
 embedding: a frontend that already has a WebContainer wants a sandbox *in* its page,
 sharing its files. A gives:
 
 - **The shared-filesystem experience intact** — the app's `wc.fs`, Node child processes,
-  and Lifo commands all see one tree. This is WebUnix's reason to exist and only survives
+  and Lifo commands all see one tree. This is Succinix's reason to exist and only survives
   in a same-page integration.
 - **The lowest latency and simplest operational surface** — no bridge, no second
   container, no separately deployed page to keep alive.
@@ -102,7 +102,7 @@ sharing its files. A gives:
 
 **Form B is the fallback for hard isolation.** If a consumer later needs a strong document
 boundary (untrusted code, hostile CSS, or a host app that cannot itself boot a
-WebContainer), a `@webunix/sandbox-page` + bridge package can wrap the same engine. It is
+WebContainer), a `@succinix/sandbox-page` + bridge package can wrap the same engine. It is
 a *distribution* choice, not a different engine.
 
 **Form C is the growth lever** — a template so new consumers get a working host + engine
@@ -112,22 +112,22 @@ app in one command.
 
 1. **Now (this task, POC):** engine decoupled into `src/engine/`, clean public API,
    authoritative protocol doc, this design doc. Same repo, same build (vite bundles the
-   engine into the WebUnix bundle); the directory/API boundary is what enables the split.
+   engine into the Succinix bundle); the directory/API boundary is what enables the split.
 2. **Stage 1 — split the package (Form A).**
-   - Prerequisites: engine has no runtime dependency on the WebUnix app layer (done in
+   - Prerequisites: engine has no runtime dependency on the Succinix app layer (done in
      this task: logging is injected via `onCommand`, no `persist`/`log`/`config` imports).
-   - Publish `@webunix/engine` from `src/engine/` + the host assets (`public/host.js`,
+   - Publish `@succinix/engine` from `src/engine/` + the host assets (`public/host.js`,
      `public/lifo-core.js`); the consumer serves those two files (or we fetch from a CDN).
    - Define a release/versioning flow and a smoke test against an external Vite app.
 3. **Stage 2 — postMessage bridge (Form B, optional).**
    - Prerequisites: Form A shipped; define the bridge schema as a 1:1 mapping of the
      file-RPC protocol (request id → result, port events relayed); document COOP/COEP
      requirements for the sandbox page.
-   - Ship as an adapter + a deployable sandbox page (`@webunix/sandbox`).
+   - Ship as an adapter + a deployable sandbox page (`@succinix/sandbox`).
 4. **Stage 3 — scaffold (Form C).**
    - Prerequisites: Form A API stable, PROTOCOL/SDK docs complete, CI runs the template
      tests.
-   - `create-webunix-app` generates the host + engine skeleton and wires `boot`, a
+   - `create-succinix-app` generates the host + engine skeleton and wires `boot`, a
      terminal (optional), and the port registry.
 
 Each stage is gated on the previous one; none of them changes the wire protocol

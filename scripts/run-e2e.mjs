@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// WebUnix TASK20 e2e 编排：`npm run test:e2e` = build 一次 + 依次跑既有 CDP 脚本。
+// Succinix TASK20 e2e 编排：`npm run test:e2e` = build 一次 + 依次跑既有 CDP 脚本。
 //   verify-deploy.mjs（部署就绪 + ?test=1 自检）→ bench.mjs（性能）→ scenarios.mjs（场景套件）
 //   → lang-verify.mjs（语言生态验证，TASK25）
 // 各脚本默认各自 build；这里先 build 一次，再用 --skip-build 依次执行，避免重复构建。

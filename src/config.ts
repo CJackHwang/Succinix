@@ -1,4 +1,4 @@
-// 系统配置模块（TASK10）：/etc/webunix.env（环境变量）与 /etc/webunix.settings（系统设置）。
+// 系统配置模块（TASK10）：/etc/succinix.env（环境变量）与 /etc/succinix.settings（系统设置）。
 // 两者都是 KEY=value 纯文本，落在容器共享 FS（浏览器 wc.fs 读写，host 经 node:fs 读），
 // 随快照持久化（persist.ts 遍历 / 时天然收录，重启保留）。
 // 解析要健壮：空行 / # 注释跳过；值可含 =（按第一个 = 切分）；读取失败一律按空处理。
@@ -18,8 +18,8 @@ async function forcePersist(fs: FileSystemAPI): Promise<void> {
   }
 }
 
-export const ENV_FILE = '/etc/webunix.env';
-export const SETTINGS_FILE = '/etc/webunix.settings';
+export const ENV_FILE = '/etc/succinix.env';
+export const SETTINGS_FILE = '/etc/succinix.settings';
 
 // 工作区名白名单（TASK7 原有规则，移入共享模块供 settings 校验 default-workspace 复用）：
 // 字母/数字开头，后续可含 . _ -（拒绝空、路径分隔、隐藏名）。

@@ -1,4 +1,4 @@
-// WebUnix TerminalExecutor 引擎 —— 公开 API。
+// Succinix TerminalExecutor 引擎 —— 公开 API。
 // 前端（boot/main/commands/services/tests）与外部生态统一从本模块导入；目录边界即引擎边界。
 // 职责：文件型 RPC 客户端（TerminalClient）+ host 注入/拉起（bootEngineHost）+ 干净的命令式接口
 // （createTerminalExecutor，生态消费者用）。路由规则（node|npm|npx → 真 Node / 其余 → Lifo）
@@ -70,12 +70,12 @@ export async function bootEngineHost(
   client: TerminalClient,
   hooks: EngineBootHooks = {}
 ): Promise<WebContainerProcess> {
-  // 引擎配置（仅显式传 resultTtlMs 时写）：host 启动读取 /etc/webunix.engine.json 覆盖默认 TTL。
+  // 引擎配置（仅显式传 resultTtlMs 时写）：host 启动读取 /etc/succinix.engine.json 覆盖默认 TTL。
   // 默认不写 —— 全新工作区零额外文件，行为不变。
   if (hooks.resultTtlMs !== undefined) {
     try {
       await wc.fs.mkdir('/etc', { recursive: true });
-      await wc.fs.writeFile('/etc/webunix.engine.json', JSON.stringify({ resultTtlMs: hooks.resultTtlMs }));
+      await wc.fs.writeFile('/etc/succinix.engine.json', JSON.stringify({ resultTtlMs: hooks.resultTtlMs }));
     } catch {
       /* 写失败不影响：host 回落默认 TTL */
     }
@@ -117,7 +117,7 @@ export async function waitForHostReady(client: TerminalClient, attempts = 60): P
   throw new Error('host did not respond');
 }
 
-// ─── 命令式接口（生态消费者：import { createTerminalExecutor } from '@webunix/engine'）───
+// ─── 命令式接口（生态消费者：import { createTerminalExecutor } from '@succinix/engine'）───
 
 class TerminalExecutorImpl implements TerminalExecutor {
   private wc: WebContainer | null = null;

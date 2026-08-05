@@ -1,13 +1,13 @@
-// 登录横幅模块（TASK15）：/etc/webunix.motd（可编辑，随快照持久）。
+// 登录横幅模块（TASK15）：/etc/succinix.motd（可编辑，随快照持久）。
 // boot 完成、进入终端前打印（main.ts 读取）；motd 命令查看 / 设置 / 恢复默认。
 // 文件落在容器共享 FS（wc.fs 读写），与 config/services 同一模式：缺失时 boot 落默认内容。
 import type { FileSystemAPI } from '@webcontainer/api';
 import { saveSnapshot } from './persist.js';
 
-export const MOTD_FILE = '/etc/webunix.motd';
+export const MOTD_FILE = '/etc/succinix.motd';
 
 // 默认内容（一条欢迎行；英文，无 emoji）。
-export const DEFAULT_MOTD = "Welcome to WebUnix 0.2.0 — browser-native Linux. Type 'help' for commands.";
+export const DEFAULT_MOTD = "Welcome to Succinix 0.2.0 — browser-native Linux. Type 'help' for commands.";
 
 async function ensureParentDir(fs: FileSystemAPI, file: string): Promise<void> {
   const idx = file.lastIndexOf('/');

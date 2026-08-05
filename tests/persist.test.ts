@@ -48,14 +48,14 @@ describe('persist roundtrip + empty dirs', () => {
   it('saves files and restores them into a fresh filesystem', async () => {
     const src = new FakeFS();
     await src.writeFile('/workspace/main/hello.txt', 'hello');
-    await src.writeFile('/etc/webunix.env', 'A=1');
+    await src.writeFile('/etc/succinix.env', 'A=1');
     const res = await saveSnapshot(src as unknown as FileSystemAPI, true);
     expect(res.skipped).toBe(false);
 
     const dst = new FakeFS();
     await loadSnapshot(dst as unknown as FileSystemAPI);
     expect(dst.raw('/workspace/main/hello.txt')).toBe('hello');
-    expect(dst.raw('/etc/webunix.env')).toBe('A=1');
+    expect(dst.raw('/etc/succinix.env')).toBe('A=1');
   });
 
   it('persists empty directories (TASK19) and restores them', async () => {

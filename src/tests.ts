@@ -98,7 +98,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   skip = 0;
   failures = [];
 
-  term.writeln('WebUnix self-test — boot diagnostics');
+  term.writeln('Succinix self-test — boot diagnostics');
   term.writeln('');
 
   // ─── 基础协议（Kernel）───
@@ -146,13 +146,13 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   );
 
   // TASK24 复审（cwd 持久化双根修复）：cd 同步会话 cwd 后 host 把它写到浏览器可见的
-  // /etc/webunix.cwd（= host process.cwd()/etc/webunix.cwd，随快照持久）。若仍写 node 虚拟
+  // /etc/succinix.cwd（= host process.cwd()/etc/succinix.cwd，随快照持久）。若仍写 node 虚拟
   // 系统根 /etc/...（只读），浏览器 wc.fs 读不到 → 刷新后 cwd 丢失。断言文件内容 = 会话 cwd。
-  const cwdFile = await wc.fs.readFile('/etc/webunix.cwd', 'utf8').catch(() => '');
+  const cwdFile = await wc.fs.readFile('/etc/succinix.cwd', 'utf8').catch(() => '');
   verdict(
     term,
     'Filesystem',
-    'cwd persisted to /etc/webunix.cwd (browser view)',
+    'cwd persisted to /etc/succinix.cwd (browser view)',
     cwdFile.trim() === '/workspace',
     `cwdFile=${JSON.stringify(cwdFile.trim())}`
   );
@@ -221,7 +221,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   );
 
   // ─── 系统配置（Config，TASK10）：env 与 settings 生命周期 ───
-  // env: set TEST_VAR → 读回（内存 + 落盘 /etc/webunix.env）→ delete，无残留。
+  // env: set TEST_VAR → 读回（内存 + 落盘 /etc/succinix.env）→ delete，无残留。
   const cfgEnvKey = 'TEST_VAR';
   await setEnvVar(wc.fs, cfgEnvKey, 'selftest-value');
   const cfgEnvRead = await getEnvVar(wc.fs, cfgEnvKey);
@@ -234,7 +234,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `TEST_VAR=${cfgEnvRead}`
   );
 
-  // TASK24 复审（/etc 双根核对）：env 文件落在 process.cwd()/etc/webunix.env，host 必须读对位置
+  // TASK24 复审（/etc 双根核对）：env 文件落在 process.cwd()/etc/succinix.env，host 必须读对位置
   // 合并进子进程 env —— node 子进程能读到刚设置的变量即证明合并真生效（此前读虚拟系统根，
   // 变量从未进子进程）。
   const cfgEnvNode = await client.terminal('node -e "console.log(process.env.TEST_VAR)"');
@@ -350,7 +350,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   const autoList2 = await readAutostart(wc.fs);
   verdict(term, 'Services', 'autostart disable removes', dis === true && !autoList2.includes(SVC_TEST), `removed=${dis}`);
 
-  // ─── 日志（Logs，TASK12）：journald 风格落盘 /var/log/webunix.log ───
+  // ─── 日志（Logs，TASK12）：journald 风格落盘 /var/log/succinix.log ───
   // 命令执行记录：跑一条真实命令 → log 出现该命令记录（exit=0）。
   const LOG_PROBE = 'echo "log-probe-selftest"';
   const logProbe = await client.terminal(LOG_PROBE);
@@ -653,8 +653,8 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   // ─── 系统信息（Info，TASK15）：uname 输出 + motd 生命周期 ───
   const unameSummary = buildUnameLine();
   const unameOk =
-    unameSummary.startsWith('WebUnix') &&
-    /^WebUnix \d+\.\d+\.\d+ js-runtime\+webcontainer \d+\.\d+\.\d+ (x86_64|arm64|unknown)$/.test(unameSummary);
+    unameSummary.startsWith('Succinix') &&
+    /^Succinix \d+\.\d+\.\d+ js-runtime\+webcontainer \d+\.\d+\.\d+ (x86_64|arm64|unknown)$/.test(unameSummary);
   verdict(term, 'Info', 'uname output', unameOk, `${unameSummary} (arch=${detectUnameArch()})`);
 
   // motd：设置 → 读回 → reset（恢复默认，零残留）。

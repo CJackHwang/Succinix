@@ -1,4 +1,4 @@
-# WebUnix Language Ecosystem — Verified Support Matrix
+# Succinix Language Ecosystem — Verified Support Matrix
 
 > **Authoritative, measurement-based.** Every status below is backed by a reproducible
 > measured source — a check id from `scripts/lang-verify.mjs` (`LV·P1` … `LV·R3`), the

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// WebUnix dev server wrapper (TASK23): Vite must serve on the fixed port 7892
+// Succinix dev server wrapper (TASK23): Vite must serve on the fixed port 7892
 // (COOP/COEP headers + WebContainer require a stable origin; port drift breaks the
 // environment check). Before starting Vite, check whether 7892 is already in use and
 // kill the owning process so a stale dev server cannot shadow the new one.

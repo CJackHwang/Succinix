@@ -1,4 +1,4 @@
-# Contributing to WebUnix
+# Contributing to Succinix
 
 Thanks for your interest in contributing. This project aims for a professional, production-grade browser-native Linux environment. Please read [AGENTS.md](AGENTS.md) first — it codifies the design rules every contribution must follow.
 

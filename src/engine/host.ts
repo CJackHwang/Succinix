@@ -1,4 +1,4 @@
-// WebUnix POC host v4.1 — TerminalExecutor：WebContainer 内常驻的统一终端执行器。
+// Succinix POC host v4.1 — TerminalExecutor：WebContainer 内常驻的统一终端执行器。
 // 通道：文件型 RPC（WC 环境中 stdin→进程 不可靠，已实测弃用，不要改用 stdin）。
 //   浏览器 → /cmd.json          { id, cmd, opts? }
 //   host   → /result-<id>.json  { id, ok, ... }（每个请求独立结果文件，
@@ -20,7 +20,7 @@ import { tokenize, hasShellMetaToken } from './tokenize.js';
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
-// 陈旧结果文件（浏览器已放弃的请求）存活上限。可被 /etc/webunix.engine.json 的
+// 陈旧结果文件（浏览器已放弃的请求）存活上限。可被 /etc/succinix.engine.json 的
 // { resultTtlMs } 覆盖（TASK21：引擎选项经容器内小配置文件传给 host，浏览器侧 boot 时写入）。
 let RESULT_TTL_MS = 120000;
 const LIFO_TIMEOUT_MS = 25000; // Lifo 命令默认超时
@@ -35,13 +35,13 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const SPAWN_CONFIRM_MS = 2000;
 
 // 引擎配置文件：浏览器侧 boot 时写入（仅当显式传了 resultTtlMs），host 启动读取。
-// TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd，写 `wc.fs /etc/webunix.engine.json`
-// 即 host 视角的 `process.cwd()/etc/webunix.engine.json`；若仍读 node 虚拟系统根 `/etc/...`
+// TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd，写 `wc.fs /etc/succinix.engine.json`
+// 即 host 视角的 `process.cwd()/etc/succinix.engine.json`；若仍读 node 虚拟系统根 `/etc/...`
 // （bin/dev/etc 那个根）会读不到 → resultTtlMs 覆盖从未生效。统一用 process.cwd() 拼接。
 // 失败静默回落默认值 —— 配置文件是可选优化，不影响协议。
 function loadEngineConfig(): { resultTtlMs?: number } {
   try {
-    const cfgPath = `${process.cwd()}/etc/webunix.engine.json`;
+    const cfgPath = `${process.cwd()}/etc/succinix.engine.json`;
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { resultTtlMs?: unknown };
     if (typeof cfg.resultTtlMs === 'number' && Number.isFinite(cfg.resultTtlMs) && cfg.resultTtlMs > 0) {
       return { resultTtlMs: cfg.resultTtlMs };
@@ -60,11 +60,11 @@ if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs
 // node/npm/npx/python 子进程统一用会话 cwd（初始 = process.cwd()），不再固定 host cwd。
 // Lifo 的 cd 成功后 host 同步会话 cwd（仅当新 cwd 在 /workspace 挂载下 —— 那是映射到 host
 // 真实文件系统的路径，Lifo VFS 私有路径如 /tmp 没有 host 等价物，不同步）。
-// 会话 cwd 持久化到 /etc/webunix.cwd（随快照），刷新后 host 启动恢复。
-// TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd，随快照的 /etc/webunix.cwd 落在
-// `process.cwd()/etc/` 下；若 CWD_FILE 仍用 node 虚拟系统根 `/etc/webunix.cwd`（只读系统根），
+// 会话 cwd 持久化到 /etc/succinix.cwd（随快照），刷新后 host 启动恢复。
+// TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd，随快照的 /etc/succinix.cwd 落在
+// `process.cwd()/etc/` 下；若 CWD_FILE 仍用 node 虚拟系统根 `/etc/succinix.cwd`（只读系统根），
 // 写不进去/读不到 → 刷新后 cwd 永久丢失。统一用 process.cwd() 拼接。
-const CWD_FILE = `${process.cwd()}/etc/webunix.cwd`;
+const CWD_FILE = `${process.cwd()}/etc/succinix.cwd`;
 const WORKSPACE_MOUNT = '/workspace';
 
 function isUnderWorkspace(p: string): boolean {
@@ -282,10 +282,10 @@ const PYTHON_PREFIX_RE = /^(python|python3)(\s|$)/;
 const CD_PREFIX_RE = /^cd(\s|$)/;
 // python 运行时脚本在容器内的位置（浏览器首用 python 时懒注入 assets 到同一目录）。
 // TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd（/home/<wc-id>），python-assets.ts
-// 经 wc.fs 把运行时写到 `/usr/lib/webunix/python/...`，即 host 视角的 `process.cwd()/usr/lib/...`；
+// 经 wc.fs 把运行时写到 `/usr/lib/succinix/python/...`，即 host 视角的 `process.cwd()/usr/lib/...`；
 // 若这里仍用 node 虚拟系统根 `/usr/lib/...`（bin/dev/etc 那个根）会找不到 → 报
 // "assets not injected yet"。统一用 process.cwd() 拼接，两侧对齐。
-const PYTHON_RUNTIME_JS = `${process.cwd()}/usr/lib/webunix/python/python-runtime.js`;
+const PYTHON_RUNTIME_JS = `${process.cwd()}/usr/lib/succinix/python/python-runtime.js`;
 
 // TASK24 坑 3：npm i -g 在 /usr/local 只读时的可操作提示。只在 stderr 含 EACCES + /usr/local
 // 时**追加**一行（不替换原错误），权限语义保持（真实 Linux 同样无 sudo 装不了全局）。
@@ -323,13 +323,13 @@ function pruneStaleResults(): void {
   }
 }
 
-// ─── /etc/webunix.env 合并（TASK10）───
-// env 命令把环境变量持久化到 /etc/webunix.env（浏览器侧 wc.fs 写入，随快照保留）。
+// ─── /etc/succinix.env 合并（TASK10）───
+// env 命令把环境变量持久化到 /etc/succinix.env（浏览器侧 wc.fs 写入，随快照保留）。
 // host 是常驻进程，启动后无法更新自身 process.env —— 改为 spawn 子进程时
 // 解析该文件并合并进 env 选项，使 node/npm/npx 子进程能读到配置的变量。
-// TASK24 双根修复：浏览器 wc.fs 写 `/etc/webunix.env` == host 视角 `process.cwd()/etc/webunix.env`；
-// 若仍读 node 虚拟系统根 `/etc/webunix.env` 会读不到 → env 合并从未生效。统一 process.cwd() 拼接。
-const ENV_FILE = `${process.cwd()}/etc/webunix.env`;
+// TASK24 双根修复：浏览器 wc.fs 写 `/etc/succinix.env` == host 视角 `process.cwd()/etc/succinix.env`；
+// 若仍读 node 虚拟系统根 `/etc/succinix.env` 会读不到 → env 合并从未生效。统一 process.cwd() 拼接。
+const ENV_FILE = `${process.cwd()}/etc/succinix.env`;
 
 function loadEnvFile(): Record<string, string> {
   try {
@@ -602,7 +602,7 @@ function dispatchSpawn(req: CommandRequest): void {
 
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。
 // TASK23：cd 成功后把会话 cwd 同步到 Lifo 新 cwd（仅 /workspace 下 —— 映射 host 真实路径），
-// 并持久化 /etc/webunix.cwd；cd 到不存在目录 → Lifo 报错（exit≠0），会话 cwd 不变。
+// 并持久化 /etc/succinix.cwd；cd 到不存在目录 → Lifo 报错（exit≠0），会话 cwd 不变。
 async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
   try {
     const timeout = typeof opts?.timeout === 'number' ? opts.timeout : LIFO_TIMEOUT_MS;

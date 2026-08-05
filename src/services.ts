@@ -1,4 +1,4 @@
-// 服务管理模块（TASK11）：/etc/webunix.services（服务定义）与 /etc/webunix.autostart（自启清单）。
+// 服务管理模块（TASK11）：/etc/succinix.services（服务定义）与 /etc/succinix.autostart（自启清单）。
 // 服务 = 给后台进程（spawn）起名字 + 生命周期管理 + 可选开机自启，是 spawn/ps/kill + 端口注册表的
 // **声明式封装**。定义文件 name|command|port，`|` 分隔、`#` 注释，随快照持久。
 // 自启是"声明式重启"（boot 时拉起），不是守护进程/崩溃自愈（AGENTS.md 边界，不做崩溃重启）。
@@ -9,12 +9,12 @@ import { getSetting } from './config.js';
 import { log } from './log.js';
 import { saveSnapshot } from './persist.js';
 
-export const SERVICES_FILE = '/etc/webunix.services';
-export const AUTOSTART_FILE = '/etc/webunix.autostart';
+export const SERVICES_FILE = '/etc/succinix.services';
+export const AUTOSTART_FILE = '/etc/succinix.autostart';
 
 // 内置预置：文件缺失时回落 / boot 初始化写入。${PORT} 占位符在启动时替换为 settings 的 preview-port。
 export const DEFAULT_SERVICES_TEXT =
-  '# WebUnix service definitions (name|command|port)\n' +
+  '# Succinix service definitions (name|command|port)\n' +
   'tinbase|npx tinbase start --port ${PORT} --engine wasm|3001\n';
 
 const DEFAULT_PORT = 3001;

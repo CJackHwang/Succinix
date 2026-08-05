@@ -204,9 +204,9 @@ async function execute(cmd: string): Promise<void> {
   }
 
   let res: ExecResult;
-  // TASK23：python 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
-  // 宽松触发（tokenize 后任一 token 为 python/python3）——注入幂等，12.6MB 仅一次。
-  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3')) {
+  // TASK27：python/pip 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
+  // 宽松触发（tokenize 后任一 token 为 python/python3/pip/pip3）——注入幂等，~13MB 仅一次。
+  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
     try {
       await ensurePythonRuntime(ctx.wc);
     } catch (e) {
@@ -270,8 +270,8 @@ async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000):
     return { handled: true, ok: true, output: lines.join('\n'), lines };
   }
   try {
-    // TASK23：python 命令（含链中段）首用前懒注入运行时资产（与 execute() 相同路径）。
-    if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3')) {
+    // TASK27：python/pip 命令（含链中段）首用前懒注入运行时资产（与 execute() 相同路径）。
+    if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
       await ensurePythonRuntime(ctx.wc);
     }
     const res = await ctx.client.terminal(cmd, undefined, timeoutMs);

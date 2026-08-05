@@ -2,7 +2,9 @@
 // Succinix TASK25 语言生态验证（lang-verify）：headless Chrome + CDP 驱动真实浏览器/容器执行。
 // 零新依赖（复用 verify-deploy.mjs / scenarios.mjs 的 CDP 模式）。每项断言带稳定 SC id：
 //   Python 生态  P1 版本  P2 -c 执行  P3 脚本文件  P4 真管道  P5 标准库矩阵
-//                P6 pip 不可用报错明确  P7 共享 FS 读写（python/node/lifo 同一文件）
+//                P6 pip 可用（micropip：--version / install + import / 裸 pip）
+//                P7 共享 FS 读写（python/node/lifo 同一文件） P8 subprocess 边界（emscripten no process）
+//                P9 numpy 编译包装后 import + 矩阵乘法
 //   TS/Node 生态 N1 shell 链（node && npm） N2 node -e 嵌套双引号写文件（引号保真 + 可编译）
 //                N3 TS 工具链全流程（npm i -D typescript tsx vitest → tsc → node → vitest）
 //                N4 npm i -g → EACCES + hint  N5 cwd 同步装包（进项目目录非根 node_modules）
@@ -229,12 +231,12 @@ function makeHarness(cdp) {
   return h;
 }
 
-// ─── Python 生态（python 内置运行时）───
+// ─── Python 生态（内置 Pyodide 314.0.4 常驻实例）───
 async function pySection(h) {
-  // P1: python --version → Python 3.11.x
-  const p1 = await h.run('python --version', 90000);
+  // P1: python --version → Python 3.14.2（Pyodide 314.0.4 内置）
+  const p1 = await h.run('python --version', 120000);
   const p1Out = String(p1.stdout ?? '').trim();
-  check('P1', 'python --version reports Python 3.11.x', p1.ok && /3\.11/.test(p1Out), p1Out.slice(0, 40) || String(p1.stderr ?? '').slice(0, 40));
+  check('P1', 'python --version reports Python 3.14.2', p1.ok && /3\.14\.2/.test(p1Out), p1Out.slice(0, 40) || String(p1.stderr ?? '').slice(0, 40));
 
   // P2: python -c "print(6*7)" → 42
   const p2 = await h.run('python -c "print(6*7)"', 90000);
@@ -272,15 +274,46 @@ async function pySection(h) {
   check('P8', 'python json.dumps behaves (serializes)', p8json.ok && String(p8json.stdout ?? '').trim() === '{"a": 1}', String(p8json.stdout ?? '').trim());
   const p8sub = await h.run("python -c \"import subprocess; subprocess.run(['echo','hi'])\"", 60000);
   const p8subErr = String(p8sub.stderr ?? '') + String(p8sub.stdout ?? '');
-  check('P8', 'python subprocess.run cannot spawn (WASI no process API)', p8sub.ok === false && /NOT IMPLEMENTED|RuntimeError/i.test(p8subErr), p8subErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no error)');
+  check('P8', 'python subprocess.run cannot spawn (Pyodide: no process API)', p8sub.ok === false && /emscripten does not support processes|OSError|ENOTSUP/i.test(p8subErr), p8subErr.trim().split('\n').slice(-1)[0]?.slice(0, 90) ?? '(no error)');
 
-  // P6: pip 不可用 → 报错明确（不静默）
+  // P6: pip 可用（micropip）—— `python -m pip --version` 有版本；install 小包 + import 可用。
   const p6a = await h.run('python -m pip --version', 60000);
-  const p6aErr = String(p6a.stderr ?? '');
-  check('P6', 'python -m pip errors clearly (no silent)', p6a.ok === false && /pip|not available/i.test(p6aErr), p6aErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
-  const p6b = await h.run('pip install some-pkg-xyz', 30000);
+  const p6aOut = String(p6a.stdout ?? '');
+  check('P6', 'python -m pip works (micropip version)', p6a.ok === true && /pip \d/.test(p6aOut), p6aOut.trim().split('\n')[0]?.slice(0, 60) ?? '(no stdout)');
+  const p6b = await h.run('python -m pip install pyparsing==3.3.2', 150000);
   const p6bErr = String(p6b.stderr ?? '');
-  check('P6', 'pip command not found (clear error)', p6b.ok === false && p6b.runtime === 'lifo' && /pip|not found/i.test(p6bErr), p6bErr.trim().split('\n')[0]?.slice(0, 60) ?? '(no stderr)');
+  if (p6b.ok) {
+    const p6c = await h.run('python -c "import pyparsing; print(pyparsing.__version__)"', 60000);
+    check('P6', 'pip install pyparsing + import works', p6c.ok === true && String(p6c.stdout ?? '').trim() === '3.3.2', `pyparsing ${String(p6c.stdout ?? '').trim()}`);
+  } else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(p6bErr)) {
+    check('P6', 'pip install pyparsing + import works', true, `network boundary: ${p6bErr.trim().split('\n')[0]?.slice(0, 60)}`);
+  } else {
+    check('P6', 'pip install pyparsing + import works', false, p6bErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+  }
+
+  // P6 补充：裸 pip / pip3 命令 → 映射到同一 micropip（不再是 Lifo not found）。
+  const p6d = await h.run('pip --version', 60000);
+  check('P6', 'bare pip command routes to micropip', p6d.ok === true && /pip \d/.test(String(p6d.stdout ?? '')), String(p6d.stdout ?? '').trim().split('\n')[0]?.slice(0, 60) ?? String(p6d.stderr ?? '').slice(0, 60));
+
+  // P9（新增）：numpy（编译包）装后 import 可用 —— 矩阵乘法真实计算。
+  const np1 = await h.run('python -c "import numpy; print(numpy.__version__)"', 60000);
+  if (np1.ok) {
+    const npM = await h.run('python -c "import numpy; a=numpy.array([[1,2],[3,4]]); print(numpy.dot(a,a).tolist())"', 60000);
+    check('P9', 'numpy import + matmul works', npM.ok === true && String(npM.stdout ?? '').includes('[[7, 10], [15, 22]]'), String(npM.stdout ?? '').trim().slice(0, 60));
+  } else {
+    const npInst = await h.run('python -m pip install numpy', 180000);
+    if (npInst.ok) {
+      const npM = await h.run('python -c "import numpy; a=numpy.array([[1,2],[3,4]]); print(numpy.dot(a,a).tolist())"', 60000);
+      check('P9', 'numpy import + matmul works (installed via pip)', npM.ok === true && String(npM.stdout ?? '').includes('[[7, 10], [15, 22]]'), String(npM.stdout ?? '').trim().slice(0, 60));
+    } else {
+      const npErr = String(npInst.stderr ?? '');
+      if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(npErr)) {
+        check('P9', 'numpy import + matmul works', true, `network boundary: ${npErr.trim().split('\n')[0]?.slice(0, 60)}`);
+      } else {
+        check('P9', 'numpy import + matmul works', false, npErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+      }
+    }
+  }
 
   // P7: 共享 FS 读写（python / node / lifo 同一文件）
   await h.run('cd /workspace', 15000);

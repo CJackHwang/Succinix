@@ -18,7 +18,7 @@
 - **全屏终端体验** — 居中的 DOM 启动画面（boot splash）带系统自检与环境不适配优雅退出（显示专业错误页而非降级），随后进入交互式 Shell（`guest@succinix:~$`）。
 - **统一命令执行** — 单一终端入口：
   - `node`、`npm`、`npx` 及项目二进制运行在**真实 Node.js 进程**上（WebContainer）。
-  - `python` / `python3` 运行在**内置 python-wasm 运行时**（Python 3.11）——作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；交互式 REPL 不支持（WebContainer stdin 边界）。
+  - `python` / `python3` / `pip` / `pip3` 运行在**内置 Pyodide 运行时**（Python 3.14.2，Pyodide 314.0.4）——常驻 daemon 作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；`pip` 映射到 Pyodide 的 **micropip**（纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在）；交互式 REPL 不支持（WebContainer stdin 边界）。
   - 其余一切（`grep`、`sed`、`awk`、`cat`、`tar`、`curl`、管道、重定向……）运行在 **Lifo**——一个 TypeScript 实现的 Unix 用户态。
 - **会话工作目录（融合基石）** — Lifo 里的 `cd` 现在驱动 host 维护的**会话 cwd**（持久化到 `/etc/succinix.cwd`，刷新恢复），并应用到每个真实 Node/Python 子进程（`spawn cwd`）。`pwd` 显示会话 cwd，`node`/`python` 看到同一目录——不再有 `cd /ws/proj && npm install` 装到容器根的问题。`cd` 到不存在目录时会话 cwd 不变。`lang` 列出内置运行时与版本。（TASK24：`/workspace` 是 Lifo 挂载视图，真实容器 FS 没有该路径；node/python 子进程实际 spawn 在映射后的 host 真实目录，子进程里 `process.cwd()` 报真实路径如 `/home/<wc-id>/proj`，`pwd`/`cwd` 仍显示 Lifo 视角 `/workspace/...`。）
 - **共享文件系统** — 浏览器（`wc.fs`）与 Lifo 命令操作的是**同一份文件**。无需桥接代码：WebContainer 为进程虚拟化 `node:fs`，Lifo 通过 `NativeFsProvider` 消费它。
@@ -51,7 +51,7 @@ flowchart TD
     subgraph Host["node host.js — TerminalExecutor（常驻守护进程，PID 1）"]
         RT["前缀分发"]
         NODE["node | npm | npx → child_process.spawn（真实 Node.js）"]
-        PY["python | python3 → node python-runtime.js（python-wasm）"]
+        PY["python | python3 | pip | pip3 → 常驻 Pyodide daemon（python-daemon.js）"]
         LIFO["其余一切 → Lifo sandbox.commands.run（Unix 工具）"]
         PS["ps / kill — 统一进程注册表"]
         CWD["cwd / setCwd — 会话 cwd（cd 同步、持久化）"]
@@ -215,7 +215,7 @@ node scripts/verify-deploy.mjs
 - 网络视图：`netstat` 把端口注册表渲染为虚拟监听端口表，`netstat -p` 关联 spawn 的 echo server（端口 3456）与进程；`kill` 后端口从表消失。`ip addr` 打印虚拟回环与预览域，诚实标注 `(virtual)`。
 - 系统信息：`uname` 渲染诚实的系统行（`Succinix <version> js-runtime+webcontainer <api-version> <arch>`）与 `-a`/`-r`/`-m` 形态；`-r`/`-m` 参数解析额外经命令分发路径断言（不只 builder）。`motd` 设置 → 读回 → 重置使 `/etc/succinix.motd` 回到默认（零残留）。
 - 冒烟：全部 23 个安全内置命令（help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown）经浏览器处理器分发无错误；`reboot` 与 `db start` 排除在自动化冒烟外（破坏性/重副作用）。
-- 语言生态（TASK23 + TASK25）：`python -c "print(6*7)"` → `42`（内置 python-wasm）；完整标准库 import 矩阵（json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib）全绿且扩展标准库进入自检；`python3 --version` 报 Python 3.11；python 读写共享 FS（浏览器 + node 读到同一文件）；`python -m pip` 明确报错（`pip is not available in this embedded runtime`）。权威、以实测为准的矩阵见 **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)**（英文 **[docs/LANGUAGES.md](LANGUAGES.md)**）。
+- 语言生态（TASK27）：`python -c "print(6*7)"` → `42`（内置 **Pyodide 314.0.4**，Python 3.14.2）；完整标准库 import 矩阵（json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib）全绿且扩展标准库进入自检；`python3 --version` 报 Python 3.14.2；python 读写共享 FS（浏览器 + node 读到同一文件）；`python -m pip install pyparsing` → import 可用（micropip）。权威、以实测为准的矩阵见 **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)**（英文 **[docs/LANGUAGES.md](LANGUAGES.md)**）。
 - 语言防回归（TASK25，场景 S14）：用户实测 5 坑逐条锁定 —— `node --version && npm --version` 链、`node -e` 嵌套引号写文件（穿透 tsc）、`npm i -g` EACCES + hint、cd 同步装包（进项目目录非根 node_modules）、python 真管道。
 - 稳定性：RPC 客户端在单槽 `/cmd.json` 通道上串行化请求（无并行通道竞态），只读命令（ping/ps/cwd）传输失败重试一次，浏览器看门狗连续 2 次 ping 失败后重注入 + 重拉 `host.js`。
 
@@ -227,7 +227,7 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 | 语言 | 命令 | 状态 | 关键实测事实 |
 | ---- | ---- | ---- | ----------- |
-| **Python** | `python` / `python3` | ✅ 内置 | 3.11.1 python-wasm；11/11 标准库 import；sqlite3/json 真实可用；**无 pip**（明确报错）、无 REPL、subprocess 可导入但无法 spawn |
+| **Python** | `python` / `python3` / `pip` / `pip3` | ✅ 内置 | 3.14.2 Pyodide 314.0.4；11/11 标准库 import；sqlite3/json 真实可用；**pip 经 micropip**（纯 Python wheel 刷新后仍在；编译 wheel 刷新后需重装）、无 REPL、subprocess 可导入但无法 spawn |
 | **Node.js** | `node` | ✅ 内置 | 22.22.3；真实二进制；`node -e` 引号保真；完整 TS 工具链（typescript/tsx/vitest） |
 | **npm** | `npm` | ✅ 内置 | 10.8.2；本地装进会话 cwd；全局 → EACCES + hint |
 | **TypeScript** | `npx tsc` / `tsx` | ✅ 经 npm | tsc → node → vitest 全闭环（S13/S14） |
@@ -246,8 +246,8 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 - **跨运行时流式管道**：跨运行时管道是缓冲的（对 agent 式"跑完再读"工作流足够）。
 - **`/workspace` 是 Lifo VFS 视图；真实 node/python 子进程看到真实路径**：浏览器文件系统根（`wc.fs` `/`）与 Lifo 的 `/workspace` 都映射到 host 进程 cwd（`/home/<wc-id>`），而容器根 `/` 是只读系统视图。`pwd`/`cwd` 报 Lifo 视角（`/workspace/...`），node/python 子进程里的 `process.cwd()` 报真实映射路径（`/home/<wc-id>/...`）——指向同一目录。
 - **`npm i -g` 到只读 `/usr/local` 会追加可操作提示**：`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`（权限语义不变）。
-- **Python REPL 未实现**：内置 python 运行时面向命令（`python -c "<code>"`、`python <script.py>`）。交互式 `>>>` REPL 需要持久 stdin，WebContainer 不可靠 —— 请用 `python -c`。`pip` 也不可用（python-wasm 以 zip 打包标准库；装第三方 wheel 超出范围）。TASK25 起 `python -m pip ...` 明确报 `pip is not available in this embedded runtime`（此前 `-m` 被误当脚本文件），`python -m <module>` 被显式拒绝；`subprocess` 可导入但无法 spawn——WASI 沙箱无进程/管道 API（见 [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)）。
-- **首次 `python` 命令慢**：python-wasm 运行时（~13 MB JS + wasm + stdlib）首用懒注入容器，首个 `python` 命令需数秒；后续命令快。它是系统资产、不依赖用户 `npm install`，不会被用户操作装坏。
+- **Python REPL 未实现**：内置 python 运行时面向命令（`python -c "<code>"`、`python <script.py>`、`python -m pip <cmd>`）。交互式 `>>>` REPL 需要持久 stdin，WebContainer 不可靠 —— 请用 `python -c`。`pip` **可用**（Pyodide 的 **micropip**；纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在；编译 wheel 如 `numpy` 刷新后需再 `pip install <pkg>`——文本快照不带二进制 `.so`）。`python -m <module>` 经 `runpy.run_module` 执行（仅 `-m pip` 特殊映射）；`subprocess` 可导入但无法 spawn——Pyodide 抛 `OSError: [Errno 138] emscripten does not support processes`（见 [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)）。
+- **首次 `python` 命令慢**：Pyodide 运行时（~13 MB JS + wasm + stdlib）首用懒注入容器，且常驻 daemon 首次 `loadPyodide` 需一次性初始化，首个 `python` 命令需数秒；后续命令复用实例、快。它是系统资产、不依赖用户 `npm install`，不会被用户操作装坏。
 - **看门狗探针可能被排队命令吞掉**：host 存活看门狗向单槽 `/cmd.json` 通道写直接 `ping` 探针；若用户命令在 ~120 ms host 轮询窗口内入队会覆盖探针，该探针超时、看门狗跳过该轮（中性，不算失败）。这只是在罕见重叠时把存活检测推迟一个 30s 周期；不会误杀健康 host。
 - **单命令输出上限 1 MB**：为约束容器内存与结果文件大小，每条命令 `stdout`/`stderr` 最多保留最后 ~1 MB（大输出截断到尾部）。正常使用（`seq 1 5000`、中等文件 `cat`、`npm install` 日志）远低于上限。
 - **声明式自启（非守护进程）**：`service enable` 只记录服务供 boot 重启。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。

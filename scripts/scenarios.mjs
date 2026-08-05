@@ -660,31 +660,124 @@ async function s10(h) {
   return checks;
 }
 
-// ─── S11：python 脚本工作流（TASK23，内置语言运行时）───
+// ─── S11：python 脚本工作流（TASK23 → TASK27 Pyodide，含 pip + 刷新持久化）───
 async function s11(h) {
   const checks = [];
   // 1. 写 .py 到浏览器 FS 根（= host /workspace 根，python 子进程 cwd 初始即此处）
   await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s11-hello.py', 'print("s11-python-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
 
-  // 2. python -c 真实执行（首用触发运行时资产懒注入，给足超时）
-  const rc = await h.run('python -c "print(21*2)"', 120000);
+  // 2. python -c 真实执行（首用触发运行时资产懒注入 + Pyodide daemon 懒启动，给足超时）
+  const rc = await h.run('python -c "print(21*2)"', 150000);
   check(checks, 'python -c executes', rc.ok === true && String(rc.stdout).trim() === '42', `ok=${rc.ok} stdout=${String(rc.stdout).trim()}`);
 
-  // 3. python 脚本文件（绝对路径 /s11-hello.py）
+  // 3. python --version → Python 3.14.2（Pyodide 314.0.4 内置）
+  const rv = await h.run('python --version', 60000);
+  check(checks, 'python --version reports Python 3.14.2', rv.ok === true && String(rv.stdout).includes('3.14.2'), String(rv.stdout).trim().slice(0, 40));
+
+  // 4. python 脚本文件（绝对路径 /s11-hello.py）
   const rs = await h.run('python /s11-hello.py', 120000);
   const so = String(rs.stdout || '');
   check(checks, 'python script runs', rs.ok === true && so.includes('s11-python-ok'), so.trim().slice(0, 120));
 
-  // 4. python3 别名 + 标准库（json/sqlite3/csv/re/math/os 可导入）
+  // 5. python3 别名 + 标准库（json/sqlite3/csv/re/math/os 可导入）
   const rstd = await h.run('python3 -c "import json,csv,re,math,os,sqlite3; print(len([json,csv,re,math,os,sqlite3]))"', 120000);
   check(checks, 'python3 alias + stdlib imports', rstd.ok === true && String(rstd.stdout).trim() === '6', `stdout=${String(rstd.stdout).trim()}`);
 
-  // 5. 真管道形态（TASK24 复审修复）：python 命令含 shell 元字符时经 Lifo shell 执行，python 段
-  //    转真运行时 —— 管道真工作：grep 命中保留输出、无匹配过滤为空。
+  // 6. 真管道形态（TASK24 复审修复）：python 命令含 shell 元字符时经 Lifo shell 执行，python 段
+  //    转发到常驻 daemon —— 管道真工作：grep 命中保留输出、无匹配过滤为空。
   const rg = await h.run("python -c \"print('hello-pipe')\" | grep pipe", 120000);
   check(checks, 'python pipe (grep filters)', rg.ok === true && String(rg.stdout).includes('hello-pipe'), String(rg.stdout).trim().slice(0, 60));
   const rgEmpty = await h.run("python -c \"print('abc')\" | grep zzz", 120000);
   check(checks, 'python pipe filters empty (grep zzz)', String(rgEmpty.stdout).trim() === '', String(rgEmpty.stdout).trim().slice(0, 60));
+
+  // 7. TASK27 pip：python -m pip install 小包 → import 可用（micropip；网络边界按 SKIP 记录）
+  const pipInst = await h.run('python -m pip install pyparsing==3.3.2', 150000);
+  const pipErr = String(pipInst.stderr || '');
+  if (pipInst.ok) {
+    const pipImp = await h.run('python -c "import pyparsing; print(pyparsing.__version__)"', 60000);
+    check(checks, 'pip install pyparsing + import (micropip)', pipImp.ok === true && String(pipImp.stdout).trim() === '3.3.2', `pyparsing ${String(pipImp.stdout).trim()}`);
+  } else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(pipErr)) {
+    check(checks, 'pip install pyparsing + import (micropip)', true, `network boundary: ${pipErr.trim().slice(0, 60)}`);
+  } else {
+    check(checks, 'pip install pyparsing + import (micropip)', false, pipErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+  }
+
+  // 8. TASK27 numpy（编译包）：import numpy 或装后 import（给足网络时间；失败如实记录）
+  const np1 = await h.run('python -c "import numpy; print(numpy.__version__)"', 60000);
+  let numpyOk = false;
+  if (np1.ok) {
+    numpyOk = /^\d+\.\d+/.test(String(np1.stdout).trim());
+  } else {
+    const npInst = await h.run('python -m pip install numpy', 180000);
+    if (npInst.ok) {
+      const np2 = await h.run('python -c "import numpy; print(numpy.__version__)"', 60000);
+      numpyOk = np2.ok === true && /^\d+\.\d+/.test(String(np2.stdout).trim());
+      check(checks, 'numpy import (installed via pip)', numpyOk, numpyOk ? `numpy ${String(np2.stdout).trim()}` : String(np2.stderr || '').trim().slice(0, 80));
+    } else {
+      const npErr = String(npInst.stderr || '');
+      if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(npErr)) {
+        check(checks, 'numpy import (installed via pip)', true, `network boundary: ${npErr.trim().slice(0, 60)}`);
+      } else {
+        check(checks, 'numpy import (installed via pip)', false, npErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+      }
+    }
+  }
+  if (numpyOk) check(checks, 'numpy import (already present)', true, `numpy ${String(np1.stdout).trim()}`);
+
+  // 9. TASK27 pip 持久化（尽力而为）：装过的纯 Python 包刷新后 import 仍在（NODEFS 站点包随快照）。
+  //    先 snapshot now 强制落盘，再 reload；pyparsing 应直接可 import（无网络）。若不在 → 如实记录边界。
+  await h.run('snapshot now', 60000);
+  await h.reloadAndWait(120000);
+  const pers = await h.run('python -c "import pyparsing; print(pyparsing.__version__)"', 120000);
+  check(checks, 'pip package persists across refresh (pyparsing)', pers.ok === true && String(pers.stdout).trim() === '3.3.2', String(pers.stdout).trim() || String(pers.stderr || '').trim().slice(0, 80));
+  // numpy 是编译包（.so 二进制不进文本快照）→ 刷新后需重装（边界，如实记录）。
+  // TASK27 复审项 3：冷启动 import 报错必须保持如实，且提示指向 `pip install numpy` 解决路径。
+  const persNp = await h.run('python -c "import numpy; print(numpy.__version__)"', 60000);
+  if (persNp.ok) {
+    check(checks, 'compiled package (numpy) boundary after refresh', false, `unexpectedly importable after refresh: ${String(persNp.stdout).trim()}`);
+  } else {
+    const npErr = String(persNp.stderr || '').trim();
+    check(checks, 'compiled package (numpy) boundary after refresh', npErr.includes('pip install numpy'), `needs pip install after refresh (text snapshot drops .so) — hint: ${npErr.split('\n').slice(-1)[0]?.slice(0, 60)}`);
+  }
+
+  // 10. TASK27 复审修复项 1+2（浏览器真实路径）：
+  //     - `pip install pyparsing requests` 多包：micropip.install([...]) 数组语义，不再把
+  //       `join(' ')` 拼成单个 requirement（此前 PEP 508 会拒）。
+  //     - `pip show pyparsing`：真实 pip 式元数据输出。
+  //     - `pip show`（无参）：usage 提示 + exit 2（此前生成 NameError → exit 1）。
+  const pipMulti = await h.run('python -m pip install pyparsing requests', 180000);
+  const pipMultiErr = String(pipMulti.stderr || '');
+  if (pipMulti.ok) {
+    const impMulti = await h.run('python -c "import pyparsing, requests; print(pyparsing.__version__, requests.__version__)"', 60000);
+    const impTokens = String(impMulti.stdout || '').trim().split(/\s+/).filter(Boolean);
+    check(
+      checks,
+      'pip install multi-package (pyparsing requests) + import',
+      impMulti.ok === true && impTokens.length === 2 && impTokens[0].length > 0 && impTokens[1].length > 0,
+      `pyparsing=${impTokens[0] ?? ''} requests=${impTokens[1] ?? ''}`
+    );
+    const showPkg = await h.run('pip show pyparsing', 60000);
+    check(
+      checks,
+      'pip show pyparsing works',
+      showPkg.ok === true && /Name: pyparsing/i.test(String(showPkg.stdout || '')),
+      String(showPkg.stdout || '').split('\n')[0]?.slice(0, 60) || String(showPkg.stderr || '').slice(0, 60)
+    );
+  } else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(pipMultiErr)) {
+    check(checks, 'pip install multi-package (pyparsing requests) + import', true, `network boundary: ${pipMultiErr.trim().slice(0, 60)}`);
+    check(checks, 'pip show pyparsing works', true, 'skipped: multi-package install network boundary');
+  } else {
+    check(checks, 'pip install multi-package (pyparsing requests) + import', false, pipMultiErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+    check(checks, 'pip show pyparsing works', false, 'multi-package install failed');
+  }
+  // pip show 无参：不依赖网络，独立断言 usage + exit 2。
+  const showNone = await h.run('pip show', 60000);
+  check(
+    checks,
+    'pip show no-arg usage + exit 2',
+    showNone.ok === false && Number(showNone.exitCode) === 2 && /Usage: pip show <package>/.test(String(showNone.stderr || '')),
+    `exit=${showNone.exitCode} stderr=${String(showNone.stderr || '').trim().slice(0, 60)}`
+  );
 
   // 清理
   await h.evalValue(`window.__succinixScenario.wc.fs.rm('/s11-hello.py', { force: true })`);

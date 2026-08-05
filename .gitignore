@@ -29,6 +29,7 @@ dist-ssr/
 public/host.js
 public/lifo-core.js
 public/python/
+public/pyodide/
 
 # Local environment variables
 .env

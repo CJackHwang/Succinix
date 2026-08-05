@@ -68,10 +68,10 @@ const VERSION = 'Succinix 0.2.0 (browser-native Linux)';
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
-// TASK23：内置语言运行时版本（lang 命令）。
-// python 版本构建期固定：python-wasm 0.28.x 打包的 Python 3.11（sys.version 实测 3.11.1）；
+// TASK27：内置语言运行时版本（lang 命令）。
+// python 版本构建期固定：Pyodide 314.0.4 打包的 Python 3.14.2（sys.version 首段实测）；
 // node 版本实时查询（node --version）；typescript 走 node 22 的 strip-types。
-const PYTHON_BUNDLED_VERSION = '3.11.1 (python-wasm 0.28)';
+const PYTHON_BUNDLED_VERSION = '3.14.2 (Pyodide 314.0.4)';
 const TS_RUNTIME_NOTE = 'via node --experimental-strip-types (Node 22)';
 
 // M1 修复：db start 启动时解析的端口记录在案；db status/stop 用记录值而非每次现读 settings，
@@ -132,7 +132,7 @@ function printHelp(term: Terminal): void {
   term.writeln('');
   term.writeln('host side (TerminalExecutor unified routing)');
   term.writeln(`  node|npm|npx ...   real node subprocess (spawn for long-running background)`);
-  term.writeln(`  python ...         python-wasm runtime (python -c "<code>" | python <script.py>)`);
+  term.writeln(`  python ...         Pyodide runtime (python -c "<code>" | python <script.py> | python -m pip <cmd>)`);
   term.writeln(`  other commands      Lifo sandbox: grep / cat / wc / echo / curl ...`);
   term.writeln(`  ps / kill <pid>    process table management`);
   term.writeln(`  cwd / setCwd / ping / exit  protocol commands`);

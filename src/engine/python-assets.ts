@@ -1,10 +1,10 @@
-// Python 运行时懒注入（TASK23）：python 是系统资产，不依赖用户 npm install（装不坏）。
-// build-host.mjs 把 python-runtime.js + python.wasm + python-stdlib.zip + kernel.wasm + termcap
-// 发布到 public/python/；这里在首次 python 命令前把资产写入容器 FS（复用 lifo-core.js 的
-// 懒加载模式：首用才注入，注入完成后后续命令零开销）。
-// 容器布局与 host.ts 的 PYTHON_RUNTIME_JS 约定一致：
-//   /usr/lib/succinix/python/  python-runtime.js + 二进制资产（__dirname 同目录解析）
-//   /usr/lib/succinix/termcap  父目录（@cowasm/kernel 从 join(__dirname,'..','termcap') 读取）
+// Python 运行时懒注入（TASK23 → TASK27 换 Pyodide）：python 是系统资产，不依赖用户 npm install。
+// build-host.mjs 把 python-daemon.js + Pyodide 314.0.4 资产发布到 public/pyodide/；这里在首次
+// python/pip 命令前把资产写入容器 FS（复用 lifo-core.js 的懒加载模式：首用才注入，幂等）。
+// 容器布局与 host.ts 的 PYTHON_DAEMON_JS 约定一致：
+//   /usr/lib/succinix/python/  python-daemon.js + pyodide.mjs + pyodide.asm.mjs +
+//                             pyodide.asm.wasm + python_stdlib.zip + pyodide-lock.json
+//                             （daemon 从自身目录 import './pyodide.mjs'，indexURL = 同目录）
 import type { FileSystemAPI } from '@webcontainer/api';
 
 export const PYTHON_RUNTIME_DIR = '/usr/lib/succinix/python';
@@ -12,25 +12,26 @@ export const PYTHON_RUNTIME_DIR = '/usr/lib/succinix/python';
 interface PythonAssetSpec {
   /** 容器内路径 */
   path: string;
-  /** 构建资产 URL（vite 静态资源） */
+  /** 构建资产 URL（vite 静态资源，public/pyodide/） */
   url: string;
 }
 
 const PYTHON_ASSETS: PythonAssetSpec[] = [
-  { path: `${PYTHON_RUNTIME_DIR}/python-runtime.js`, url: '/python/python-runtime.js' },
-  { path: `${PYTHON_RUNTIME_DIR}/python.wasm`, url: '/python/python.wasm' },
-  { path: `${PYTHON_RUNTIME_DIR}/python-stdlib.zip`, url: '/python/python-stdlib.zip' },
-  { path: `${PYTHON_RUNTIME_DIR}/kernel.wasm`, url: '/python/kernel.wasm' },
-  { path: '/usr/lib/succinix/termcap', url: '/python/termcap' },
+  { path: `${PYTHON_RUNTIME_DIR}/python-daemon.js`, url: '/pyodide/python-daemon.js' },
+  { path: `${PYTHON_RUNTIME_DIR}/pyodide.mjs`, url: '/pyodide/pyodide.mjs' },
+  { path: `${PYTHON_RUNTIME_DIR}/pyodide.asm.mjs`, url: '/pyodide/pyodide.asm.mjs' },
+  { path: `${PYTHON_RUNTIME_DIR}/pyodide.asm.wasm`, url: '/pyodide/pyodide.asm.wasm' },
+  { path: `${PYTHON_RUNTIME_DIR}/python_stdlib.zip`, url: '/pyodide/python_stdlib.zip' },
+  { path: `${PYTHON_RUNTIME_DIR}/pyodide-lock.json`, url: '/pyodide/pyodide-lock.json' },
 ];
 
 let injecting: Promise<void> | null = null;
 
-// 确保 python 资产已注入。已注入（python-runtime.js 可读）直接返回；否则注入全部资产。
+// 确保 python 资产已注入。已注入（python-daemon.js 可读）直接返回；否则注入全部资产。
 // 并发调用复用同一个注入 Promise（去重，防止两个 python 命令同时触发重复写）。
 export async function ensurePythonRuntime(wc: { fs: FileSystemAPI }): Promise<void> {
   try {
-    await wc.fs.readFile(`${PYTHON_RUNTIME_DIR}/python-runtime.js`, 'utf8');
+    await wc.fs.readFile(`${PYTHON_RUNTIME_DIR}/python-daemon.js`, 'utf8');
     return;
   } catch {
     /* 未注入 */

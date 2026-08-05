@@ -705,8 +705,8 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `handled=${handledM} out=${capM.lines.join('') || '(empty)'}`
   );
 
-  // ─── 内置语言运行时（Languages，TASK23）：python 真实执行 + lang 列表 ───
-  // python 资产首用懒注入：自检真实跑 python 前先确保运行时已注入（首次注入 ~13MB，稍慢）。
+  // ─── 内置语言运行时（Languages，TASK27）：python 真实执行 + pip + lang 列表 ───
+  // Pyodide 资产首用懒注入：自检真实跑 python 前先确保运行时已注入（首次注入 ~13MB，稍慢）。
   try {
     await ensurePythonRuntime(wc);
   } catch (e) {
@@ -735,13 +735,13 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     String(py2.stdout ?? '').trim()
   );
 
-  // python3 别名 + --version 输出 Python 3.11。
+  // python3 别名 + --version 输出 Python 3.14（Pyodide 314.0.4 内置）。
   const py3 = await client.terminal('python3 --version', undefined, 60000);
   verdict(
     term,
     'Languages',
     'python3 alias + version',
-    py3.ok && String(py3.stdout ?? '').includes('3.11'),
+    py3.ok && String(py3.stdout ?? '').includes('3.14'),
     String(py3.stdout ?? '').trim().slice(0, 40)
   );
 
@@ -765,15 +765,14 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `runtime=${pyPipe2.runtime} stdout=${String(pyPipe2.stdout ?? '').trim()}`
   );
 
-  // TASK25：pip 不可用 → 报错明确（不静默）。`python -m pip` 走运行时 -m 分支给出明确提示
-  //（此前被当脚本文件吞掉，报 "can't open file '-m'"）；裸 `pip` 命令则 Lifo "not found"。
+  // TASK27：pip 可用 —— `python -m pip --version` 返回 micropip 版本（不再是"不可用"报错）。
   const pyPip = await client.terminal('python -m pip --version', undefined, 60000);
   verdict(
     term,
     'Languages',
-    'python -m pip errors clearly (pip not bundled)',
-    pyPip.ok === false && /pip is not available/i.test(String(pyPip.stderr ?? '')),
-    String(pyPip.stderr ?? '').trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)'
+    'python -m pip works (micropip)',
+    pyPip.ok && /pip \d/.test(String(pyPip.stdout ?? '')),
+    String(pyPip.stdout ?? '').trim().split('\n')[0]?.slice(0, 90) ?? '(no stdout)'
   );
 
   // TASK25：python 扩展标准库（支持矩阵数据源，lang-verify P5 之外补自检覆盖）。
@@ -803,6 +802,25 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `browser=${JSON.stringify(pyFsRead.trim())} node=${String(pyFsNode.stdout ?? '').trim()}`
   );
   await wc.fs.rm('/selftest-py.txt', { force: true }).catch(() => {});
+
+  // TASK27：pip 真实可用 —— pip install 一个小包 → import 可用（micropip，网络拉 wheel）。
+  // 网络不可达（jsdelivr/PyPI）按已知边界 SKIP，不假报成功。
+  const pipInst = await client.terminal('python -m pip install pyparsing==3.3.2', undefined, 90000);
+  const pipInstErr = String(pipInst.stderr ?? '');
+  if (pipInst.ok) {
+    const pipImp = await client.terminal('python -c "import pyparsing; print(pyparsing.__version__)"', undefined, 60000);
+    verdict(
+      term,
+      'Languages',
+      'pip install pyparsing + import (micropip)',
+      pipImp.ok && String(pipImp.stdout ?? '').trim().length > 0,
+      `pyparsing ${String(pipImp.stdout ?? '').trim().slice(0, 40)}`
+    );
+  } else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN|fetch failed|NetworkError|Timed out/i.test(pipInstErr)) {
+    boundary(term, 'Languages', 'pip install pyparsing + import (micropip)', `network boundary: ${pipInstErr.trim().slice(0, 60)}`);
+  } else {
+    verdict(term, 'Languages', 'pip install pyparsing + import (micropip)', false, pipInstErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+  }
 
   // TASK25：npm i -g → EACCES + 可操作 hint 行（权限语义不变，只追加提示）。
   // 网络不可达（registry 解析失败）按已知边界 SKIP，不假报成功。
@@ -840,7 +858,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     term,
     'Languages',
     'lang python version',
-    handledLangPy && capLangPy.lines.join('').includes('Python 3.11'),
+    handledLangPy && capLangPy.lines.join('').includes('Python 3.14'),
     capLangPy.lines.join('').trim()
   );
 

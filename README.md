@@ -18,7 +18,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Full-screen terminal experience** — a centered DOM boot splash with system self-checks and graceful environment-exit (shows a professional error page instead of degrading), then an interactive shell (`guest@succinix:~$`).
 - **Unified command execution** — one terminal entry point:
   - `node`, `npm`, `npx` and project binaries run on a **real Node.js process** (WebContainer).
-  - `python` / `python3` run on a **built-in python-wasm runtime** (Python 3.11) — packaged as a system asset (zero install, cannot be broken by user `npm install`), injected lazily on first use. `python -c "<code>"` and `python <script.py>` are supported; the interactive REPL is not (WebContainer stdin boundary).
+  - `python` / `python3` / `pip` / `pip3` run on a **built-in Pyodide runtime** (Python 3.14.2, Pyodide 314.0.4) — a resident daemon packaged as a system asset (zero install, cannot be broken by user `npm install`), injected lazily on first use. `python -c "<code>"` and `python <script.py>` are supported; `pip` maps to Pyodide's **micropip** (pure-Python wheels persist across refresh via `/.pyodide/site-packages`); the interactive REPL is not (WebContainer stdin boundary).
   - Everything else (`grep`, `sed`, `awk`, `cat`, `tar`, `curl`, pipes, redirects, ...) runs on **Lifo**, a clean-room TypeScript implementation of Unix.
 - **Session working directory (fusion)** — `cd` in the Lifo sandbox now drives a **session cwd** that the host persists (`/etc/succinix.cwd`, survives refresh) and applies to every real Node/Python child process (`spawn cwd`). `pwd` shows the session cwd, `node`/`python` see the same directory — no more `cd /ws/proj && npm install` installing into the container root. `cd` to a missing directory keeps the session cwd unchanged. `lang` lists the built-in runtimes and versions.
 - **Shared filesystem** — the browser (`wc.fs`) and Lifo commands operate on the *same* files. No bridge code; WebContainer virtualizes `node:fs` for processes, and Lifo consumes it via `NativeFsProvider`.
@@ -51,7 +51,7 @@ flowchart TD
     subgraph Host["node host.js — TerminalExecutor (persistent daemon, PID 1)"]
         RT["prefix dispatch"]
         NODE["node | npm | npx → child_process.spawn (real Node.js)"]
-        PY["python | python3 → node python-runtime.js (python-wasm)"]
+        PY["python | python3 | pip | pip3 → resident Pyodide daemon (python-daemon.js)"]
         LIFO["everything else → Lifo sandbox.commands.run (Unix tools)"]
         PS["ps / kill — unified process registry"]
         CWD["cwd / setCwd — session cwd (cd-synced, persisted)"]
@@ -87,7 +87,7 @@ The page boots Succinix: system self-checks, then a shell prompt. Type `help` fo
 
 ```bash
 npx tsc -p tsconfig.json --noEmit   # type check (0 errors required)
-node scripts/build-host.mjs         # bundle the in-container host (host.js + lifo-core.js + python runtime)
+node scripts/build-host.mjs         # bundle the in-container host (host.js + lifo-core.js + python Pyodide daemon)
 npm run build                       # production build
 node scripts/verify-deploy.mjs      # deploy-readiness gate (build + preview + COOP/COEP + ?test=1)
 ```
@@ -186,7 +186,7 @@ node scripts/verify-deploy.mjs
 | `ip addr`      | Show virtual network identity — `lo: virtual loopback`, `eth0: <preview-domain> (virtual)`; no fabricated interfaces or IPs |
 | `uname`        | Show system identity: summary line (`Succinix <version> js-runtime+webcontainer <api-version> <arch>`); `uname -a` all fields, `-r` runtime version, `-m` architecture (from UA, `unknown` if absent) |
 | `motd`         | View the login banner (`/etc/succinix.motd`); `motd <text>` sets it (persisted), `motd reset` restores the default |
-| `lang`         | List built-in language runtimes: `lang` (table), `lang python` → `Python 3.11.1 (python-wasm 0.28)`, `lang node`, `lang typescript` |
+| `lang`         | List built-in language runtimes: `lang` (table), `lang python` → `Python 3.14.2 (Pyodide 314.0.4)`, `lang node`, `lang typescript` |
 | `pwd`          | Show the session working directory (host-maintained, `cd`-synced, applied to node/python children) |
 
 ### Host commands (TerminalExecutor, unified routing)
@@ -194,7 +194,7 @@ node scripts/verify-deploy.mjs
 | Command                 | Route   | Description                                   |
 | ----------------------- | ------- | --------------------------------------------- |
 | `node ...` / `npm ...` / `npx ...` | Node | Real Node.js child process; when the command contains **shell metacharacters** (`&&`, `\|`, `>`, `2>&1`, ...) the whole chain runs through the **Lifo shell** (pipes/chains/redirects parsed there; each node/npm/npx segment is forwarded back to the real binary), result `runtime=lifo` |
-| `python ...` / `python3 ...` | Python | Built-in python-wasm runtime (`python -c "<code>"` / `python <script.py>`); when the command contains **shell metacharacters** the whole chain runs through the **Lifo shell** (pipes/redirects parsed there; each python segment is forwarded back to the real runtime), result `runtime=lifo` |
+| `python ...` / `python3 ...` / `pip ...` / `pip3 ...` | Python | Built-in resident Pyodide daemon (`python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>`, `pip` maps to micropip); when the command contains **shell metacharacters** the whole chain runs through the **Lifo shell** (pipes/redirects parsed there; each python/pip segment is forwarded to the same resident daemon), result `runtime=lifo` |
 | `grep`, `cat`, `tar`, `curl`, ...   | Lifo | Unix tools, pipes, redirects            |
 | `ps`                    | —       | List the unified process table                |
 | `kill <pid>`            | —       | Terminate a process (SIGTERM)                 |
@@ -202,12 +202,12 @@ node scripts/verify-deploy.mjs
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **75 passed, 0 failed, 5 skipped** (TASK25 run, 2026-08-05, against the minified host bundle; TASK24 → TASK25 added the language-ecosystem checks: extended stdlib imports, shared-FS read/write, `python -m pip` clear error, and the `npm i -g` EACCES hint). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **7? passed, 0 failed, ? skipped** (TASK27 run, 2026-08-05, against the minified host bundle; the Python runtime was switched from the python-wasm stdlib-only runtime to the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks were added). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
 - Shell fusion (TASK24): node-prefixed commands with shell metacharacters fall back to the Lifo shell — `node -e "console.log(21*2)" | grep 42` -> `42` (`runtime=lifo`), `node --version && npm --version` -> both real versions on two lines; each node/npm/npx segment in the chain runs the real binary (forwarded from the Lifo shell, not the in-browser JS interpreter). Escaped quotes in `node -e` are preserved (`node -e "console.log(\"hi\")"` -> `hi`); an unterminated quote reports `unterminated quote in command` instead of silently truncating.
-- Python pipes (TASK24 复审): python commands with shell metacharacters are no longer silently truncated at the pipe — `python -c "print(1)" | grep 2` -> empty (`runtime=lifo`), `python -c "print(42)" | grep 42` -> `42`; each python segment in the chain runs the real python-wasm runtime.
+- Python pipes (TASK24 复审): python commands with shell metacharacters are no longer silently truncated at the pipe — `python -c "print(1)" | grep 2` -> empty (`runtime=lifo`), `python -c "print(42)" | grep 42` -> `42`; each python/pip segment in the chain runs the same resident Pyodide daemon.
 - Env merge (TASK24 复审): `env FOO=bar` truly reaches child processes — a `node -e "console.log(process.env.FOO)"` child reports `bar` (the env file lives under `process.cwd()/etc/succinix.env`, matching the browser write path).
 - Session cwd persistence (TASK24 复审): `cd`'s session cwd is persisted to `process.cwd()/etc/succinix.cwd` (previously the read-only virtual root — lost on refresh) and restored on host start, so `pwd` / node / python cwd survive a refresh.
 - Process lifecycle: `spawn` a background service, `ps` shows it, `kill` transitions it to `exited`.
@@ -221,7 +221,7 @@ Result of the browser runtime verification suite (see `src/tests.ts`): **75 pass
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
 - System info: `uname` renders the honest system line (`Succinix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; the `-r`/`-m` flag parsing is additionally asserted through the command-dispatch path (not just the builders). `motd` set → read-back → reset leaves `/etc/succinix.motd` at its default (zero residue).
 - Smoke: all 25 safe built-in commands (help/clear/sysinfo/version/whoami/ports/pwd/lang/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
-- Languages (TASK23 + TASK25): `python -c "print(6*7)"` returns `42` via the built-in python-wasm runtime; the full stdlib import matrix (json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib) is green and extended-stdlib imports are self-tested; `python3 --version` reports Python 3.11; `lang` lists node/python/typescript and `lang python` reports the bundled version. Python reads/writes the shared FS (browser + node see the same file), `python -m pip` errors clearly (`pip is not available in this embedded runtime`), and the `?test=1` suite asserts all of it. See the **[Language Ecosystem — Verified Support Matrix](docs/LANGUAGES.md)** for the authoritative, measurement-backed matrix.
+- Languages (TASK27): `python -c "print(6*7)"` returns `42` via the built-in **Pyodide 314.0.4** daemon (Python 3.14.2); the full stdlib import matrix (json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib) is green and extended-stdlib imports are self-tested; `python3 --version` reports Python 3.14.2; `lang` lists node/python/typescript and `lang python` reports the bundled version. Python reads/writes the shared FS (browser + node see the same file), `python -m pip install pyparsing` → import works (micropip), and the `?test=1` suite asserts all of it. See the **[Language Ecosystem — Verified Support Matrix](docs/LANGUAGES.md)** for the authoritative, measurement-backed matrix.
 - Session cwd (TASK23): `cd /workspace` syncs the host session cwd and a `node -e "console.log(process.cwd())"` child follows it; `cd` into a missing directory keeps the session cwd unchanged. (TASK24: `/workspace` is the Lifo VFS view — real node/python subprocesses spawn in the mapped host directory, so `process.cwd()` inside a child reports the real path such as `/home/<wc-id>/proj`; `pwd`/`cwd` still report the Lifo view `/workspace/...`.)
 - EACCES hint (TASK24): `npm i -g` hitting the read-only `/usr/local` appends an actionable hint (`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`) to the error output; permission semantics are unchanged.
 - Language regression (TASK25, scenario S14): the 5 user-measured pits are locked against regression — `node --version && npm --version` chain, `node -e` nested-quote file writes (preserved through tsc), `npm i -g` EACCES + hint, `cd`-synced npm installs (packaged into the project dir, not the root), and python true pipes.
@@ -236,7 +236,7 @@ execute precompiled WASI modules; every claim below is **measurement-backed** by
 
 | Language | Command | Status | Notable facts (measured) |
 | -------- | ------- | ------ | ------------------------ |
-| **Python** | `python` / `python3` | ✅ built-in | 3.11.1 python-wasm; 11/11 stdlib imports; sqlite3/json real; **no pip** (clear error), no REPL, subprocess imports but can't spawn |
+| **Python** | `python` / `python3` / `pip` / `pip3` | ✅ built-in | 3.14.2 Pyodide 314.0.4; 11/11 stdlib imports; sqlite3/json real; **pip via micropip** (pure-Python wheels persist across refresh; compiled wheels re-install after refresh), no REPL, subprocess imports but can't spawn |
 | **Node.js** | `node` | ✅ built-in | 22.22.3; real binaries; `node -e` quote preservation; full TS toolchain (typescript/tsx/vitest) |
 | **npm** | `npm` | ✅ built-in | 10.8.2; local installs into session cwd; global → EACCES + hint |
 | **TypeScript** | `npx tsc` / `tsx` | ✅ via npm | tsc → node → vitest full loop (S13/S14) |
@@ -262,8 +262,8 @@ These are environmental constraints, not bugs:
 - **Single-command output is capped at 1 MB**: to bound container memory and result-file size, each command's `stdout`/`stderr` keeps at most the last ~1 MB of output (large dumps are truncated to their tail). Normal use (`seq 1 5000`, `cat` mid-size files, `npm install` logs) is far below the cap.
 - **Declarative autostart (not a daemon)**: `service enable` only records the service for a boot-time restart. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
 - **`log -f` (tail -f) not implemented**: interactive streaming output is deferred (POC; interactive stdin is unreliable in WebContainer). Use `log` / `log -n <count>` instead. `log clear` wipes `/var/log/succinix.log` and is therefore not itself recorded in the log.
-- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`). An interactive `>>>` REPL needs persistent stdin, which is unreliable in WebContainer — use `python -c` instead. `pip` is also not available (python-wasm ships its standard library as a zip; installing third-party wheels is out of scope). Since TASK25, `python -m pip ...` reports a clear `pip is not available in this embedded runtime` error (previously `-m` was misread as a script file), and `python -m <module>` is explicitly rejected. `subprocess` imports but cannot spawn — the WASI sandbox has no process/pipe API (see [docs/LANGUAGES.md](docs/LANGUAGES.md)).
-- **First `python` command is slow**: the python-wasm runtime (~13 MB of JS + wasm + stdlib) is lazily injected into the container on first use, so the first `python` command can take a few seconds; subsequent commands are fast. It never depends on a user `npm install` (system asset), so it cannot be broken by user actions.
+- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`, `python -m pip <cmd>`). An interactive `>>>` REPL needs persistent stdin, which is unreliable in WebContainer — use `python -c` instead. `pip` **is** available via Pyodide's **micropip** (pure-Python wheels persist across refresh via `/.pyodide/site-packages`; compiled wheels such as `numpy` need one `pip install <pkg>` after refresh because the text snapshot does not carry binary `.so` files). `python -m <module>` runs via `runpy.run_module` (only `-m pip` is special-cased). `subprocess` imports but cannot spawn — Pyodide raises `OSError: [Errno 138] emscripten does not support processes` (see [docs/LANGUAGES.md](docs/LANGUAGES.md)).
+- **First `python` command is slow**: the Pyodide runtime (~13 MB of JS + wasm + stdlib) is lazily injected into the container on first use, and the resident daemon does a one-time `loadPyodide`, so the first `python` command can take a few seconds; subsequent commands reuse the instance and are fast. It never depends on a user `npm install` (system asset), so it cannot be broken by user actions.
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
 - **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
 - **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
@@ -293,14 +293,15 @@ src/
     host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
     host-procs.ts    # unified process registry (was host-procs.ts)
     lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
-    python-runtime.ts   # python-wasm CLI entry (bundled to public/python/python-runtime.js, host-spawned)
-    python-assets.ts    # lazy python runtime asset injection (first-use, ~13 MB)
+    python-daemon.ts     # resident Pyodide 314.0.4 daemon CLI (bundled to public/pyodide/python-daemon.js)
+    python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
+    python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
   bench.mjs          # headless-Chrome performance benchmark (JSON output)
   scenarios.mjs      # 14 real-workflow scenario suite (headless Chrome + CDP; S14 = language regression)
-  lang-verify.mjs    # language-ecosystem verification (TASK25; 28 checks, real browser execution)
+  lang-verify.mjs    # language-ecosystem verification (TASK27; real browser execution)
   run-e2e.mjs        # npm run test:e2e: build once + run verify-deploy/bench/scenarios/lang-verify sequentially
   pre-commit.sh      # optional pre-commit: tsc + eslint on changed files (zero-dependency)
   setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh

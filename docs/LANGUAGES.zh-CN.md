@@ -2,7 +2,7 @@
 
 > **权威、以实测为准。** 矩阵里的每一项状态都有可复现的实测来源——`scripts/lang-verify.mjs`
 > 的检查 id（`LV·P1` … `LV·R3`）、`?test=1` 自检（`ST`）、或 `scripts/scenarios.mjs`
-> 里的场景（`S13`、`S14`）。无编造；跑 `npm run test:e2e` 即可复现全部数字。
+> 里的场景（`S11`、`S13`、`S14`）。无编造；跑 `npm run test:e2e` 即可复现全部数字。
 
 状态图例：
 
@@ -11,7 +11,9 @@
 - ❌ **不可用** —— 确认为缺失（真实执行，非假设）
 
 实测环境：headless Chrome（CDP）驱动 WebContainer；容器内 `node` 22.22.3 / `npm` 10.8.2
-（来源 `LV·N1`）；内置 python-wasm 运行时打包 Python 3.11.1（来源 `LV·P1`）。
+（来源 `LV·N1`）；内置 Python 运行时为常驻 **Pyodide 314.0.4** daemon，打包 **Python 3.14.2**
+（来源 `LV·P1`）。版本号为**观察值，非门禁断言** —— WebContainer 升级内置 Node 或固定
+Pyodide 资产变化时会静默漂移。
 
 ---
 
@@ -19,7 +21,8 @@
 
 | 语言 | 命令 | 运行时 | 版本（实测） | 装包能力 | 实测状态 | 来源 |
 | ---- | ---- | ------ | ----------- | -------- | -------- | ---- |
-| **Python** | `python`、`python3` | 内置 python-wasm（node 子进程加载） | 3.11.1 | ❌ **无 pip** —— 仅标准库、无第三方 wheel（`LV·P6`） | ✅ | `LV·P1–P7`、`ST` |
+| **Python** | `python`、`python3` | 内置常驻 **Pyodide 314.0.4** daemon（node 子进程加载、实例跨命令复用） | 3.14.2 | ✅ **pip** —— micropip；纯 Python wheel 刷新后仍在，编译 wheel 刷新后需重装（`LV·P6`） | ✅ | `LV·P1–P9`、`S11`、`ST` |
+| **pip** | `pip`、`pip3` | 映射到 Pyodide micropip（`python -m pip` 也可用） | micropip 0.11.1 | ✅ install / uninstall / list / show | ✅ | `LV·P6`、`S11`、`ST` |
 | **Node.js** | `node` | 真实 Node.js（WebContainer 运行时） | 22.22.3 | ✅ npm，本地按项目安装 | ✅ | `LV·N1–N5`、`S13`、`S14`、`ST` |
 | **npm** | `npm` | 真实 npm（随 node 自带） | 10.8.2 | ✅ 本地；❌ 全局（`/usr/local` 只读 → EACCES + hint） | ✅ | `LV·N1`、`LV·N4`、`S14`、`ST` |
 | **TypeScript** | `npx tsc`、`tsx`、`vitest` | npm 安装工具链；node 22 `--experimental-strip-types` | npm 最新版 | ✅ 经 npm | ✅ | `LV·N3`、`S13`、`S14` |
@@ -40,9 +43,9 @@
 | `csv` | ✅ | 可导入（`LV·P5`） |
 | `re` | ✅ | 可导入（`LV·P5`） |
 | `math` | ✅ | 可导入（`LV·P5`） |
-| `os` | ✅ | 可导入；`os.getcwd()` 跟随会话 cwd（`LV·P3`） |
+| `os` | ✅ | 可导入；`os.getcwd()` 映射会话 cwd（经 NODEFS 到容器根）（`LV·P3`） |
 | `sqlite3` | ✅ | 可用 —— 内存库建表/插入/查询（`LV·P5`；探测：`count(*)` → `1`） |
-| `subprocess` | ✅ import / ❌ run | 可导入（`LV·P5`）；**spawn 未实现** —— `subprocess.run(...)` → `WARNING: calling NOT IMPLEMENTED function pipe` + `RuntimeError`（WASI 沙箱无 OS 进程 API；`LV·P8`） |
+| `subprocess` | ✅ import / ❌ run | 可导入（`LV·P5`）；**spawn 未实现** —— `subprocess.run(...)` → `OSError: [Errno 138] emscripten does not support processes`（Pyodide 无 OS 进程 API；`LV·P8`） |
 | `collections` | ✅ | 可导入（`LV·P5`） |
 | `datetime` | ✅ | 可导入（`LV·P5`） |
 | `hashlib` | ✅ | 可导入（`LV·P5`） |
@@ -56,7 +59,8 @@
 
 | 场景 | 语言 | 可替代度 | 证据 |
 | ---- | ---- | -------- | ---- |
-| 标准库脚本 / 数据处理（JSON/CSV/正则/数学/文件/sqlite3） | Python | **~70%+** | 11/11 标准库 import 全绿（`LV·P5`），sqlite3 + json 实测可用（`LV·P7`）。主要缺口：**pip**（无第三方包）、无 REPL、无 subprocess。纯标准库脚本可直接跑；任何依赖 wheel 的场景被阻断。 |
+| 标准库脚本 / 数据处理（JSON/CSV/正则/数学/文件/sqlite3） | Python | **~85%+** | 11/11 标准库 import 全绿（`LV·P5`），sqlite3 + json 实测可用（`LV·P7`），**pip 可用**（micropip：`pip install pyparsing` → import，`LV·P6`、`S11`）且纯 Python wheel **刷新后仍可用**（`S11`）。剩余缺口：无 REPL、无 subprocess、编译 wheel 刷新后需重装。 |
+| 科学计算（numpy） | Python | **~80%+** | `pip install numpy` → `import numpy` → `numpy.dot([[1,2],[3,4]],...)` → `[[7, 10], [15, 22]]`（`LV·P9`、`S11`）。编译 `.so` 不进文本快照 → 刷新后 numpy 需再 `pip install numpy`（边界，`S11`）。 |
 | TypeScript 全流程开发闭环（安装 → 编译 → 测试 → 运行） | Node/TS | **~80%+** | `npm i -D typescript tsx vitest` → `tsc` → `node dist/*.js` → `vitest run 1 passed`（`LV·N3`、`S13`）；`node -e` 嵌套引号写文件穿透 tokenize 与 tsc（`LV·N2`、`S14`）；npm 装进会话 cwd（`LV·N5`、`S14`）。 |
 | 前端/服务运行时（http 服务、package 脚本） | Node | **~85%+** | 真实 node spawn + 预览 URL 注册 + `ps`/`kill` 生命周期（`S1`、`ST`）；`node --version && npm --version` 链可用（`LV·N1`、`S14`）。 |
 | 全局 CLI 工具（`npm i -g`） | npm | **❌** | `/usr/local` 只读；EACCES 并带可操作 hint（`LV·N4`、`S14`）。请改本地安装。 |
@@ -69,16 +73,18 @@
 
 实测的环境级限制，不是 bug。
 
-- **pip / 第三方 Python 包**：不可用。`python -m pip ...` 现返回明确错误
-  `pip is not available in this embedded runtime`（`LV·P6`）；裸 `pip` 命令为
-  `command not found`。标准库以 zip 打包，无 wheel 安装。
-- **`python -m <module>`**：不支持。运行时显式拒绝 `-m`（TASK25 分支），不再把 `-m`
-  误当脚本文件（`LV·P6`）。
-- **`subprocess`**：可导入但无法 spawn——WASI 无进程/管道 API
-  （`WARNING: calling NOT IMPLEMENTED function pipe` → `RuntimeError`）。
+- **pip 持久化是尽力而为**：纯 Python wheel（如 `pyparsing`）刷新后仍在——站点包目录经
+  NODEFS 挂载到 `/.pyodide/site-packages`，随文本快照持久。**编译 wheel（如 `numpy`）刷新后
+  需再 `pip install <pkg>`**：其 `.so` 是二进制、快照仅文本，daemon 启动时丢弃不完整包以免
+  import 崩溃（如实记录边界，`S11`）。
+- **`python -m <module>`**：仅 `python -m pip ...` 特殊映射到 micropip；其余模块经
+  `runpy.run_module` 执行（`LV·P6`）。
+- **`subprocess`**：可导入但无法 spawn——Pyodide 抛
+  `OSError: [Errno 138] emscripten does not support processes`（`LV·P8`）。
 - **Python REPL**：未实现；WebContainer 中交互 stdin 不可靠。请用 `python -c "<code>"`
-  / `python <script.py>`（AGENTS.md 边界）。
-- **首次 `python` 命令慢**：~13 MB 运行时（wasm + stdlib zip）首用懒注入；后续命令快（`ST`）。
+  / `python <script.py>` / `python -m pip <cmd>`（AGENTS.md 边界）。
+- **首次 `python` 命令慢**：~13 MB Pyodide 运行时（wasm + stdlib zip）首用懒注入，且常驻
+  daemon 首次 `loadPyodide` 需一次性初始化；后续命令复用实例（`LV·P1` 首跑计时、`ST`）。
 - **npm 全局安装**：`/usr/local` 对 guest 只读。npm 以 `EACCES` 失败并追加 hint 行
   （`hint: /usr/local is read-only for guest. Install locally: npm i <pkg> ...`）（`LV·N4`、`S14`）。
   权限语义不变。
@@ -98,9 +104,9 @@
 
 ```bash
 npm run test:e2e                      # 构建一次后：verify-deploy → bench → scenarios → lang-verify
-node scripts/lang-verify.mjs          # 语言生态验证（P1–P7、N1–N5、R1–R3）
-node scripts/scenarios.mjs --only S14  # 语言防回归（5 坑），或完整 S1–S14
-# 自检：打开 <deploy>/?test=1 → "75 passed, 0 failed, 5 skipped"（门禁 >= 71）
+node scripts/lang-verify.mjs          # 语言生态验证（P1–P9、N1–N5、R1–R3）
+node scripts/scenarios.mjs --only S11  # python 工作流 + pip + 持久化，或完整 S1–S14
+# 自检：打开 <deploy>/?test=1 → "7? passed, 0 failed, ? skipped"（门禁 >= 71）
 ```
 
 这些文件是本矩阵的唯一事实来源——支持矩阵的任何改动必须来自 `lang-verify.mjs`、自检或

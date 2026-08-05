@@ -125,16 +125,17 @@ The host applies a single, fixed routing rule to `run` commands:
   result `runtime: "lifo"`; each `node`/`npm`/`npx` segment in the chain is forwarded to the
   **real binary** by the host (the Lifo shell's in-browser JS-interpreter shims are overridden).
   A pure node command with no metachars is unchanged (direct spawn).
-- **`python|python3`** (followed by whitespace or end of command) → a **real Node.js child
-  process** loading the built-in `python-runtime.js` (python-wasm, Python 3.11). Result
-  `runtime: "node"` (it *is* a node child process; the routing field stays stable). Exception
-  (TASK24 复审): if the tokenized argv contains a shell metacharacter token the **whole command**
-  runs through the Lifo shell (result `runtime: "lifo"`), and each `python`/`python3` segment in
-  the chain is forwarded to the real runtime — `python -c "print(1)" | grep 2` → empty,
-  `python -c "print(42)" | grep 42` → `42`. The runtime is a system asset injected lazily on
-  first use — `python -c "<code>"` executes a code string, `python <script.py>` executes a
-  script (absolute paths are resolved against the browser filesystem root = host process cwd).
-  Interactive REPL and `pip` are not supported.
+- **`python|python3|pip|pip3`** (followed by whitespace or end of command) → a **real Node.js
+  child process** running the resident Pyodide daemon (`python-daemon.js`, Pyodide 314.0.4 /
+  Python 3.14.2). Result `runtime: "node"` (it *is* a node child process; the routing field stays
+  stable). Exception (TASK24 复审): if the tokenized argv contains a shell metacharacter token the
+  **whole command** runs through the Lifo shell (result `runtime: "lifo"`), and each
+  `python`/`python3`/`pip`/`pip3` segment in the chain is forwarded to the **same resident daemon**
+  — `python -c "print(1)" | grep 2` → empty, `python -c "print(42)" | grep 42` → `42`. The runtime
+  is a system asset injected lazily on first use — `python -c "<code>"` executes a code string,
+  `python <script.py>` executes a script (absolute paths are resolved against the browser
+  filesystem root = host process cwd), `python -m pip install <pkg>` maps to Pyodide's micropip.
+  Interactive REPL is not supported (AGENTS.md boundary); `pip` is available via micropip.
 - **everything else** → the **Lifo sandbox** (`sandbox.commands.run`). Result `runtime: "lifo"`.
 
 The command string is split with a shlex-style tokenizer (`src/engine/tokenize.ts`): single/double
@@ -269,7 +270,10 @@ These are intentional constraints of the environment/protocol:
 
 - **Interactive stdin** is unreliable in WebContainer — file RPC replaces it. `log -f`
   and REPL-style processes are not supported. This is why `python` has no interactive
-  REPL (use `python -c "<code>"` / `python <script.py>`); `pip` is not available either.
+  REPL (use `python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>`). `pip`
+  is available via Pyodide's micropip (pure-Python wheels persist across refresh via the
+  NODEFS site-packages; compiled wheels such as numpy need a `pip install` after refresh —
+  the text snapshot does not carry `.so` files, see `docs/LANGUAGES.md`).
 - **Session cwd sync covers the `/workspace` mount only**: a Lifo `cd` into a VFS-private
   path (e.g. `/tmp`, `/home/user`) succeeds in Lifo but has no host-filesystem equivalent,
   so the session cwd is left unchanged (Node/Python children keep the last synced cwd).

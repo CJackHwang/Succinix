@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { registerProcess, listProcesses, killProcess, appendProcessOutput, markProcessExited } from './host-procs.js';
 import { tokenize, hasShellMetaToken } from './tokenize.js';
+import { pythonDaemon, PYTHON_DAEMON_JS } from './python-daemon-client.js';
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
@@ -246,22 +247,28 @@ function registerRealBinaryCommands(
       return forward(ctx, child);
     });
   }
-  // TASK24 复审修复：python 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段
-  // 转发到真运行时（node 加载 python-runtime.js）。资产未注入时给明确错误，与 runPython 一致。
+  // TASK27：python/pip 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段
+  // 转发到常驻 Pyodide daemon（python-daemon-client）。资产未注入时给明确错误，与 runPython 一致。
+  const pythonForward = async (
+    ctx: { stdout: { write(s: string): void }; stderr: { write(s: string): void }; cwd: string },
+    args: string[]
+  ): Promise<number> => {
+    if (!fs.existsSync(PYTHON_DAEMON_JS)) {
+      ctx.stderr.write(
+        'python runtime failed to load: assets not injected yet — run any other command first, or refresh the page (the runtime is injected on first use)'
+      );
+      return -1;
+    }
+    const r = await pythonDaemon.exec(args, lifoSpawnCwd(ctx.cwd), PYTHON_TIMEOUT_MS);
+    ctx.stdout.write(r.stdout);
+    ctx.stderr.write(withEaccesHint(r.stderr));
+    return r.exitCode;
+  };
   for (const name of ['python', 'python3']) {
-    sandbox.commands.register(name, async (ctx) => {
-      if (!fs.existsSync(PYTHON_RUNTIME_JS)) {
-        ctx.stderr.write(
-          'python runtime failed to load: assets not injected yet — run any other command first, or refresh the page (the runtime is injected on first use)'
-        );
-        return -1;
-      }
-      const child = spawn(process.execPath, [PYTHON_RUNTIME_JS, ...pythonRuntimeArgs(ctx.args)], {
-        cwd: lifoSpawnCwd(ctx.cwd),
-        env: mergedEnv(),
-      });
-      return forward(ctx, child);
-    });
+    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, pythonRuntimeArgs(ctx.args)));
+  }
+  for (const name of ['pip', 'pip3']) {
+    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, ['-m', 'pip', ...ctx.args]));
   }
 }
 
@@ -275,17 +282,24 @@ setTimeout(() => {
 
 // 以 node / npm / npx 开头（后跟空格或直接结束）的整条命令 → 真 Node 子进程
 const NODE_PREFIX_RE = /^(node|npm|npx)(\s|$)/;
-// TASK23：python / python3 开头 → 专用 python 运行时子进程（node 加载 python-runtime.js）。
-// 独立命令而非并入 node 系：python 需要专用启动逻辑（先确保资产注入、spawn 运行时脚本）。
+// TASK27：python / python3 开头 → 专用 python 运行时（host 常驻 Pyodide daemon）。
+// 独立命令而非并入 node 系：python 需要专用启动逻辑（先确保资产注入、daemon 懒启动）。
 const PYTHON_PREFIX_RE = /^(python|python3)(\s|$)/;
+// TASK27：pip / pip3 命令 → 映射到 Pyodide 的 micropip（daemon 内 `-m pip <args>`）。
+// 与 python 共用路由（含 shell 元字符时整条回退 Lifo shell，pip 段转发到 daemon）。
+const PIP_PREFIX_RE = /^(pip|pip3)(\s|$)/;
 // TASK23：Lifo 的 cd 命令（成功后会同步会话 cwd）。只匹配整条命令以 cd 开头。
 const CD_PREFIX_RE = /^cd(\s|$)/;
-// python 运行时脚本在容器内的位置（浏览器首用 python 时懒注入 assets 到同一目录）。
-// TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd（/home/<wc-id>），python-assets.ts
+// python daemon 脚本在容器内的位置（浏览器首用 python/pip 时懒注入 assets 到同一目录）。
+// TASK24 双根铁律：浏览器 wc.fs 的 `/` == host 进程 cwd（/home/<wc-id>），python-assets.ts
 // 经 wc.fs 把运行时写到 `/usr/lib/succinix/python/...`，即 host 视角的 `process.cwd()/usr/lib/...`；
 // 若这里仍用 node 虚拟系统根 `/usr/lib/...`（bin/dev/etc 那个根）会找不到 → 报
 // "assets not injected yet"。统一用 process.cwd() 拼接，两侧对齐。
-const PYTHON_RUNTIME_JS = `${process.cwd()}/usr/lib/succinix/python/python-runtime.js`;
+// PYTHON_DAEMON_JS 由 ./python-daemon-client.js 导出（同一 process.cwd() 拼接），本文件不再自建。
+
+// python 命令默认超时（比 node 子进程宽松）：首个命令含 daemon 懒启动 + 可能的重装恢复，
+// pip install 走网络拉 wheel —— 120s 内可完成；daemon 内部也有同等超时兜底。
+const PYTHON_TIMEOUT_MS = 150000;
 
 // TASK24 坑 3：npm i -g 在 /usr/local 只读时的可操作提示。只在 stderr 含 EACCES + /usr/local
 // 时**追加**一行（不替换原错误），权限语义保持（真实 Linux 同样无 sudo 装不了全局）。
@@ -410,12 +424,10 @@ async function dispatchRun(req: CommandRequest): Promise<void> {
     runNode(command, req.opts, req.id); // 立即返回；子进程结束时异步写结果
     return;
   }
-  if (PYTHON_PREFIX_RE.test(command)) {
-    // TASK24 复审修复：python 命令含 shell 元字符（| / > / && ...）时整条经 Lifo shell 执行
-    // —— Lifo 的 shell 层解析管道/重定向/链，python 段经 registerRealBinaryCommands 转回真运行时
-    // （见 getSandbox）。此前直接 runPython 会把 `| grep ...` 静默当 python 参数吞掉（假管道：
-    // `python -c "print(1)" | grep 2` 输出 1 而非空）。结果 runtime 仍标 'lifo'（shell 层执行）。
-    // 纯 python 命令（无元字符）行为不变（直启运行时子进程）。
+  if (PYTHON_PREFIX_RE.test(command) || PIP_PREFIX_RE.test(command)) {
+    // TASK27：python/pip 命令含 shell 元字符（| / > / && ...）时整条经 Lifo shell 执行
+    // —— Lifo 的 shell 层解析管道/重定向/链，python/pip 段经 registerRealBinaryCommands 转回
+    // 常驻 daemon（见 getSandbox）。纯 python/pip 命令（无元字符）走 daemon 直启。
     const t = tryTokenize(command);
     if (!t.ok) {
       writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
@@ -425,7 +437,7 @@ async function dispatchRun(req: CommandRequest): Promise<void> {
       await runLifo(command, req.opts, req.id); // 混合链：Lifo shell 层执行
       return;
     }
-    runPython(command, req.opts, req.id); // 立即返回；运行时子进程结束时异步写结果
+    await runPython(command, req.opts, req.id); // daemon 响应后写结果
     return;
   }
   await runLifo(command, req.opts, req.id);
@@ -452,13 +464,12 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
   spawnChild(prog, args, opts, reqId, 'node');
 }
 
-// TASK23：python / python3 命令 → spawn 一个 node 子进程加载 python-runtime.js。
-// 与 runNode 同构（cwd = 会话 cwd、输出进标准 ExecResult、进程表可管理）。
-// 纯 python 命令（无 shell 元字符）走这里直启运行时；含管道/重定向的混合链由 dispatchRun
-// 转给 Lifo shell（python 段再经 registerRealBinaryCommands 转发到本运行时）。
+// TASK27：python / python3 / pip / pip3 命令 → 发往常驻 Pyodide daemon（python-daemon-client）。
+// 纯 python/pip 命令（无 shell 元字符）走这里；含管道/重定向的混合链由 dispatchRun 转给
+// Lifo shell（python/pip 段再经 registerRealBinaryCommands 转发到同一 daemon —— 实例状态共享）。
 // 资产未注入时给明确错误，系统不崩（装不坏：python 不依赖用户 npm install）。
-function runPython(command: string, opts: Record<string, unknown> | undefined, reqId: number): void {
-  if (!fs.existsSync(PYTHON_RUNTIME_JS)) {
+async function runPython(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
+  if (!fs.existsSync(PYTHON_DAEMON_JS)) {
     writeResult(reqId, {
       ok: false,
       exitCode: -1,
@@ -474,11 +485,17 @@ function runPython(command: string, opts: Record<string, unknown> | undefined, r
     writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
     return;
   }
-  const [, ...rawArgs] = t.tokens; // 丢弃 python/python3 前缀，替换为 node + 运行时脚本
-  // 脚本模式（第一个参数是文件路径，非 -c/--version）的绝对路径映射到 host 真实路径，
-  // 否则 `python /script.py` 在真实容器根找不到浏览器写入的脚本（pythonRuntimeArgs 共用）。
-  const args = pythonRuntimeArgs(rawArgs);
-  spawnChild(process.execPath, [PYTHON_RUNTIME_JS, ...args], opts, reqId, 'python');
+  const [, ...rawArgs] = t.tokens; // 丢弃 python/python3/pip/pip3 前缀
+  const args = PIP_PREFIX_RE.test(command) ? ['-m', 'pip', ...rawArgs] : pythonRuntimeArgs(rawArgs);
+  const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : PYTHON_TIMEOUT_MS;
+  const r = await pythonDaemon.exec(args, spawnCwd(), timeoutMs);
+  writeResult(reqId, {
+    ok: r.exitCode === 0,
+    exitCode: r.exitCode,
+    stdout: capOutput(r.stdout),
+    stderr: withEaccesHint(capOutput(r.stderr)),
+    runtime: 'node',
+  });
 }
 
 // 共享子进程捕获逻辑：runNode（node/npm/npx）与 runPython（python 运行时）共用。

@@ -45,8 +45,8 @@ const EMPTY_META: SnapshotMeta = { version: 1, savedAt: 0, fileCount: 0, totalBy
 // ─── 排除规则（快照遍历时跳过，避免 node_modules 巨量 & RPC 临时文件 & 重建缓存）───
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git']);
 // host.js / lifo-core.js：运行时注入的 host 进程脚本，非用户数据（随 boot 重新注入）；
-// cmd.json：文件 RPC 通道文件。
-const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json']);
+// cmd.json：文件 RPC 通道文件；webunix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
+const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'webunix.engine.json']);
 
 function isResultFile(name: string): boolean {
   return name.startsWith('result-') && name.endsWith('.json');

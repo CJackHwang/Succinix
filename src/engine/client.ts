@@ -1,7 +1,6 @@
 // TerminalExecutor 客户端：浏览器侧单一入口，内部走文件型 RPC。
 // 通道与 host 保持一致：/cmd.json {id,cmd,opts} → /result-<id>.json（每请求独立结果文件）。
 import type { WebContainer } from '@webcontainer/api';
-import { log } from './log.js';
 
 // host 响应统一形状；具体字段依 cmd 而定（run/ps/kill/spawn/cwd/ping/exit）。
 export interface ExecResult {
@@ -9,7 +8,7 @@ export interface ExecResult {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
-  runtime?: 'node' | 'lifo';
+  runtime?: 'node' | 'lifo' | 'browser';
   kind?: string;
   cwd?: string;
   pid?: number;
@@ -17,7 +16,21 @@ export interface ExecResult {
   killed?: boolean;
   message?: string;
   error?: string;
+  /** 引擎 exec 超时时置 true（原始 RPC 超时抛异常，引擎层捕获转结果） */
+  timedOut?: boolean;
   [key: string]: unknown;
+}
+
+// 命令执行采集条目（TASK21：日志从引擎解耦 —— 引擎只产生条目，宿主决定是否落盘）。
+export interface CommandLogEntry {
+  command: string;
+  exit: number | null;
+  runtime: string;
+}
+
+export interface TerminalClientOptions {
+  /** 命令执行采集点：terminal/spawn 完成后回调（宿主负责过滤与落盘；缺省不记录） */
+  onCommand?: (entry: CommandLogEntry) => void;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -32,6 +45,7 @@ const HOST_POLL_MARGIN_MS = 250;
 
 export class TerminalClient {
   private id = 0;
+  private options: TerminalClientOptions;
   // 请求互斥队列（TASK16）：/cmd.json 是单槽通道，host 一次只处理一个请求，
   // 并行调用会让后写覆盖先写的 cmd.json、先发请求等不到结果。所有 exec 串行化
   // —— host 本就串行处理，浏览器侧排队不损失吞吐，只让失败变得确定。
@@ -43,7 +57,12 @@ export class TerminalClient {
   /** 最近一次写 /cmd.json 的时间戳（看门狗覆盖安全窗口判断） */
   private lastCmdWrite = 0;
 
-  constructor(private wc: WebContainer) {}
+  constructor(
+    private wc: WebContainer,
+    options: TerminalClientOptions = {}
+  ) {
+    this.options = options;
+  }
 
   // 统一终端入口：协议命令（ps / kill <pid> / cwd / ping / exit）直接命中；
   // 其余命令作为 run 发送，由 host 统一路由到真 Node 或 Lifo。
@@ -62,9 +81,12 @@ export class TerminalClient {
     }
     // TASK12：命令执行采集点（INFO）——cmd/exit/runtime。协议命令无 runtime 字段，标 protocol。
     // TASK16 R2 降噪：纯轮询 ps（top/service 内部高频调用）跳过命令日志，避免刷屏；kill 保留。
-    if (trimmed !== 'ps') {
-      void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'protocol'}`);
-    }
+    // TASK21：日志已从引擎解耦 —— 引擎只产生条目，宿主在 onCommand 里决定过滤（如跳过 ps）与落盘。
+    this.options.onCommand?.({
+      command,
+      exit: res.exitCode ?? (res.ok ? 0 : 1),
+      runtime: res.runtime ?? 'protocol',
+    });
     return res;
   }
 
@@ -72,7 +94,11 @@ export class TerminalClient {
   async spawn(command: string, opts?: Record<string, unknown>, timeoutMs = 5000): Promise<ExecResult> {
     const res = await this.exec('spawn', { command, ...opts }, timeoutMs);
     // TASK12：spawn 后台进程同样记录（host 返回 runtime: 'node'，缺失时按 node 处理）。
-    void log('INFO', `cmd: ${command} exit=${res.exitCode ?? (res.ok ? 0 : 1)} runtime=${res.runtime ?? 'node'}`);
+    this.options.onCommand?.({
+      command,
+      exit: res.exitCode ?? (res.ok ? 0 : 1),
+      runtime: res.runtime ?? 'node',
+    });
     return res;
   }
 
@@ -106,10 +132,11 @@ export class TerminalClient {
   }
 
   // 单次 RPC：写 /cmd.json，轮询 /result-<id>.json，读到即删。
+  // TASK21：请求带 protocol 版本字段（向后兼容 —— host 忽略缺失/未知字段，按 v1 处理）。
   private async doExec(id: number, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
     this.active++;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd, opts }));
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd, opts }));
       this.lastCmdWrite = Date.now();
       const resultFile = `/result-${id}.json`;
       const start = Date.now();
@@ -150,7 +177,7 @@ export class TerminalClient {
     if (Date.now() - this.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
     const id = ++this.id;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ id, cmd: 'ping' }));
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd: 'ping' }));
     } catch {
       return false; // FS 不可写：按 host 不可达处理
     }

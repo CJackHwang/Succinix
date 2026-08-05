@@ -234,10 +234,13 @@ src/
   services.ts        # service management: /etc/webunix.services + /etc/webunix.autostart I/O, status/start/stop
   log.ts             # journald-style system log: /var/log/webunix.log append/read/clear/BOOT-filter
   pkg.ts             # package management: pkg list/search/install/remove/info over lifo + npm channels
-  terminal-client.ts # file-RPC client (single terminal() entry)
   tests.ts           # self-test suite (?test=1)
-  host.ts            # TerminalExecutor daemon (runs inside WebContainer)
-  host-procs.ts      # unified process registry
+  engine/            # TerminalExecutor engine — decoupled, reusable (see Ecosystem)
+    index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
+    client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
+    host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
+    host-procs.ts    # unified process registry (was host-procs.ts)
+    lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
@@ -262,6 +265,34 @@ public/
   host.js            # lightweight in-container host daemon (generated)
   lifo-core.js       # @lifo-sh/core kernel bundle, lazily imported by host.js (generated)
 ```
+
+## Ecosystem
+
+WebUnix's command-execution engine (`src/engine/`) is **decoupled from the WebUnix app itself**, so other frontend projects can embed it as a browser-native Unix sandbox. A consumer's page boots a WebContainer, calls `createTerminalExecutor()`, and gets a shared-filesystem shell with a real Node runtime (`node|npm|npx`) and a Lifo Unix userland (everything else) — without building any of that itself.
+
+### Engine API
+
+The public surface is `src/engine/index.ts` (the future `@webunix/engine` package). One line each:
+
+| Symbol                | What it does                                                                                                                                    |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createTerminalExecutor()` | Returns a clean `TerminalExecutor` facade for ecosystem consumers — `boot(wc, opts)` brings up the host, then `exec` / `spawn` / `ps` / `kill` / `ping` / `dispose`. |
+| `bootEngineHost(wc, client, hooks)` | Low-level boot helper: injects `host.js` if missing, spawns the host daemon, asynchronously writes `lifo-core.js`, and wires `server-ready` / `port` events to `onServerReady` / `onServerClosed`. |
+| `exec(command, opts)` | Run one command through unified routing (`node|npm|npx` → real Node child process, everything else → Lifo). Returns the full `ExecResult`; on RPC wait expiry returns `{ ok: false, timedOut: true }` instead of throwing. |
+| `spawn(command, opts)` | Start a background long-running process (node family) and return immediately with its pid; output streams into the process table. |
+| `listProcesses()` (`ps`) | Snapshot of the unified process table — `{ pid, cmd, status, startTime, exitCode?, outputTail? }`. |
+| `kill(pid)`           | SIGTERM a real child process in the table; returns `true` on success.                                                                           |
+| `ping()`              | Host liveness probe — resolves `true` when the host answers `pong`.                                                                             |
+| `dispose()`           | Release resources (kill the host process, clear references). Idempotent.                                                                        |
+
+### Protocol & SDK docs
+
+- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts. An ecosystem consumer can build an alternative client or host against this document alone, without reading the implementation.
+- **[docs/SDK.md](docs/SDK.md)** — the SDK form design for "embed the WebUnix engine into different people's frontend projects to provide a sandbox": it compares an npm package (same-page embedding, shared filesystem), an iframe sandbox (hard isolation), and a scaffold, then recommends a path.
+
+### Vision
+
+The engine is the same code that powers the WebUnix terminal, behind a clean API boundary: logging is injected (the engine emits `CommandLogEntry` entries; the host app decides what to filter and persist), the wire protocol is documented, and no app-layer dependency leaks into `src/engine/`. Packaged as `@webunix/engine`, any Chromium-based frontend that already boots a WebContainer can add a Unix sandbox sharing its own files — the packaging stages are laid out in [docs/SDK.md](docs/SDK.md).
 
 ## Development Archive
 

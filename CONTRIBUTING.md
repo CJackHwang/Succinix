@@ -20,10 +20,12 @@ src/
   main.ts            # entry: xterm terminal, REPL, boot orchestration
   boot.ts            # boot sequence, system info, self-checks
   commands.ts        # browser-side commands (help/ports/db/...)
-  terminal-client.ts # file-RPC client
   tests.ts           # self-test suite (?test=1)
-  host.ts            # TerminalExecutor daemon (runs inside WebContainer)
-  host-procs.ts      # unified process registry
+  engine/            # TerminalExecutor engine (decoupled, reusable — see README Ecosystem)
+    index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
+    client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
+    host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
+    host-procs.ts    # unified process registry (was host-procs.ts)
 scripts/build-host.mjs
 ```
 

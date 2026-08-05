@@ -9,7 +9,7 @@
 // 同名冲突优先 lifo（工具类，README 注明规则）。
 // 约束：网络类操作失败按"已知边界"处理 —— 明确提示原因，不吞错、不假装成功。
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from './terminal-client.js';
+import type { TerminalClient } from './engine/index.js';
 import { log } from './log.js';
 
 export interface PackageEntry {

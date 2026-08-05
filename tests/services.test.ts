@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB, FakeClient } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
-import type { TerminalClient } from '../src/terminal-client.js';
+import type { TerminalClient } from '../src/engine/index.js';
 import {
   DEFAULT_SERVICES_TEXT,
   ensureServicesFiles,
@@ -26,7 +26,7 @@ import { clearSnapshot } from '../src/persist.js';
 
 const fs = () => new FakeFS() as unknown as FileSystemAPI;
 
-function makeCtx(fake: FakeClient, f: FakeFS, ports?: Map<number, string>): ServiceContext {
+function makeCtx(fake: FakeClient, f: FileSystemAPI, ports?: Map<number, string>): ServiceContext {
   return {
     wc: { fs: f as unknown as FileSystemAPI } as unknown as ServiceContext['wc'],
     client: fake as unknown as TerminalClient,

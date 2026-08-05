@@ -16,7 +16,7 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **Unified routing:** commands starting with `node|npm|npx` go to a real Node child process; everything else goes to the Lifo sandbox. Do not change this split.
 - **Dev server:** Vite on port `7892` with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` (WebContainer requires cross-origin isolation).
 - **tinbase:** must start with `--engine wasm`（no `--memory` — data persists in the workspace snapshot; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`).
-- **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Produces two in-container bundles: `public/host.js` (lightweight host daemon — RPC loop, process table, node subprocesses) and `public/lifo-core.js` (the ~1 MB `@lifo-sh/core` kernel, loaded lazily via `import('./lifo-core.js')` on first Lifo command). Rebuild with `node scripts/build-host.mjs` after touching `src/host.ts`, `src/host-procs.ts`, or `src/lifo-core.ts`.
+- **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Produces two in-container bundles: `public/host.js` (lightweight host daemon — RPC loop, process table, node subprocesses) and `public/lifo-core.js` (the ~1 MB `@lifo-sh/core` kernel, loaded lazily via `import('./lifo-core.js')` on first Lifo command). Rebuild with `node scripts/build-host.mjs` after touching `src/engine/host.ts`, `src/engine/host-procs.ts`, or `src/engine/lifo-core.ts`.
 
 ## Explicitly Not Implemented (do not force)
 

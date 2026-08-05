@@ -14,7 +14,7 @@ import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
-import type { ExecResult } from './terminal-client.js';
+import type { ExecResult } from './engine/index.js';
 
 const AMBER = '\x1b[33m';
 const RED = '\x1b[31m';

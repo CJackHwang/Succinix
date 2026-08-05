@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TASK20 CI & standard test pipeline:
   - ESLint flat config (`eslint.config.js`) — `@eslint/js` + `typescript-eslint` recommended + project rules (`no-explicit-any` error, no leftover `console.log` warn with host-side exemption, no unused vars/imports); `npm run lint` gate is 0 errors.
-  - Vitest unit-test suite (`tests/`, `vitest.config.ts`) covering the pure-logic modules `src/log.ts`, `persist.ts`, `services.ts`, `pkg.ts`, `motd.ts`, `config.ts` with an in-memory mock FS / fake IndexedDB / scriptable terminal client; v8 coverage gate **≥70%** on those core files (measured 89% stmts / 72% branches / 93% funcs / 92% lines).
+  - Vitest unit-test suite (`tests/`, `vitest.config.ts`) covering the pure-logic modules `src/log.ts`, `persist.ts`, `services.ts`, `pkg.ts`, `motd.ts`, `config.ts` with an in-memory mock FS / fake IndexedDB / scriptable terminal client; v8 coverage gate **≥70%** on those core files (measured 90.62% stmts / 74% branches / 92.8% funcs / 93.46% lines).
   - GitHub Actions CI (`.github/workflows/ci.yml`): `check` job (lint → typecheck → unit tests + coverage → build → `verify-deploy` headless self-test) on push/PR, plus a scheduled `nightly-scenarios` job; CI badge added to the README.
   - `npm run test:e2e` (`scripts/run-e2e.mjs`): builds once, then runs `verify-deploy` → `bench` → `scenarios` sequentially — reusing the existing zero-dependency CDP scripts (no Playwright).
   - Optional zero-dependency pre-commit (`npm run setup:hooks` writes `.git/hooks/pre-commit` → `scripts/pre-commit.sh`: tsc + eslint on changed files only), documented in the README.

@@ -4,7 +4,7 @@
 // server-ready 端口注册表。输出目标由调用方注入的 BootUI 决定（TASK4 呈现层重构）。
 import { WebContainer, type FileSystemAPI, type WebContainerProcess } from '@webcontainer/api';
 import type { BootUI } from './boot-ui.js';
-import { TerminalClient } from './terminal-client.js';
+import { TerminalClient, bootEngineHost, waitForHostReady, type CommandLogEntry } from './engine/index.js';
 import { loadSnapshot } from './persist.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
 import { ensureServicesFiles, readAutostart, startService } from './services.js';
@@ -19,8 +19,6 @@ export interface WebUnixServices {
   /** 当前 host 进程句柄（main.ts 的 host 重启路径用 kill 清理旧进程，防双 host 竞态） */
   hostProc: WebContainerProcess;
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // TASK18：bench 模式记录 boot 阶段时间戳（window.__bootTimes.phases 由 scripts/bench.mjs 的
 // 注入脚本创建）。正常会话无该对象，函数为 no-op —— 仅一次 window 读的微小开销。
@@ -129,50 +127,22 @@ async function initWorkspace(ui: BootUI, fs: FileSystemAPI, defaultWorkspace: st
   ok(ui, `Initialized default workspace '${defaultWorkspace}'`);
 }
 
-// ─── host 拉起 ───
-
-// host.js（轻量主进程）由 Vite 预打包提供（public/host.js）；lifo-core.js（Lifo 内核，~1MB）
-// 由 public/lifo-core.js 提供，host 首个 Lifo 命令时动态 import。
-// TASK18：注入 + spawn 只负责把 host 进程拉起来，**不等就绪**（就绪由 waitForHostReady 负责）。
-// lifo-core.js 在 host spawn **之后**异步写入 —— host 启动不依赖它（ping/ps/kill/node 命令
-// 都不碰 Lifo 内核），把 ~1MB 写入从 boot 关键路径上消除。
-async function ensureTerminalHost(
-  wc: WebContainer,
-  hooks: { hostSrc?: string | null; lifoCoreSrc?: string | null; onInjected?: () => void; onSpawned?: () => void }
-): Promise<{ client: TerminalClient; hostProc: WebContainerProcess }> {
-  try {
-    await wc.fs.readFile('/host.js');
-  } catch {
-    // hostSrc 由调用方在 WebContainer.boot() 并行预取（消除网络等待在关键路径上）；
-    // 预取失败（网络异常）时兜底再 fetch 一次。
-    const src = hooks.hostSrc ?? (await (await fetch('/host.js')).text());
-    await wc.fs.writeFile('/host.js', src);
-    hooks.onInjected?.();
-  }
-  // host 启动：轻量 bundle 解析快，立即注册轮询循环（Lifo 内核另行懒加载）。
-  const hostProc = await wc.spawn('node', ['host.js']);
-  hooks.onSpawned?.();
-  // lifo-core.js 异步写入（不进 boot 关键路径）：host 首个 Lifo 命令时才需要；
-  // 写入失败时 host 侧 getSandbox 会重试（容器已有该文件则跳过）。随快照排除（persist）。
-  if (hooks.lifoCoreSrc) {
-    void wc.fs.writeFile('/lifo-core.js', hooks.lifoCoreSrc).catch(() => {});
-  }
-  return { client: new TerminalClient(wc), hostProc };
-}
-
-// 等 host 就绪：命令轮询循环可响应。TASK18：重试间隔 300ms → 100ms，减少"已就绪却多等"的空转。
-async function waitForHostReady(client: TerminalClient): Promise<void> {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const p = await client.exec('ping', undefined, 2000);
-      if (p.kind === 'pong') return;
-    } catch {
-      /* host 未就绪 */
+// ─── host 拉起（TASK21：引擎解耦后移入 src/engine/）───
+// 引擎的 bootEngineHost 负责注入 host.js + spawn + 异步写 lifo-core.js + 登记端口回调，
+// waitForHostReady 负责就绪探活。前端只负责：构造 TerminalClient、注入命令日志采集点、
+// 用 onServerReady/onServerClosed 维护自己的预览端口注册表。日志采集在这里接线：
+// 采集条目类型用引擎导出的 CommandLogEntry（结构性兼容），前端过滤纯轮询 ps（避免刷屏）
+// 并落盘 /var/log/webunix.log。
+function makeClientLogger(): (entry: CommandLogEntry) => void {
+  return (entry) => {
+    if (entry.command.trim() !== 'ps') {
+      void log('INFO', `cmd: ${entry.command} exit=${entry.exit} runtime=${entry.runtime}`);
     }
-    await sleep(100);
-  }
-  throw new Error('host did not respond');
+  };
 }
+
+// 主启动流程内联替换 ensureTerminalHost / waitForHostReady：引擎的 bootEngineHost 返回
+// host 进程句柄，就绪探活仍在配置/服务初始化之后调用（保持 boot 日志顺序不变）。
 
 // ─── 主启动流程 ───
 
@@ -226,7 +196,10 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   // TASK18：host 注入 + spawn 放在配置读取**之前** —— host 的 Sandbox.create（Lifo 内核预热）
   // 与下面的配置读取 / 工作区初始化 / 服务与 motd 兜底并行进行，把 host 预热时间从
   // boot 关键路径上消除。host 尚未就绪不影响这些 FS 操作（host 只在收到命令后才读配置）。
-  const { client, hostProc } = await ensureTerminalHost(wc, {
+  // TASK21：终端客户端与 host 拉起都由引擎提供；端口事件经 onServerReady/onServerClosed 维护
+  // 预览端口注册表（bootEngineHost 内部注册 wc.on('server-ready'/'port')，此处接线）。
+  const client = new TerminalClient(wc, { onCommand: makeClientLogger() });
+  const hostProc = await bootEngineHost(wc, client, {
     hostSrc: await hostFetch,
     lifoCoreSrc: await lifoCoreFetch,
     onInjected: () => note(ui, 'host.js missing in container; injected from build artifact'),
@@ -235,6 +208,8 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
       // TASK18：Lifo 内核懒加载后，spawn 时内核仍在后台加载 —— "Starting" 比 "Started" 更诚实。
       ok(ui, 'Starting Lifo kernel');
     },
+    onServerReady: (port, url) => void ports.set(port, url),
+    onServerClosed: (port) => void ports.delete(port),
   });
   bootPhase('host-spawned');
 
@@ -279,13 +254,8 @@ export async function bootWebUnix(ui: BootUI): Promise<WebUnixServices | null> {
   bootPhase('config-done');
 
   // 端口注册表：容器里任何服务就绪都记一笔，进程被杀 / 端口关闭时自动移除。
+  // TASK21：登记逻辑在引擎 bootEngineHost 内（onServerReady/onServerClosed 接线到本 Map）。
   // 预览提示行由 main.ts 的 server-ready 监听器打到 xterm（呈现层，不在这里）。
-  wc.on('server-ready', (port, url) => {
-    ports.set(port, url);
-  });
-  wc.on('port', (port, type) => {
-    if (type === 'close') ports.delete(port);
-  });
 
   // 探活：命令轮询循环就绪，TerminalExecutor 可用（host 预热已与配置读取重叠完成）。
   // TASK18：waitForHostReady 已确认 pong；删去其后的冗余 ping（在延迟预热窗口内，

@@ -5,7 +5,7 @@
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer, WebContainerProcess } from '@webcontainer/api';
-import type { TerminalClient } from './terminal-client.js';
+import type { TerminalClient } from './engine/index.js';
 import { detectSystemInfo } from './boot.js';
 import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
 import {

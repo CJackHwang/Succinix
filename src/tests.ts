@@ -2,7 +2,7 @@
 // 断言逻辑与 TASK2 保持一致，只改输出表现形态：专业自检流程而非测试列表。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from './terminal-client.js';
+import type { TerminalClient } from './engine/index.js';
 import { saveSnapshot, loadSnapshot } from './persist.js';
 import {
   getCurrentWorkspace,

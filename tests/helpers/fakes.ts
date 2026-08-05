@@ -191,7 +191,8 @@ export class FakeClient {
   terminalCalls: CallRecord[] = [];
   spawnCalls: CallRecord[] = [];
   private terminalHandler?: (command: string) => unknown;
-  private spawnHandler?: (command: string) => unknown;
+  /** spawn 响应 handler（公开赋值：测试直接注入 spawn 结果） */
+  spawnHandler?: (command: string) => unknown;
 
   constructor(opts: FakeClientOptions = {}) {
     this.terminalHandler = opts.terminal;

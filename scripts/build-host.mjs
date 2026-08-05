@@ -9,7 +9,7 @@
 import { build } from 'esbuild';
 
 await build({
-  entryPoints: ['src/host.ts'],
+  entryPoints: ['src/engine/host.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -23,7 +23,7 @@ await build({
 });
 
 await build({
-  entryPoints: ['src/lifo-core.ts'],
+  entryPoints: ['src/engine/lifo-core.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',

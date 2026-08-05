@@ -18,7 +18,9 @@ import { registerProcess, listProcesses, killProcess, appendProcessOutput, markP
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
-const RESULT_TTL_MS = 120000; // 陈旧结果文件（浏览器已放弃的请求）存活上限
+// 陈旧结果文件（浏览器已放弃的请求）存活上限。可被 /etc/webunix.engine.json 的
+// { resultTtlMs } 覆盖（TASK21：引擎选项经容器内小配置文件传给 host，浏览器侧 boot 时写入）。
+let RESULT_TTL_MS = 120000;
 const LIFO_TIMEOUT_MS = 25000; // Lifo 命令默认超时
 const NODE_TIMEOUT_MS = 30000; // node 子进程默认超时兜底
 // TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。
@@ -29,6 +31,24 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 // 立即向浏览器报 ok:false（如 npx 包不存在、node 脚本语法错误、端口被占直接退出）。
 // 后台服务（tinbase / http server）都会存活超过该窗口，仅多等一拍，对调用方无感知。
 const SPAWN_CONFIRM_MS = 2000;
+
+// 引擎配置文件：浏览器侧 boot 时写入（仅当显式传了 resultTtlMs），host 启动读取。
+// 失败静默回落默认值 —— 配置文件是可选优化，不影响协议。
+function loadEngineConfig(): { resultTtlMs?: number } {
+  try {
+    const cfg = JSON.parse(fs.readFileSync('/etc/webunix.engine.json', 'utf8')) as { resultTtlMs?: unknown };
+    if (typeof cfg.resultTtlMs === 'number' && Number.isFinite(cfg.resultTtlMs) && cfg.resultTtlMs > 0) {
+      return { resultTtlMs: cfg.resultTtlMs };
+    }
+  } catch {
+    /* 文件缺失 / 非法：回落默认 */
+  }
+  return {};
+}
+
+// 启动即读一次引擎配置（host 常驻，之后不再变化）。
+const ENGINE_CFG = loadEngineConfig();
+if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs;
 
 // 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
 function capOutput(s: string): string {
@@ -78,6 +98,8 @@ setTimeout(() => {
 const NODE_PREFIX_RE = /^(node|npm|npx)(\s|$)/;
 
 interface CommandRequest {
+  /** 协议版本（TASK21：客户端写 protocol: 1；缺失按 v1 处理，向后兼容） */
+  protocol?: number;
   id: number;
   cmd: string;
   opts?: Record<string, unknown>;

@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB, FakeClient } from './helpers/fakes.js';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from '../src/terminal-client.js';
+import type { TerminalClient } from '../src/engine/index.js';
 import {
   isValidPackageName,
   listPackages,

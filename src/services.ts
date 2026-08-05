@@ -4,7 +4,7 @@
 // 自启是"声明式重启"（boot 时拉起），不是守护进程/崩溃自愈（AGENTS.md 边界，不做崩溃重启）。
 // 状态判定：进程表有该服务命令的 running 进程 且（若有端口）端口注册表就绪 → running，否则 stopped。
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from './terminal-client.js';
+import type { TerminalClient } from './engine/index.js';
 import { getSetting } from './config.js';
 import { log } from './log.js';
 import { saveSnapshot } from './persist.js';

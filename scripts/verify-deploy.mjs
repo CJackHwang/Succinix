@@ -319,7 +319,7 @@ async function main() {
         `${path} -> COOP=${coop ?? '(missing)'} COEP=${coep ?? '(missing)'}`);
     }
 
-    // 5) headless Chrome 自检（?test=1 >=51 passed）
+    // 5) headless Chrome 自检（?test=1 >=57 passed）
     note('step 5/5: headless Chrome ?test=1 self-test');
     const result = await runHeadlessSelfTest();
     if (result) {

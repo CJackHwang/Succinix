@@ -21,6 +21,15 @@ exec bash "${TARGET}"
 
 if (existsSync(HOOK)) {
   const existing = readFileSync(HOOK, 'utf8');
+  // TASK21：保护第三方/既有 hook —— 文件已存在且内容不含本脚本时，绝不在非 --force 下
+  // 静默覆盖（可能是用户自己的 hook 或其他工具安装的）。提示加 --force 并退出非零。
+  if (!force && !existing.includes('scripts/pre-commit.sh')) {
+    console.error(
+      '[setup:hooks] .git/hooks/pre-commit already exists and is not managed by this project — ' +
+        'refusing to overwrite it silently. Re-run with --force to replace it.'
+    );
+    process.exit(1);
+  }
   if (!force && existing.includes('scripts/pre-commit.sh')) {
     console.log('[setup:hooks] .git/hooks/pre-commit already points to scripts/pre-commit.sh (--force to rewrite)');
     process.exit(0);

@@ -235,7 +235,8 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     if (url) {
       term.writeln(`${AMBER}Database ready: ${url}${RESET}`);
       term.writeln(`Open ${url} in the browser, or curl ${url} through Lifo.`);
-      term.writeln('Database data persists in the workspace (.tinbase) and survives refresh via snapshots.');
+      term.writeln('Database data persists across db restart in the workspace (.tinbase).');
+      term.writeln('Browser refresh recreates the wasm store (binary db files are not snapshotted).');
       return;
     }
     if (pid) {

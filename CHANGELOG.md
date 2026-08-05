@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TASK19 scenario suite: `scripts/scenarios.mjs` — a headless-Chrome/CDP driven real-workflow test suite (zero new deps, mirrors `verify-deploy.mjs`/`bench.mjs`) running 10 real scenarios against the real browser+container: S1 npm project dev loop (real HTTP 200 to the preview port), S2 git operations (`pkg install lifo-pkg-git` → init/add/commit/log with a real commit hash), S3 database full lifecycle (create table/insert/read via tinbase `/admin/v1/sql` + `/rest/v1`, data persists across `db stop`/`db start`), S4 service autostart (`service enable tinbase` survives a refresh and boots `running`; disable stops it), S5 multi-workspace isolation (files isolated per workspace, state retained after refresh), S6 concurrency stress (3 parallel long commands — per-id results not interleaved), S7 big output (`seq 1 10000` complete, 2 MB node output capped at 1 MB, no OOM), S8 persistence stress (300 files survive `snapshot now` + refresh, sampled content verified), S9 error paths (unknown command / missing dir / CORS curl all error cleanly in English), S10 environment boundary (`reboot` keeps files and a clean process table). `?scenario=1` exposes `window.__webunixScenario` (a `run()` that mirrors the real terminal dispatch path + `client`/`wc`/`ports`/`saveSnapshot`) for the driver.
+- `respawnWithKillFirst` (new `src/host-restart.ts`): the kill-old-host-before-spawn invariant extracted into a testable helper; `main.ts` `restartHost` uses it and the self-test asserts the ordering directly.
+- Self-test regressions (now 57 passed): `spawn npx definitely-not-exist-xyz` must return `ok:false` (not falsely report a running process), and the dual-host invariant (kill before spawn).
+
+### Changed
+
+- `?scenario=1` driver mode in `main.ts`: exposes the scenario handle only in scenario mode, mirroring `execute()`'s dispatch (browser-side intercept → host RPC) with structured output capture.
+- `startService` now runs `npm install <pkg>` first when a service command is `npx <pkg> ...` and `<pkg>` isn't installed — node_modules doesn't ride snapshots, so autostart after a refresh used to race npx's on-the-fly download against the 30 s port-wait (flaky).
+- tinbase persistence messaging is now honest: `db start` reports data persists across `db restart` in-session and that a browser refresh recreates the WASM store (binary db files aren't snapshotted); README Persistence section updated to match.
+
+### Fixed
+
+- spawn failure race (TASK19): `dispatchSpawn` now uses a startup-confirmation window — a spawned node/npm/npx process that exits non-zero within 2 s is reported `ok:false` (e.g. `npx definitely-not-exist-xyz`, a node script with a syntax error), instead of the browser reading `ok:true` + pid and the later failure being invisible. Measured npx 404 failure ~0.3–0.8 s, comfortably inside the window; healthy background services (tinbase, http servers) exceed it with no caller-visible change.
+- Empty directories are now persisted: `collectDir` records empty dirs and `loadSnapshot` recreates them, so the default `main` workspace (an empty dir) no longer vanishes after switching to another workspace and refreshing.
+- Snapshot now excludes the whole `.tinbase` tree: the PGlite WASM database (`/admin` .tinbase/db`) is binary, and a text-only partial restore corrupted it — after a refresh tinbase would crash on startup. Excluding it lets the service start a fresh store reliably (data is lost on refresh, honestly documented).
+
+### Added
+
 - Vercel deployment adaptation: root `vercel.json` serving `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: credentialless` on every path (`/(.*)` — including `assets/*` and `host.js`) with `framework: vite`, `buildCommand: npm run build`, `outputDirectory: dist`; `scripts/verify-deploy.mjs` — a local deploy-readiness gate (build → `vite preview` → COOP/COEP header assertion on `/`, `/host.js` and the JS bundle → `?test=1` self-test in headless Chrome, gate `>=51 passed` and `0 failed`); README **Deployment (Vercel)** section (one-click dashboard import, `vercel deploy` CLI, custom-domain hint, COOP/COEP rationale, per-origin IndexedDB data scoping) plus a Known Boundaries entry (deployment hosts must support custom response headers).
 
 ### Changed

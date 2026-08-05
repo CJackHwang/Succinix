@@ -41,6 +41,7 @@ import {
 import { readLog, readBootLog, clearLog, flushLogs } from './log.js';
 import { listPackages, formatPackageList, searchPackages } from './pkg.js';
 import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from './motd.js';
+import { respawnWithKillFirst } from './host-restart.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -439,6 +440,25 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     const killedOk = k2.ok && k2.killed === true && (!afterKill || afterKill.status === 'exited');
     verdict(term, 'Process table', 'spawn/kill lifecycle', killedOk, `killed=${k2.killed} status=${afterKill ? afterKill.status : 'no longer in table'}`);
   }
+
+  // ─── TASK19 回归 1：spawn 失败竞态 ───
+  // dispatchSpawn 对"spawn 成功但进程很快非零退出"（如 npx 包不存在）必须报 ok:false，
+  // 不得让浏览器读到 ok:true + pid 后把一次注定失败的启动误报为成功。
+  const spFail = await client.spawn('npx definitely-not-exist-xyz');
+  verdict(term, 'Process table', 'spawn failure reported (ok:false)', spFail.ok === false, spFail.error ?? `pid=${spFail.pid ?? 'none'} runtime=${spFail.runtime ?? '?'}`);
+
+  // ─── TASK19 回归 2：双 host 不变量（kill 先于 spawn）───
+  // 重启 host 必须先 kill 旧 host 再 spawn 新 host，否则两个 host 同时轮询 cmd.json。
+  // 用假句柄直接断言 respawnWithKillFirst 的顺序（main.ts 的 restartHost 复用同一函数）。
+  const order: string[] = [];
+  await respawnWithKillFirst(
+    () => void order.push('kill'),
+    async () => {
+      order.push('spawn');
+      return {} as never;
+    }
+  );
+  verdict(term, 'Process table', 'host restart kills old before spawn', order.join(',') === 'kill,spawn', order.join(' -> '));
 
   // ─── 网络视图（Network，TASK14）：netstat 虚拟端口表 ───
   // netstat format：spawn 3456 echo server → 端口就绪 → netstat 列出该端口且 -p 关联到进程 → kill 清理。

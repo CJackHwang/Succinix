@@ -13,6 +13,7 @@ import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
+import { respawnWithKillFirst } from './host-restart.js';
 import type { ExecResult } from './terminal-client.js';
 
 const AMBER = '\x1b[33m';
@@ -79,6 +80,9 @@ const testMode = new URLSearchParams(location.search).get('test') === '1';
 // TASK18：性能基准模式（scripts/bench.mjs 用 ?bench=1 打开）。与 ?test=1 完全独立：
 // 正常走 boot 全流程（无自检），仅多暴露内部句柄 + 记录首提示符时间戳，供 headless Chrome 测量。
 const benchMode = new URLSearchParams(location.search).get('bench') === '1';
+// TASK19：场景测试驱动模式（scripts/scenarios.mjs 用 ?scenario=1 打开）。与 ?test=1 / ?bench=1
+// 独立：正常走 boot 全流程，暴露 window.__webunixScenario 供 headless Chrome 驱动真实命令。
+const scenarioMode = new URLSearchParams(location.search).get('scenario') === '1';
 
 // TASK18：bench 模式记录首提示符出现时间（基准脚本读 window.__bootTimes.prompt）。
 // 只在 bench 模式下有微小分支开销，正常会话零影响。
@@ -231,6 +235,48 @@ async function execute(cmd: string): Promise<void> {
   }
 }
 
+// TASK19：场景测试驱动 —— 与 execute() 相同分发路径（浏览器侧拦截 → 否则 host RPC），
+// 但输出改为结构化捕获（capture-term shim），供 scripts/scenarios.mjs 做真实断言。
+// 命令形态：browser-side 命令（db/service/workspace/snapshot...）经 tryHandleLocalCommand，
+// 输出收集进 lines；host 命令（node/npm/lifo/ps...）走 client.terminal，返回 stdout/stderr。
+// timeoutMs 仅约束 host 命令的 RPC 等待；browser-side 命令自带长超时（如 db start 的 install）。
+async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000): Promise<Record<string, unknown>> {
+  const lines: string[] = [];
+  const shim = {
+    writeln: (l: unknown) => void lines.push(String(l)),
+    write: (d: unknown) => void lines.push(String(d)),
+    clear: () => {},
+  } as unknown as Terminal;
+  let handled: boolean;
+  try {
+    handled = await tryHandleLocalCommand({ ...ctx, term: shim }, cmd);
+  } catch (e) {
+    return { handled: true, ok: false, error: String(e), output: lines.join('\n'), lines };
+  }
+  if (handled) {
+    return { handled: true, ok: true, output: lines.join('\n'), lines };
+  }
+  try {
+    const res = await ctx.client.terminal(cmd, undefined, timeoutMs);
+    return {
+      handled: false,
+      ok: res.ok,
+      exitCode: res.exitCode,
+      stdout: String(res.stdout ?? ''),
+      stderr: String(res.stderr ?? ''),
+      runtime: res.runtime,
+      error: res.error,
+      message: res.message,
+      pid: res.pid,
+      processes: res.processes,
+      killed: res.killed,
+      kind: res.kind,
+    };
+  } catch (e) {
+    return { handled: false, ok: false, error: String(e), thrown: true };
+  }
+}
+
 async function runCommand(cmd: string): Promise<void> {
   busy = true;
   try {
@@ -317,13 +363,17 @@ async function restartHost(ctx: CommandContext): Promise<void> {
     }
     // kill 旧 host：避免新旧两个 host 同时轮询 cmd.json（见上注释）。
     // 若旧 host 已崩溃 kill 是 no-op；若只是挂死则真正终止，保证单 host 不变量。
-    try {
-      ctx.hostProc?.kill();
-    } catch {
-      /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
-    }
-    const newProc = await ctx.wc.spawn('node', ['host.js']);
-    ctx.hostProc = newProc; // 记录新句柄，供下次重启清理
+    // TASK19：kill-before-spawn 提取为可测的 respawnWithKillFirst（自检直接断言顺序）。
+    ctx.hostProc = await respawnWithKillFirst(
+      () => {
+        try {
+          ctx.hostProc?.kill();
+        } catch {
+          /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
+        }
+      },
+      () => ctx.wc.spawn('node', ['host.js'])
+    );
     // 等待新 host 就绪：TerminalClient 的 exec 自动指向新 host。
     let ready = false;
     for (let i = 0; i < 40; i++) {
@@ -368,6 +418,20 @@ async function main(): Promise<void> {
         wc: ctx.wc,
         term,
         saveSnapshot,
+      };
+    }
+
+    // TASK19：?scenario=1 时暴露场景驱动句柄（scripts/scenarios.mjs 用）。与 bench 句柄独立：
+    // run() 走与 execute() 相同的分发路径（browser 拦截 → host RPC），是真实命令执行的驱动面。
+    if (scenarioMode) {
+      (window as unknown as { __webunixScenario?: unknown }).__webunixScenario = {
+        booted: true,
+        client: ctx.client,
+        wc: ctx.wc,
+        ports: ctx.ports,
+        term,
+        saveSnapshot,
+        run: (cmd: string, timeoutMs?: number) => scenarioRun(ctx, cmd, timeoutMs),
       };
     }
 

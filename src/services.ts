@@ -57,6 +57,27 @@ export interface ServiceActionResult {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// TASK19：npx 服务缺包安装 —— node_modules 不随快照持久，刷新/重开容器后 npx <pkg> 的包必然缺失。
+// 若服务命令以 npx 开头且 node_modules/<pkg> 不存在，先真实 npm install（与 dbStart 的安装路径一致），
+// 再 spawn —— 否则 autostart 里 npx 的即时下载会跟 30s 端口等待竞态，时好时坏。
+async function ensureNpxPackage(ctx: ServiceContext, command: string): Promise<void> {
+  const m = /^npx\s+(\S+)/.exec(command.trim());
+  if (!m) return;
+  const pkg = m[1];
+  const rel = `node_modules/${pkg}`;
+  try {
+    const probe = await ctx.client.terminal(`test -d '${rel}'`, undefined, 15000);
+    if (probe.ok) return; // 已安装
+  } catch {
+    /* 探测失败：按缺失处理，尝试安装 */
+  }
+  void log('WARN', `service install: ${pkg} missing, running npm install before spawn`);
+  const inst = await ctx.client.terminal(`npm install ${pkg} --no-audit --no-fund`, { timeout: 120000 }, 150000);
+  if (!inst.ok) {
+    void log('WARN', `service install failed: ${pkg} (${String(inst.stderr || inst.error || 'npm install failed').slice(0, 160)})`);
+  }
+}
+
 // 门控回归防护：自动快照的目录签名门控（persist collectDir）只看目录结构+总字节，
 // 捕捉不到"内容变更但大小不变"的写入。定义/自启文件的写入靠此强制落盘一次
 // （与 config 的 forcePersist 模式一致：try/catch + console.warn 降级，不打断命令）。
@@ -325,6 +346,8 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   }
 
   const command = await renderCommand(ctx.wc.fs, def);
+  // TASK19：npx 服务缺包先安装（autostart/start 共用），避免 npx 即时下载与端口等待竞态。
+  await ensureNpxPackage(ctx, command);
   // 新实例按当前 preview-port 解析（忽略旧记录），spawn 成功后记录实际端口。
   const effectivePort = await resolveEffectivePort(ctx, def, false);
   let pid: number;

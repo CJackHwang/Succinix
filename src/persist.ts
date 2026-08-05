@@ -21,6 +21,8 @@ export interface SnapshotMeta {
 interface SnapshotRecord {
   meta: SnapshotMeta;
   files: Array<{ path: string; content: string }>;
+  /** 空目录路径（TASK19：空目录不产生文件，快照不收录则刷新后丢失——如默认工作区 main） */
+  emptyDirs?: string[];
 }
 
 // 保存结果：meta 为本次生效的元数据（成功写 IDB 或回落的上次值）；
@@ -51,13 +53,15 @@ function isResultFile(name: string): boolean {
 }
 
 // 命中排除即剪枝：node_modules/dist/.git 任意层级整体跳过；
-// .tinbase/storage（可重建的存储缓存，数据在 .tinbase/ 其他目录）整树跳过；
+// .tinbase 整树跳过（TASK19：PGlite wasm 数据 .tinbase/db 是二进制，文本快照无法忠实收录，
+// 部分恢复会损坏数据库导致 tinbase 启动崩溃；storage 是可重建缓存 —— 两者都不随快照持久，
+// 刷新后 tinbase 以全新数据目录启动，服务可用、数据不保留 —— 与 POC 文本快照边界一致）。
 // 文件按名跳过 host.js / lifo-core.js（boot 重新注入的 host 进程脚本）/ cmd.json / result-*.json（文件 RPC 临时文件）。
 function isExcludedPath(path: string): boolean {
   const segments = path.split('/').filter(Boolean);
   for (let i = 0; i < segments.length; i++) {
     if (EXCLUDED_DIRS.has(segments[i])) return true;
-    if (segments[i] === '.tinbase' && segments[i + 1] === 'storage') return true;
+    if (segments[i] === '.tinbase') return true;
   }
   const base = segments[segments.length - 1] ?? '';
   return EXCLUDED_FILES.has(base) || isResultFile(base);
@@ -72,9 +76,11 @@ interface Collected {
   /** 签名用总字节（不含 /var/log/webunix.log） */
   sigTotalBytes: number;
   skipped: number;
+  /** 空目录路径（TASK19：空目录要随快照收录，否则刷新后丢失） */
+  emptyDirs: string[];
 }
 
-const EMPTY_COLLECT: Collected = { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0 };
+const EMPTY_COLLECT: Collected = { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0, emptyDirs: [] };
 
 // 日志文件：参与遍历（随快照持久），但不参与签名计算。
 function isLogFile(path: string): boolean {
@@ -88,6 +94,10 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
   } catch {
     return EMPTY_COLLECT; // 目录被并发删除（如 workspace rm 与自动快照竞争）：跳过该分支而非整批 reject
   }
+  // TASK19：空目录（无任何条目）也要收录 —— 目录本身是状态（如空工作区），不收录则刷新后丢失。
+  if (entries.length === 0) {
+    return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0, emptyDirs: [dir] };
+  }
   const parts = await Promise.all(
     entries.map(async (ent): Promise<Collected> => {
       const name = String(ent.name);
@@ -99,10 +109,10 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
       try {
         content = await fs.readFile(path, 'utf8');
       } catch {
-        return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1 }; // 不可读（权限/二进制）跳过并计数
+        return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1, emptyDirs: [] }; // 不可读（权限/二进制）跳过并计数
       }
       // 二进制启发：utf8 解码出现 U+FFFD 替换字符即视为二进制，跳过并计数（README 注明）
-      if (content.includes('\uFFFD')) return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1 };
+      if (content.includes('\uFFFD')) return { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 1, emptyDirs: [] };
       const excludedFromSig = isLogFile(path);
       return {
         files: [{ path, content }],
@@ -110,6 +120,7 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
         sigFileCount: excludedFromSig ? 0 : 1,
         sigTotalBytes: excludedFromSig ? 0 : content.length,
         skipped: 0,
+        emptyDirs: [],
       };
     })
   );
@@ -120,8 +131,9 @@ async function collectDir(fs: FileSystemAPI, dir: string): Promise<Collected> {
       sigFileCount: acc.sigFileCount + r.sigFileCount,
       sigTotalBytes: acc.sigTotalBytes + r.sigTotalBytes,
       skipped: acc.skipped + r.skipped,
+      emptyDirs: acc.emptyDirs.concat(r.emptyDirs),
     }),
-    { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0 }
+    { files: [], totalBytes: 0, sigFileCount: 0, sigTotalBytes: 0, skipped: 0, emptyDirs: [] }
   );
 }
 
@@ -256,7 +268,7 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
   if (cleared) return { meta: lastSavedMeta ?? EMPTY_META, skipped: false };
 
   const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes, sigFileCount, sigTotalBytes };
-  const record: SnapshotRecord = { meta, files: collected.files };
+  const record: SnapshotRecord = { meta, files: collected.files, emptyDirs: collected.emptyDirs };
   await idbReq('readwrite', (s) => s.put(record, KEY));
   lastSignature = { fileCount: sigFileCount, totalBytes: sigTotalBytes };
   lastSavedMeta = meta;
@@ -273,6 +285,14 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
   for (const f of record.files) {
     await ensureParentDir(fs, f.path);
     await fs.writeFile(f.path, f.content);
+  }
+  // TASK19：恢复空目录（旧快照无 emptyDirs 字段时跳过，向后兼容）。
+  for (const d of record.emptyDirs ?? []) {
+    try {
+      await fs.mkdir(d, { recursive: true });
+    } catch {
+      /* 目录已存在等，恢复继续 */
+    }
   }
   lastSavedMeta = record.meta;
   // 签名回落：旧快照无 sig 字段时用全量计数（迁移兼容）。

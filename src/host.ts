@@ -25,6 +25,10 @@ const NODE_TIMEOUT_MS = 30000; // node 子进程默认超时兜底
 // 正常命令（seq 1 5000 约 25KB / npm install 日志 / cat 中大型文件）远低于此上限；
 // 超出时保留尾部，避免容器内内存与结果文件无限增长。
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+// TASK19：spawn 确认窗口（ms）。后台进程（node/npm/npx）在此窗口内以非零退出视为"启动失败"，
+// 立即向浏览器报 ok:false（如 npx 包不存在、node 脚本语法错误、端口被占直接退出）。
+// 后台服务（tinbase / http server）都会存活超过该窗口，仅多等一拍，对调用方无感知。
+const SPAWN_CONFIRM_MS = 2000;
 
 // 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
 function capOutput(s: string): string {
@@ -239,15 +243,12 @@ function dispatchSpawn(req: CommandRequest): void {
   const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
   child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
-  // TASK18：spawn 失败（如命令不存在 ENOENT）竞态修复。
-  // 旧实现同步写 ok:true，浏览器读到后即删除结果文件并返回 pid，之后 error 事件改写
-  // 结果文件对浏览器不可见 —— spawn 失败被误报成功。这里把 ok:true 延后一拍（setImmediate）
-  // 确认：Node 的 spawn error 在 next tick 触发，必然先于 setImmediate settle，
-  // 让浏览器读到 ok:false + 真实错误；成功 spawn 仅多等一拍，对调用方无感知。
   let settled = false;
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   const settle = (payload: Record<string, unknown>) => {
     if (settled) return;
     settled = true;
+    if (confirmTimer) clearTimeout(confirmTimer);
     writeResult(req.id, payload);
   };
   child.on('error', (e: Error) => {
@@ -255,9 +256,18 @@ function dispatchSpawn(req: CommandRequest): void {
     markProcessExited(pid); // close 事件在 spawn 失败时不触发，进程表条目会永远停在 running —— 纠正为 exited
     settle({ ok: false, error: `spawn failed: ${e.message}`, runtime: 'node' });
   });
-  setImmediate(() => {
-    if (!settled) settle({ ok: true, pid, runtime: 'node' });
+  // TASK19：确认窗口内非零退出 = 启动失败（如 npx 包不存在 / node 脚本语法错误）。
+  // 旧实现只在 setImmediate 确认 ok:true，把注定失败的启动误报为成功（浏览器读到 ok:true + pid，
+  // 之后进程才退出非零，结果文件对浏览器已不可见）。close(code!==0) 先于窗口到达即报失败。
+  child.on('close', (code) => {
+    if (!settled && code !== 0) {
+      appendProcessOutput(pid, `[spawn early exit] code ${code ?? -1}\n`);
+      settle({ ok: false, exitCode: code ?? -1, error: `spawned process exited early (code ${code ?? -1})`, runtime: 'node' });
+    }
   });
+  confirmTimer = setTimeout(() => {
+    if (!settled) settle({ ok: true, pid, runtime: 'node' });
+  }, SPAWN_CONFIRM_MS);
 }
 
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。

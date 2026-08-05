@@ -296,7 +296,7 @@ The engine is the same code that powers the WebUnix terminal, behind a clean API
 
 ## Development Archive
 
-`TASK2.md`–`TASK17.md` document this project's incremental development history (each task's requirements, retention rules, and quality gates). They are kept in the repository as a **historical development archive** and are not part of the shipped product.
+`docs/tasks/TASK*.md` document this project's incremental development history (each task's requirements, retention rules, and quality gates). They are kept in the repository as a **historical development archive** and are not part of the shipped product.
 
 ## Roadmap
 

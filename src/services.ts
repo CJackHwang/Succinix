@@ -242,10 +242,21 @@ function commandSignature(s: string): string {
   return s.replace(/["']/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// 匹配用命令渲染：会话内启动记录值优先（M1 残余修复，TASK18）。
+// 运行中改 preview-port 后，正在运行的服务实际命令行仍是启动时的端口（如 --port 3001）；
+// 若用当前 preview-port 渲染 needle（--port 3002），findServiceProcess 会匹配不到进程，
+// status 误判 stopped。有记录时用记录值渲染 needle；无记录回落动态渲染。
+async function renderCommandForMatch(ctx: ServiceContext, def: ServiceDef): Promise<string> {
+  const recorded = activePorts.get(def.name);
+  if (recorded !== undefined && def.command.includes('${PORT}')) {
+    return def.command.replace(/\$\{PORT\}/g, String(recorded));
+  }
+  return renderCommand(ctx.wc.fs, def);
+}
+
 // 进程表里匹配该服务（渲染后命令）且 running 的进程。
 async function findServiceProcess(ctx: ServiceContext, def: ServiceDef): Promise<{ pid: number; cmd: string } | undefined> {
-  const command = await renderCommand(ctx.wc.fs, def);
-  const needle = commandSignature(command);
+  const needle = commandSignature(await renderCommandForMatch(ctx, def));
   let procs: Array<Record<string, unknown>> = [];
   try {
     const ps = await ctx.client.terminal('ps');

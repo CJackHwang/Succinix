@@ -63,6 +63,15 @@ export function appendProcessOutput(pid: number, text: string): void {
   entry.outputTail = ((entry.outputTail ?? '') + text).slice(-OUTPUT_TAIL_MAX);
 }
 
+// 强制把条目标记为 exited（TASK18：spawn 失败 ENOENT 等场景 close 事件不会触发，
+// 进程表条目会永远停在 running；配合 dispatchSpawn 的 error 处理把状态纠正为 exited）。
+export function markProcessExited(pid: number, code?: number | null): void {
+  const entry = table.get(pid);
+  if (!entry || entry.status === 'exited') return;
+  entry.status = 'exited';
+  entry.exitCode = code ?? null;
+}
+
 export interface KillResult {
   killed: boolean;
   message?: string;

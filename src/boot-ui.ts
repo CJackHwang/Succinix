@@ -19,18 +19,22 @@ export interface BootUI {
 // 覆盖层日志行前置状态标记（与终端保持一致：纯 ASCII、暗橙 / 暗红 / 暗灰）
 const MARKERS = ['[  OK  ]', '[ FAIL ]', '[SKIP]', '[ .... ]', '[preview]'] as const;
 
+// marker → 视觉类型。TASK18：把原先三元链里 [preview] 隐式落到默认 'ok' 的冗余分支，
+// 改为显式映射表 —— [preview] 与 [  OK  ] 同为暗橙 ok 类，语义一目了然，无隐藏默认分支。
+const MARKER_KIND: Record<(typeof MARKERS)[number], LogKind> = {
+  '[  OK  ]': 'ok',
+  '[ FAIL ]': 'fail',
+  '[SKIP]': 'skip',
+  '[ .... ]': 'note',
+  '[preview]': 'ok',
+};
+
 // 从（可能带 ANSI 的）原始行解析出纯净文本 + 状态标记 + 类型。
 function parseLogLine(raw: string): { text: string; marker: string | null; kind: LogKind } {
   const text = raw.replace(/\x1b\[[0-9;]*m/g, '').replace(/^\r?\n/, '');
   const marker = MARKERS.find((m) => text.startsWith(m)) ?? null;
   if (marker) {
-    const kind: LogKind =
-      marker === '[  OK  ]' ? 'ok'
-      : marker === '[ FAIL ]' ? 'fail'
-      : marker === '[SKIP]' ? 'skip'
-      : marker === '[ .... ]' ? 'note'
-      : 'ok'; // [preview]
-    return { text, marker, kind };
+    return { text, marker, kind: MARKER_KIND[marker] };
   }
   // ANSI 兜底：按颜色归类（31m 红 / 33m 橙 / 90m 灰）
   if (raw.includes('\x1b[31m')) return { text, marker: null, kind: 'fail' };
@@ -128,7 +132,8 @@ export function createBootUI(): BootUI {
         if (ev.target === bootOverlay && ev.propertyName === 'opacity') finish();
       }, { once: true });
       // 兜底：即使 transitionend 未触发（如标签页切后台），也按时移除。
-      setTimeout(finish, 550);
+      // TASK18：与 CSS 淡出 400ms→200ms 对齐，兜底 550ms→300ms。
+      setTimeout(finish, 300);
     });
   }
 

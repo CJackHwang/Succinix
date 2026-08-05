@@ -4,7 +4,7 @@
 //   netstat / ip / version / whoami / uname / motd
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
 import type { Terminal } from '@xterm/xterm';
-import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
+import type { FileSystemAPI, WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { TerminalClient } from './terminal-client.js';
 import { detectSystemInfo } from './boot.js';
 import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
@@ -53,6 +53,8 @@ export interface CommandContext {
   term: Terminal;
   /** 字号等布局变更后重建 xterm 视图（main.ts 注入 FitAddon.fit） */
   fit: () => void;
+  /** 当前 host 进程句柄（main.ts 的 host 重启路径 kill 用；自检构造的假 context 可缺省） */
+  hostProc?: WebContainerProcess;
 }
 
 const RED = '\x1b[31m';

@@ -12,26 +12,61 @@
 //   ping 连通性探测
 //   exit 优雅退出握手
 // 统一路由结果必须带 runtime: 'node' | 'lifo' 字段，方便验证走的是哪条路径。
-import { Sandbox } from '@lifo-sh/core';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { registerProcess, listProcesses, killProcess, appendProcessOutput } from './host-procs.js';
+import { registerProcess, listProcesses, killProcess, appendProcessOutput, markProcessExited } from './host-procs.js';
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
 const RESULT_TTL_MS = 120000; // 陈旧结果文件（浏览器已放弃的请求）存活上限
 const LIFO_TIMEOUT_MS = 25000; // Lifo 命令默认超时
 const NODE_TIMEOUT_MS = 30000; // node 子进程默认超时兜底
+// TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。
+// 正常命令（seq 1 5000 约 25KB / npm install 日志 / cat 中大型文件）远低于此上限；
+// 超出时保留尾部，避免容器内内存与结果文件无限增长。
+const MAX_OUTPUT_BYTES = 1024 * 1024;
 
-const sandbox = await Sandbox.create({
-  mounts: [
-    {
-      virtualPath: '/workspace',
-      hostPath: process.cwd(),
-      fsModule: fs as never,
-    },
-  ],
-});
+// 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
+function capOutput(s: string): string {
+  return s.length > MAX_OUTPUT_BYTES ? s.slice(-MAX_OUTPUT_BYTES) : s;
+}
+
+// TASK18：Lifo 内核懒加载 + 延迟预热（评估成本后的选择）。
+// @lifo-sh/core 单独 bundle（lifo-core.js，~1MB），解析执行都慢；若静态 import 进 host.js，
+// host 启动就要解析整个 1MB bundle，实测 boot 探活 ping 被拖慢 ~640ms。
+// 因此：host.js 保持轻量（RPC/进程表/node 子进程），Lifo 内核经动态 import('./lifo-core.js')
+// 在首次使用时加载；并延迟预热（setTimeout 150ms，host 响应完首批 ping 后在后台加载）。
+// 协议不变：只把内核加载从"启动阻塞"改为"延迟预热 + 首次使用懒加载"。
+let sandboxPromise: Promise<Awaited<ReturnType<typeof import('./lifo-core.js').Sandbox.create>>> | null = null;
+
+function getSandbox(): Promise<Awaited<ReturnType<typeof import('./lifo-core.js').Sandbox.create>>> {
+  if (!sandboxPromise) {
+    sandboxPromise = import('./lifo-core.js')
+      .then(({ Sandbox }) =>
+        Sandbox.create({
+          mounts: [
+            {
+              virtualPath: '/workspace',
+              hostPath: process.cwd(),
+              fsModule: fs as never,
+            },
+          ],
+        })
+      )
+      .catch((e) => {
+        // 预热/首用失败（如 lifo-core.js 尚未注入完成）：清空缓存，下次调用重试。
+        sandboxPromise = null;
+        throw e;
+      });
+  }
+  return sandboxPromise;
+}
+
+// 延迟预热：host 模块加载完成 + 首批 ping 响应后启动内核加载（见上注释）。
+// 预热失败（lifo-core.js 可能还在注入中）时静默，首个 Lifo 命令会重试。
+setTimeout(() => {
+  void getSandbox().catch(() => {});
+}, 150);
 
 // ─── 命令路由 ───
 
@@ -150,11 +185,19 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
-    writeResult(reqId, payload);
+    // TASK18 输出上限：最终截断在 settle 应用，保证结果文件有界。
+    writeResult(reqId, { ...payload, stdout: capOutput(stdout), stderr: capOutput(stderr) });
   };
 
-  child.stdout?.on('data', (d: Buffer) => (stdout += d.toString()));
-  child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
+  // 增量截断：累积超过 2 倍上限时先裁到 1 倍，防止内存随输出无限增长（OOM 防护）。
+  child.stdout?.on('data', (d: Buffer) => {
+    stdout += d.toString();
+    if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
+  });
+  child.stderr?.on('data', (d: Buffer) => {
+    stderr += d.toString();
+    if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
+  });
 
   // 超时兜底：避免挂死的子进程永久占坑；可被 opts.timeout 覆盖
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : NODE_TIMEOUT_MS;
@@ -196,26 +239,40 @@ function dispatchSpawn(req: CommandRequest): void {
   const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
   child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
-  // spawn 失败（如命令不存在 ENOENT）：把刚写好的 ok:true 结果改写为 ok:false + 真实错误，
-  // 让浏览器侧（db start / service start）轮询到即看到原因，而不是等 30s 端口超时。
-  // error 事件必然在同步的 writeResult(ok:true) 之后触发，因此后者总被前者覆盖。
+  // TASK18：spawn 失败（如命令不存在 ENOENT）竞态修复。
+  // 旧实现同步写 ok:true，浏览器读到后即删除结果文件并返回 pid，之后 error 事件改写
+  // 结果文件对浏览器不可见 —— spawn 失败被误报成功。这里把 ok:true 延后一拍（setImmediate）
+  // 确认：Node 的 spawn error 在 next tick 触发，必然先于 setImmediate settle，
+  // 让浏览器读到 ok:false + 真实错误；成功 spawn 仅多等一拍，对调用方无感知。
+  let settled = false;
+  const settle = (payload: Record<string, unknown>) => {
+    if (settled) return;
+    settled = true;
+    writeResult(req.id, payload);
+  };
   child.on('error', (e: Error) => {
     appendProcessOutput(pid, `[spawn error] ${e}\n`);
-    writeResult(req.id, { ok: false, error: `spawn failed: ${e.message}`, runtime: 'node' });
+    markProcessExited(pid); // close 事件在 spawn 失败时不触发，进程表条目会永远停在 running —— 纠正为 exited
+    settle({ ok: false, error: `spawn failed: ${e.message}`, runtime: 'node' });
   });
-  writeResult(req.id, { ok: true, pid, runtime: 'node' });
+  setImmediate(() => {
+    if (!settled) settle({ ok: true, pid, runtime: 'node' });
+  });
 }
 
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。
 async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
   try {
     const timeout = typeof opts?.timeout === 'number' ? opts.timeout : LIFO_TIMEOUT_MS;
+    // 首次使用才 await sandbox 初始化（懒加载兜底；延迟预热通常已让内核就绪）。
+    const sandbox = await getSandbox();
     const r = await sandbox.commands.run(command, { timeout });
     writeResult(reqId, {
       ok: r.exitCode === 0,
       exitCode: r.exitCode,
-      stdout: r.stdout,
-      stderr: r.stderr,
+      // TASK18 输出上限：Lifo 结果同样截断，保证结果文件有界。
+      stdout: capOutput(r.stdout),
+      stderr: capOutput(r.stderr),
       runtime: 'lifo',
     });
   } catch (e) {
@@ -297,4 +354,4 @@ setInterval(async () => {
       /* FS 不可用 */
     }
   }
-}, 120);
+}, 50); // TASK18：轮询 120ms → 50ms（命令往返的 host 侧等待减半；fs.existsSync 每 50ms 一次开销可忽略）

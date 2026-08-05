@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Vercel deployment adaptation: root `vercel.json` serving `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: credentialless` on every path (`/(.*)` — including `assets/*` and `host.js`) with `framework: vite`, `buildCommand: npm run build`, `outputDirectory: dist`; `scripts/verify-deploy.mjs` — a local deploy-readiness gate (build → `vite preview` → COOP/COEP header assertion on `/`, `/host.js` and the JS bundle → `?test=1` self-test in headless Chrome, gate `>=51 passed` and `0 failed`); README **Deployment (Vercel)** section (one-click dashboard import, `vercel deploy` CLI, custom-domain hint, COOP/COEP rationale, per-origin IndexedDB data scoping) plus a Known Boundaries entry (deployment hosts must support custom response headers).
 
+### Changed
+
+- Performance: `scripts/bench.mjs` — a reproducible headless-Chrome benchmark (boot, Lifo/Node command round-trip, snapshot N=200/1000, xterm big output) that outputs JSON for CI reuse; measured boot ~3.8s → ~2.5–2.9s (−25–35%) and command round-trip ~156 ms → ~80 ms (−48%). Optimizations: host.js split into a lightweight daemon (`public/host.js`, 5 KB) plus a lazily-loaded Lifo kernel (`public/lifo-core.js`, ~1 MB) so host startup no longer parses the full bundle; host poll interval 120→50 ms; browser RPC poll 150 ms fixed → 25 ms adaptive (exponential backoff to 150 ms for long commands); boot overlay fade 400→200 ms; boot ping readiness retry 300→100 ms; `?bench=1` exposes internal handles for measurement only.
+- Single-command output is capped at ~1 MB (tail kept) to bound container memory and result-file size; large dumps are truncated.
+- Boot log honesty: Lifo kernel is lazily loaded and warmed in the background, so the boot line reads "Starting Lifo kernel" (not "Started") until the first Lifo command confirms readiness.
+
+### Fixed
+
+- Host restart double-host race: respawning `host.js` now kills the previous host process first (via the retained `WebContainerProcess` handle), preventing two hosts polling `/cmd.json` simultaneously.
+- `spawn` failure race: `dispatchSpawn` deferred the `ok:true` write by one tick so a synchronous spawn error (ENOENT) surfaces to the browser as `ok:false` instead of being overwritten after the browser already read success; failed spawns are also marked `exited` in the process table (the `close` event never fires for a failed spawn).
+- M1 residual: `findServiceProcess` now renders its matching needle with the service's recorded start port (from `activePorts`) instead of the current `preview-port`, so changing `preview-port` while a service runs no longer misreports it as stopped.
+- `boot-ui.ts` marker mapping: the `[preview]` marker's implicit `'ok'` fall-through is now an explicit marker→kind lookup table (removes the redundant hidden branch).
+- Host restarts now kill the previous host process first (single-host invariant); spawn failures report `ok:false` promptly instead of being masked.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added

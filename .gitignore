@@ -24,6 +24,7 @@ jspm_packages/
 dist/
 dist-ssr/
 public/host.js
+public/lifo-core.js
 
 # Local environment variables
 .env

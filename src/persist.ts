@@ -42,7 +42,9 @@ const EMPTY_META: SnapshotMeta = { version: 1, savedAt: 0, fileCount: 0, totalBy
 
 // ─── 排除规则（快照遍历时跳过，避免 node_modules 巨量 & RPC 临时文件 & 重建缓存）───
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git']);
-const EXCLUDED_FILES = new Set(['host.js', 'cmd.json']);
+// host.js / lifo-core.js：运行时注入的 host 进程脚本，非用户数据（随 boot 重新注入）；
+// cmd.json：文件 RPC 通道文件。
+const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json']);
 
 function isResultFile(name: string): boolean {
   return name.startsWith('result-') && name.endsWith('.json');
@@ -50,7 +52,7 @@ function isResultFile(name: string): boolean {
 
 // 命中排除即剪枝：node_modules/dist/.git 任意层级整体跳过；
 // .tinbase/storage（可重建的存储缓存，数据在 .tinbase/ 其他目录）整树跳过；
-// 文件按名跳过 host.js / cmd.json / result-*.json（文件 RPC 临时文件）。
+// 文件按名跳过 host.js / lifo-core.js（boot 重新注入的 host 进程脚本）/ cmd.json / result-*.json（文件 RPC 临时文件）。
 function isExcludedPath(path: string): boolean {
   const segments = path.split('/').filter(Boolean);
   for (let i = 0; i < segments.length; i++) {

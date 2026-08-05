@@ -192,6 +192,8 @@ These are environmental constraints, not bugs:
 - **No package manager / native binaries**: there is no `apt`; native executables cannot run. This layer is reserved for a future v86-backed fallback.
 - **stdin for interactive processes**: unreliable in the WebContainer environment; the design uses file-based RPC instead.
 - **Streaming cross-runtime pipes**: cross-runtime pipes are buffered (fine for agent-style "run then read" workflows).
+- **Watchdog probe can be swallowed by a queued command**: the host liveness watchdog writes a direct `ping` probe to the single-slot `/cmd.json` channel; if a user command is enqueued in the same ~120 ms host-poll window it overwrites the probe, so that probe times out and the watchdog skips the round (neutral, not counted as a failure). This only delays liveness detection by one 30 s cycle in the rare overlap case; it does not kill a healthy host.
+- **Single-command output is capped at 1 MB**: to bound container memory and result-file size, each command's `stdout`/`stderr` keeps at most the last ~1 MB of output (large dumps are truncated to their tail). Normal use (`seq 1 5000`, `cat` mid-size files, `npm install` logs) is far below the cap.
 - **Declarative autostart (not a daemon)**: `service enable` only records the service for a boot-time restart. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
 - **`log -f` (tail -f) not implemented**: interactive streaming output is deferred (POC; interactive stdin is unreliable in WebContainer). Use `log` / `log -n <count>` instead. `log clear` wipes `/var/log/webunix.log` and is therefore not itself recorded in the log.
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
@@ -221,8 +223,10 @@ src/
   host.ts            # TerminalExecutor daemon (runs inside WebContainer)
   host-procs.ts      # unified process registry
 scripts/
-  build-host.mjs     # esbuild bundle of the in-container host
-public/host.js       # built host bundle (gitignored, generated)
+  build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
+public/
+  host.js            # lightweight in-container host daemon (generated)
+  lifo-core.js       # @lifo-sh/core kernel bundle, lazily imported by host.js (generated)
 ```
 
 ## Development Archive

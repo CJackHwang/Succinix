@@ -76,10 +76,22 @@ const queue: string[] = [];
 let ctx: CommandContext;
 
 const testMode = new URLSearchParams(location.search).get('test') === '1';
+// TASK18：性能基准模式（scripts/bench.mjs 用 ?bench=1 打开）。与 ?test=1 完全独立：
+// 正常走 boot 全流程（无自检），仅多暴露内部句柄 + 记录首提示符时间戳，供 headless Chrome 测量。
+const benchMode = new URLSearchParams(location.search).get('bench') === '1';
+
+// TASK18：bench 模式记录首提示符出现时间（基准脚本读 window.__bootTimes.prompt）。
+// 只在 bench 模式下有微小分支开销，正常会话零影响。
+function benchMarkPrompt(): void {
+  if (!benchMode) return;
+  const t = (window as unknown as { __bootTimes?: { prompt: number | null } }).__bootTimes;
+  if (t && t.prompt === null) t.prompt = performance.now();
+}
 
 function prompt(): void {
   term.write('\r\n' + promptStr);
   line = '';
+  benchMarkPrompt();
 }
 
 // 浏览器侧输入处理：回车执行、Ctrl+L 清屏、Ctrl+C 中断、支持粘贴。
@@ -282,6 +294,8 @@ function startHostWatchdog(ctx: CommandContext): void {
 }
 
 // 重新注入 host.js（容器内缺失时从构建产物拉取）并 spawn 新 host，等待 ping 就绪。
+// TASK18 双 host 竞态修复：spawn 新 host 前先 kill 旧 host 进程。否则旧 host（挂死但进程仍在）
+// 会与新 host 同时轮询 /cmd.json —— 两个 host 都读请求、都写结果文件，命令结果不确定。
 async function restartHost(ctx: CommandContext): Promise<void> {
   const { term } = ctx;
   try {
@@ -293,7 +307,23 @@ async function restartHost(ctx: CommandContext): Promise<void> {
       const src = await (await fetch('/host.js')).text();
       await ctx.wc.fs.writeFile('/host.js', src);
     }
-    await ctx.wc.spawn('node', ['host.js']);
+    // TASK18：lifo-core.js 同 host.js 一起确保存在（host 首个 Lifo 命令动态 import 需要）；
+    // 异步写入不阻塞重启就绪等待（ping 不需要 Lifo 内核）。
+    try {
+      await ctx.wc.fs.readFile('/lifo-core.js');
+    } catch {
+      const src = await (await fetch('/lifo-core.js')).text();
+      void ctx.wc.fs.writeFile('/lifo-core.js', src).catch(() => {});
+    }
+    // kill 旧 host：避免新旧两个 host 同时轮询 cmd.json（见上注释）。
+    // 若旧 host 已崩溃 kill 是 no-op；若只是挂死则真正终止，保证单 host 不变量。
+    try {
+      ctx.hostProc?.kill();
+    } catch {
+      /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
+    }
+    const newProc = await ctx.wc.spawn('node', ['host.js']);
+    ctx.hostProc = newProc; // 记录新句柄，供下次重启清理
     // 等待新 host 就绪：TerminalClient 的 exec 自动指向新 host。
     let ready = false;
     for (let i = 0; i < 40; i++) {
@@ -306,7 +336,7 @@ async function restartHost(ctx: CommandContext): Promise<void> {
       } catch {
         /* host 尚未就绪 */
       }
-      await sleep(300);
+      await sleep(100); // TASK18：与 boot 的 waitForHostReady 对齐，300→100ms
     }
     if (ready) {
       term.writeln(`${AMBER}[  OK  ] host respawned — process table is clean${RESET}`);
@@ -328,7 +358,18 @@ async function main(): Promise<void> {
     const services = await bootWebUnix(ui);
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
     if (!services) return;
-    ctx = { wc: services.wc, client: services.client, ports: services.ports, term, fit: () => fitAddon.fit() };
+    ctx = { wc: services.wc, client: services.client, ports: services.ports, term, fit: () => fitAddon.fit(), hostProc: services.hostProc };
+
+    // TASK18：?bench=1 时暴露内部句柄（RPC 客户端 / 容器 FS / 终端 / 快照）供 scripts/bench.mjs
+    // 测量命令往返、快照开销、大输出；正常会话不暴露任何内部对象。
+    if (benchMode) {
+      (window as unknown as { __webunixBench?: unknown }).__webunixBench = {
+        client: ctx.client,
+        wc: ctx.wc,
+        term,
+        saveSnapshot,
+      };
+    }
 
     // 应用持久化设置（TASK10）：font-size 在终端显示前生效（xterm options 动态可改）。
     const fontSizeNum = Number(await getSetting(services.wc.fs, 'font-size'));

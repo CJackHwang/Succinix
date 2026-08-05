@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // ping/ps/cwd 重发安全；kill / run / spawn 等非幂等命令一律不重试。
 const READONLY_PROTO = new Set(['ping', 'ps', 'cwd']);
 
-// host 轮询 /cmd.json 的间隔（host.ts setInterval 120ms）。看门狗直接探活要保证
+// host 轮询 /cmd.json 的间隔（host.ts setInterval 50ms）。看门狗直接探活要保证
 // 覆盖的不是 host"尚未读取"的在途请求：距上次写 /cmd.json 超过该余量才允许覆盖。
 const HOST_POLL_MARGIN_MS = 250;
 
@@ -113,6 +113,9 @@ export class TerminalClient {
       this.lastCmdWrite = Date.now();
       const resultFile = `/result-${id}.json`;
       const start = Date.now();
+      // TASK18 自适应轮询：快命令（echo / ls / ps）密集轮询尽快拿到结果（往返减半）；
+      // 长命令（npm install / curl）指数退避到 150ms 上限，避免对结果文件做无谓的 FS 读。
+      let delay = 25;
       for (;;) {
         try {
           const raw = await this.wc.fs.readFile(resultFile, 'utf8');
@@ -128,7 +131,8 @@ export class TerminalClient {
           /* 结果未就绪 */
         }
         if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${cmd}`);
-        await sleep(150);
+        await sleep(delay);
+        delay = Math.min(delay * 2, 150);
       }
     } finally {
       this.active--;
@@ -166,7 +170,7 @@ export class TerminalClient {
         /* 结果未就绪 */
       }
       if (Date.now() - start > timeoutMs) return false;
-      await sleep(150);
+      await sleep(100); // TASK18：看门狗探活轮询 150→100ms（非热路径，100ms 已足够）
     }
   }
 }

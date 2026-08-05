@@ -2,7 +2,7 @@
 // WebUnix TASK19 高级复杂功能场景测试：headless Chrome + CDP 驱动真实工作流。
 // 零新依赖（仿 verify-deploy.mjs / bench.mjs 的 CDP 模式）。每个场景真实执行、真实断言：
 //   S1 npm 项目开发闭环       S2 git 操作            S3 数据库全生命周期
-//   S4 服务自启               S5 多工作区隔离        S6 并发压力
+//   S4 服务自启               S5 多工作区隔离        S6 队列串行正确性
 //   S7 大输出                 S8 持久化压力          S9 错误路径
 //   S10 环境边界（reboot）
 //
@@ -501,7 +501,8 @@ async function s5(h) {
   return checks;
 }
 
-// ─── S6：并发压力 ───
+// ─── S6：队列串行正确性（N3/TASK20：原名"并发压力"实为队列串行 —— TerminalClient 的
+// 单槽 /cmd.json 通道把所有请求串行化，并行调用不会真并发；改名降级，诚实反映行为）───
 async function s6(h) {
   const checks = [];
   const expr = `(async () => {
@@ -520,11 +521,11 @@ async function s6(h) {
   const raw = await h.evalValue(expr);
   const results = JSON.parse(raw);
   const allOk = results.every((r) => r.ok === true);
-  check(checks, '3 concurrent long commands all return', allOk, `ok=${results.map((r) => r.ok).join(',')}`);
+  check(checks, '3 queued long commands all return', allOk, `ok=${results.map((r) => r.ok).join(',')}`);
   const outs = results.map((r) => r.stdout);
   const noInterleave =
     outs[0] === 'OUT-A' && outs[1] === 'OUT-B' && outs[2] === 'OUT-C';
-  check(checks, 'results not interleaved (per-id correct)', noInterleave, JSON.stringify(outs));
+  check(checks, 'queue serialization preserves per-command output', noInterleave, JSON.stringify(outs));
   return checks;
 }
 

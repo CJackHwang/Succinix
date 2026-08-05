@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TASK20 CI & standard test pipeline:
+  - ESLint flat config (`eslint.config.js`) — `@eslint/js` + `typescript-eslint` recommended + project rules (`no-explicit-any` error, no leftover `console.log` warn with host-side exemption, no unused vars/imports); `npm run lint` gate is 0 errors.
+  - Vitest unit-test suite (`tests/`, `vitest.config.ts`) covering the pure-logic modules `src/log.ts`, `persist.ts`, `services.ts`, `pkg.ts`, `motd.ts`, `config.ts` with an in-memory mock FS / fake IndexedDB / scriptable terminal client; v8 coverage gate **≥70%** on those core files (measured 89% stmts / 72% branches / 93% funcs / 92% lines).
+  - GitHub Actions CI (`.github/workflows/ci.yml`): `check` job (lint → typecheck → unit tests + coverage → build → `verify-deploy` headless self-test) on push/PR, plus a scheduled `nightly-scenarios` job; CI badge added to the README.
+  - `npm run test:e2e` (`scripts/run-e2e.mjs`): builds once, then runs `verify-deploy` → `bench` → `scenarios` sequentially — reusing the existing zero-dependency CDP scripts (no Playwright).
+  - Optional zero-dependency pre-commit (`npm run setup:hooks` writes `.git/hooks/pre-commit` → `scripts/pre-commit.sh`: tsc + eslint on changed files only), documented in the README.
+- TypeScript toolchain pinned to `~6.0.3` (dev-only): the `typescript-eslint` parser needs the classic compiler API that TypeScript 7 removed, so the dev typechecker stays on the 6.x line (runtime is unaffected).
+
+### Changed
+
+- `verify-deploy.mjs` self-test gate raised from `>=51` to `>=57` passed (matches the TASK19 regression additions).
+- S6 scenario renamed to "queue serialization correctness" — it exercises the single-slot `/cmd.json` request queue, not true concurrency (honest naming).
+- New npm scripts: `typecheck`, `lint`, `test`, `test:coverage`, `test:e2e`, `setup:hooks`.
+
+### Fixed
+
+- N1: `ensureNpxPackage` (services) and `dbStart` (commands) probed `node_modules/<pkg>` relative to the Lifo VFS root and always reported missing → now probe the absolute `/workspace/node_modules/<pkg>`; the redundant `npm install` + fake WARN is gone.
+- N2: the persist dedup signature now includes the empty-directory list — a bare `mkdir` + refresh (an empty-dirs-only change) previously skipped the IDB write and lost the directory.
+- N4: the self-test `spawn('npx definitely-not-exist-xyz')` is wrapped in try/catch with a shorter 2 s RPC timeout — offline / registry-hang no longer crashes the whole self-test; it degrades to a documented skip instead.
+
+### Added
+
 - TASK19 scenario suite: `scripts/scenarios.mjs` — a headless-Chrome/CDP driven real-workflow test suite (zero new deps, mirrors `verify-deploy.mjs`/`bench.mjs`) running 10 real scenarios against the real browser+container: S1 npm project dev loop (real HTTP 200 to the preview port), S2 git operations (`pkg install lifo-pkg-git` → init/add/commit/log with a real commit hash), S3 database full lifecycle (create table/insert/read via tinbase `/admin/v1/sql` + `/rest/v1`, data persists across `db stop`/`db start`), S4 service autostart (`service enable tinbase` survives a refresh and boots `running`; disable stops it), S5 multi-workspace isolation (files isolated per workspace, state retained after refresh), S6 concurrency stress (3 parallel long commands — per-id results not interleaved), S7 big output (`seq 1 10000` complete, 2 MB node output capped at 1 MB, no OOM), S8 persistence stress (300 files survive `snapshot now` + refresh, sampled content verified), S9 error paths (unknown command / missing dir / CORS curl all error cleanly in English), S10 environment boundary (`reboot` keeps files and a clean process table). `?scenario=1` exposes `window.__webunixScenario` (a `run()` that mirrors the real terminal dispatch path + `client`/`wc`/`ports`/`saveSnapshot`) for the driver.
 - `respawnWithKillFirst` (new `src/host-restart.ts`): the kill-old-host-before-spawn invariant extracted into a testable helper; `main.ts` `restartHost` uses it and the self-test asserts the ordering directly.
 - Self-test regressions (now 57 passed): `spawn npx definitely-not-exist-xyz` must return `ok:false` (not falsely report a running process), and the dual-host invariant (kill before spawn).

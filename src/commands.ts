@@ -161,11 +161,13 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   dbActivePort = port; // 记录本次启动端口（M1：status/stop 用记录值）
   term.writeln('Checking whether tinbase is installed in the container...');
 
-  // 1. 检查 node_modules/tinbase 是否存在（test -d：不存在时 exit≠0，比 ls+stdout 包含判断可靠，
+  // 1. 检查 /workspace/node_modules/tinbase 是否存在（test -d：不存在时 exit≠0，比 ls+stdout 包含判断可靠，
   //    避免 Lifo 把 "No such file or directory" 打到 stdout 造成误判重复 npm install）
+  //    N1（TASK20）：绝对路径 —— npm install 装进 process.cwd()（/workspace）下的 node_modules，
+  //    相对路径 `test -d node_modules/tinbase` 被 Lifo 按 VFS 根解析恒判缺失，每次误报重复安装。
   let installed = false;
   try {
-    const r = await client.terminal('test -d node_modules/tinbase', undefined, 15000);
+    const r = await client.terminal('test -d /workspace/node_modules/tinbase', undefined, 15000);
     installed = r.ok === true;
   } catch {
     installed = false;

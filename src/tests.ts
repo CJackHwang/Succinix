@@ -385,14 +385,14 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   }
   const psAfterStart = await client.terminal('ps');
   const longProc = (psAfterStart.processes ?? []).find(
-    (pr: any) => String(pr.cmd ?? '').startsWith('node') && pr.status === 'running'
+    (pr: Record<string, unknown>) => String(pr.cmd ?? '').startsWith('node') && pr.status === 'running'
   );
   if (longProc) {
     const k = await client.terminal(`kill ${longProc.pid}`);
     verdict(term, 'Process table', 'kill long-running node', k.ok && k.killed === true, `pid=${longProc.pid} ${k.message ?? ''}`);
     await sleep(300);
     const psAfterKill = await client.terminal('ps');
-    const after = (psAfterKill.processes ?? []).find((pr: any) => pr.pid === longProc.pid);
+    const after = (psAfterKill.processes ?? []).find((pr: Record<string, unknown>) => pr.pid === longProc.pid);
     verdict(term, 'Process table', 'kill marks exited', !after || after.status === 'exited', JSON.stringify(after ?? `pid=${longProc.pid} no longer in table`));
   } else {
     verdict(term, 'Process table', 'kill long-running node', false, 'no long-running node child found via ps');
@@ -406,7 +406,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     spawnPid = Number(sp.pid);
 
     const ps1 = await client.terminal('ps');
-    const spProc = (ps1.processes ?? []).find((pr: any) => pr.pid === spawnPid);
+    const spProc = (ps1.processes ?? []).find((pr: Record<string, unknown>) => pr.pid === spawnPid);
     verdict(term, 'Process table', 'spawned process visible running', !!spProc && spProc.status === 'running', JSON.stringify(spProc ?? `pid=${spawnPid} not found`));
 
     // 等 server-ready → 端口注册表出现 3456
@@ -436,7 +436,7 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     const k2 = await client.terminal(`kill ${spawnPid}`);
     await sleep(400);
     const ps2 = await client.terminal('ps');
-    const afterKill = (ps2.processes ?? []).find((pr: any) => pr.pid === spawnPid);
+    const afterKill = (ps2.processes ?? []).find((pr: Record<string, unknown>) => pr.pid === spawnPid);
     const killedOk = k2.ok && k2.killed === true && (!afterKill || afterKill.status === 'exited');
     verdict(term, 'Process table', 'spawn/kill lifecycle', killedOk, `killed=${k2.killed} status=${afterKill ? afterKill.status : 'no longer in table'}`);
   }
@@ -444,8 +444,14 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   // ─── TASK19 回归 1：spawn 失败竞态 ───
   // dispatchSpawn 对"spawn 成功但进程很快非零退出"（如 npx 包不存在）必须报 ok:false，
   // 不得让浏览器读到 ok:true + pid 后把一次注定失败的启动误报为成功。
-  const spFail = await client.spawn('npx definitely-not-exist-xyz');
-  verdict(term, 'Process table', 'spawn failure reported (ok:false)', spFail.ok === false, spFail.error ?? `pid=${spFail.pid ?? 'none'} runtime=${spFail.runtime ?? '?'}`);
+  // N4（TASK20）：离线时 npx 探测 registry 会挂到 RPC 超时抛异常，自检 crash。
+  // 套 try/catch + 缩短超时（2000ms），离线优雅降级为 skip（"不假报成功"的不变量仍成立），不 crash。
+  try {
+    const spFail = await client.spawn('npx definitely-not-exist-xyz', undefined, 2000);
+    verdict(term, 'Process table', 'spawn failure reported (ok:false)', spFail.ok === false, spFail.error ?? `pid=${spFail.pid ?? 'none'} runtime=${spFail.runtime ?? '?'}`);
+  } catch (e) {
+    boundary(term, 'Process table', 'spawn failure reported (ok:false)', `npx registry probe unavailable offline: ${String(e).slice(0, 80)}`);
+  }
 
   // ─── TASK19 回归 2：双 host 不变量（kill 先于 spawn）───
   // 重启 host 必须先 kill 旧 host 再 spawn 新 host，否则两个 host 同时轮询 cmd.json。

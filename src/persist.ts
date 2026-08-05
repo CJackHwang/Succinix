@@ -222,7 +222,9 @@ function idbReq<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBR
 }
 
 // ─── 快照缓存：内容（文件数/总字节）未变不写 IDB（自动快照高频调用的去重）───
-let lastSignature = { fileCount: -1, totalBytes: -1 };
+// N2（TASK20）：去重签名额外纳入 emptyDirs —— 仅空目录变化（裸 mkdir + 刷新）时文件数/总字节
+// 不变，旧签名会跳过写 IDB 造成空目录丢失。emptyDirsKey 对空目录路径排序后拼接，顺序无关稳定。
+let lastSignature = { fileCount: -1, totalBytes: -1, emptyDirsKey: '' };
 let lastSavedMeta: SnapshotMeta | null = null;
 let overLimitWarned = false;
 // 重入保护：并发调用复用同一个进行中的保存 Promise。
@@ -260,8 +262,10 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
   // 签名用计数：不含 /var/log/webunix.log（日志每条命令都在增长，计入则自动快照每次全量重写）。
   const sigFileCount = collected.sigFileCount;
   const sigTotalBytes = collected.sigTotalBytes;
+  // N2：空目录参与去重签名（排序拼接，顺序无关）——裸 mkdir + 刷新的空目录变化必须写 IDB。
+  const emptyDirsKey = collected.emptyDirs.slice().sort().join(' ');
   // 内容未变则跳过写（自动快照去重）；force 供手动 snapshot now 强制保存。
-  if (!force && lastSavedMeta && lastSignature.fileCount === sigFileCount && lastSignature.totalBytes === sigTotalBytes) {
+  if (!force && lastSavedMeta && lastSignature.fileCount === sigFileCount && lastSignature.totalBytes === sigTotalBytes && lastSignature.emptyDirsKey === emptyDirsKey) {
     return { meta: lastSavedMeta, skipped: false };
   }
   // 已清除：禁止 put 回写复活已删快照，也不更新缓存（clearSnapshot 已重置）。
@@ -270,7 +274,7 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
   const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes, sigFileCount, sigTotalBytes };
   const record: SnapshotRecord = { meta, files: collected.files, emptyDirs: collected.emptyDirs };
   await idbReq('readwrite', (s) => s.put(record, KEY));
-  lastSignature = { fileCount: sigFileCount, totalBytes: sigTotalBytes };
+  lastSignature = { fileCount: sigFileCount, totalBytes: sigTotalBytes, emptyDirsKey };
   lastSavedMeta = meta;
   if (collected.skipped > 0) {
     console.warn(`[persist] snapshot saved: ${fileCount} files, ${totalBytes} bytes (skipped ${collected.skipped} binary/unreadable)`);
@@ -295,10 +299,11 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
     }
   }
   lastSavedMeta = record.meta;
-  // 签名回落：旧快照无 sig 字段时用全量计数（迁移兼容）。
+  // 签名回落：旧快照无 sig 字段时用全量计数（迁移兼容）；emptyDirs 同步回填（N2）。
   lastSignature = {
     fileCount: record.meta.sigFileCount ?? record.meta.fileCount,
     totalBytes: record.meta.sigTotalBytes ?? record.meta.totalBytes,
+    emptyDirsKey: (record.emptyDirs ?? []).slice().sort().join(' '),
   };
   // 恢复写回了整树：目录列表签名缓存已过期，置空让下一次保存重新全量遍历（避免复用恢复前的结果）。
   lastListingSig = null;
@@ -334,7 +339,7 @@ export async function clearSnapshot(): Promise<void> {
     }
     await idbReq('readwrite', (s) => s.delete(KEY));
     lastSavedMeta = null;
-    lastSignature = { fileCount: -1, totalBytes: -1 };
+    lastSignature = { fileCount: -1, totalBytes: -1, emptyDirsKey: '' };
     lastListingSig = null;
     lastCollected = null;
     overLimitWarned = false;

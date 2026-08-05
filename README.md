@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.2.0-black.svg)](package.json)
+[![CI](https://github.com/CJackHwang/WebUnix/actions/workflows/ci.yml/badge.svg)](https://github.com/CJackHwang/WebUnix/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **A browser-native Linux: a full-screen Unix terminal powered by WebContainer + Lifo, with a unified TerminalExecutor that routes `node|npm|npx` to a real Node.js runtime and everything else to a Lifo Unix userland — sharing one filesystem.**
@@ -75,6 +76,21 @@ npm run build                       # production build
 node scripts/verify-deploy.mjs      # deploy-readiness gate (build + preview + COOP/COEP + ?test=1)
 ```
 
+### Testing
+
+WebUnix has a layered test setup that runs locally and in CI (GitHub Actions). No new runtime dependencies were added for testing — e2e reuses the existing CDP scripts (`verify-deploy` / `bench` / `scenarios`), and unit tests use mock filesystem / IndexedDB / network.
+
+- **Lint** — `npm run lint` (ESLint flat config in `eslint.config.js`). `typescript-eslint` recommended + project rules: `no-explicit-any` (error), no leftover `console.log` (warn; `console.warn`/`error` allowed for the degradation-log convention, host-side files exempt), no unused vars/imports. Gate: **0 errors**.
+- **Typecheck** — `npm run typecheck` (`tsc -p tsconfig.json --noEmit`). Gate: **0 errors**.
+- **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist.ts`, `src/services.ts`, `src/pkg.ts`, `src/motd.ts`, `src/config.ts` against in-memory mocks (see `tests/`). `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on those core files.
+- **e2e** — `npm run test:e2e` builds once, then runs the three CDP scripts sequentially against `vite preview` in headless Chrome:
+  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥57 passed, 0 failed**);
+  2. `scripts/bench.mjs` — performance benchmark (JSON output);
+  3. `scripts/scenarios.mjs` — the 10 real-workflow scenario suite.
+  Playwright is intentionally not used: the CDP scripts keep the pipeline zero-dependency and identical to local runs.
+- **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; a scheduled nightly job runs the heavy scenario suite. See the CI badge at the top of this file.
+- **pre-commit (optional, zero-dependency)** — `npm run setup:hooks` writes a `.git/hooks/pre-commit` that runs `tsc --noEmit` and ESLint on the changed files only (`scripts/pre-commit.sh`). It is **not forced**: skipping `setup:hooks` leaves the project fully commit-ready.
+
 ### Dependencies & audit
 
 Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluated separately to avoid regressions). Audit results as of the TASK17 final round (2026-08-05):
@@ -117,7 +133,7 @@ vercel --prod
 npm run build
 node scripts/verify-deploy.mjs
 # starts vite preview, asserts COOP/COEP on /, /host.js and the JS bundle,
-# then runs ?test=1 in headless Chrome — PASSED requires >=51 passed and 0 failed
+# then runs ?test=1 in headless Chrome — PASSED requires >=57 passed and 0 failed
 ```
 
 **Data scoping.** IndexedDB is isolated **per origin**. Changing the deployment domain = starting a fresh system: workspaces, files and database data do **not** migrate between domains. Refresh on the same domain is safe (the snapshot restores); only a domain change resets the system. This also applies to Vercel preview deployments: each preview gets its own unique URL (a distinct origin), so every preview environment has its own separately-scoped IndexedDB — data does not carry over between preview deployments either.
@@ -166,7 +182,7 @@ node scripts/verify-deploy.mjs
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **53 passed, 0 failed, 5 skipped** (TASK17 final run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **57 passed, 0 failed, 5 skipped** (TASK19 final run, 2026-08-05, against the minified host bundle). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -224,6 +240,24 @@ src/
   host-procs.ts      # unified process registry
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
+  verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
+  bench.mjs          # headless-Chrome performance benchmark (JSON output)
+  scenarios.mjs      # 10 real-workflow scenario suite (headless Chrome + CDP)
+  run-e2e.mjs        # npm run test:e2e: build once + run verify-deploy/bench/scenarios sequentially
+  pre-commit.sh      # optional pre-commit: tsc + eslint on changed files (zero-dependency)
+  setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh
+tests/
+  log.test.ts        # Vitest unit tests for src/log.ts (mock FS)
+  persist.test.ts    # ... src/persist.ts (exclusion/signature/force/empty-dirs, mock FS + fake IDB)
+  services.test.ts   # ... src/services.ts (parse/port-render/state, mock client)
+  pkg.test.ts        # ... src/pkg.ts (source detection/command construction, mock network)
+  motd.test.ts       # ... src/motd.ts
+  config.test.ts     # ... src/config.ts
+  helpers/fakes.ts   # in-memory FileSystemAPI / fake IndexedDB / scriptable terminal client
+eslint.config.js     # ESLint flat config (typescript-eslint recommended + project rules)
+vitest.config.ts     # Vitest config + v8 coverage gate (>=70% on core pure-logic modules)
+.github/workflows/
+  ci.yml             # CI: lint → typecheck → unit tests (coverage) → build → verify-deploy; nightly scenarios
 public/
   host.js            # lightweight in-container host daemon (generated)
   lifo-core.js       # @lifo-sh/core kernel bundle, lazily imported by host.js (generated)

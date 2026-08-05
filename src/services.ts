@@ -58,13 +58,15 @@ export interface ServiceActionResult {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // TASK19：npx 服务缺包安装 —— node_modules 不随快照持久，刷新/重开容器后 npx <pkg> 的包必然缺失。
-// 若服务命令以 npx 开头且 node_modules/<pkg> 不存在，先真实 npm install（与 dbStart 的安装路径一致），
+// 若服务命令以 npx 开头且 /workspace/node_modules/<pkg> 不存在，先真实 npm install（与 dbStart 的安装路径一致），
 // 再 spawn —— 否则 autostart 里 npx 的即时下载会跟 30s 端口等待竞态，时好时坏。
+// N1（TASK20）：探测必须用绝对路径 —— `test -d node_modules/<pkg>` 相对路径被 Lifo 按 VFS 根解析，
+// 而 npm install 装进 process.cwd()（即 /workspace）下的 node_modules，恒判缺失 → 每次冗余 npm install + 虚假 WARN。
 async function ensureNpxPackage(ctx: ServiceContext, command: string): Promise<void> {
   const m = /^npx\s+(\S+)/.exec(command.trim());
   if (!m) return;
   const pkg = m[1];
-  const rel = `node_modules/${pkg}`;
+  const rel = `/workspace/node_modules/${pkg}`;
   try {
     const probe = await ctx.client.terminal(`test -d '${rel}'`, undefined, 15000);
     if (probe.ok) return; // 已安装

@@ -20,6 +20,9 @@ jspm_packages/
 .cache/
 .eslintcache
 
+# Vitest coverage output
+coverage/
+
 # Build outputs
 dist/
 dist-ssr/

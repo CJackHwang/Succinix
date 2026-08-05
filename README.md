@@ -38,25 +38,35 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 
 ## Architecture
 
-```
-┌─────────────────────────── Browser tab ───────────────────────────┐
-│  xterm.js (JetBrains Mono, dark-amber theme)                      │
-│    │  terminal(command)                                           │
-│    ▼                                                              │
-│  TerminalClient — file RPC over the shared filesystem             │
-│    /cmd.json  { id, cmd, opts }                                   │
-│    /result-<id>.json  { id, ok, exitCode, stdout, stderr, runtime }│
-└───────────────┬───────────────────────────────────────────────────┘
-                │  WebContainer (COOP/COEP, virtualized node:fs)
-┌───────────────▼───────────────────────────────────────────────────┐
-│  node host.js — TerminalExecutor (persistent daemon, PID 1)       │
-│    ├─ node|npm|npx ...  → child_process.spawn  (real Node.js)     │
-│    ├─ python|python3 ...→ node python-runtime.js (python-wasm)    │
-│    ├─ everything else   → Lifo sandbox.commands.run (Unix tools)  │
-│    ├─ ps / kill         → unified process registry                │
-│    ├─ cwd / setCwd      → session cwd (cd-synced, persisted)      │
-│    └─ spawn             → background long-running processes       │
-└───────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Browser["Browser tab"]
+        XT["xterm.js (JetBrains Mono, dark-amber theme)"]
+        TC["TerminalClient — file RPC over the shared filesystem<br/>/cmd.json { id, cmd, opts }<br/>/result-&lt;id&gt;.json { id, ok, exitCode, stdout, stderr, runtime }"]
+        XT -- "terminal(command)" --> TC
+    end
+
+    WC["WebContainer (COOP/COEP, virtualized node:fs)"]
+
+    subgraph Host["node host.js — TerminalExecutor (persistent daemon, PID 1)"]
+        RT["prefix dispatch"]
+        NODE["node | npm | npx → child_process.spawn (real Node.js)"]
+        PY["python | python3 → node python-runtime.js (python-wasm)"]
+        LIFO["everything else → Lifo sandbox.commands.run (Unix tools)"]
+        PS["ps / kill — unified process registry"]
+        CWD["cwd / setCwd — session cwd (cd-synced, persisted)"]
+        SP["spawn — background long-running processes"]
+    end
+
+    TC -- "file RPC" --> WC
+    WC -- "shared node:fs" --> Host
+
+    RT --> NODE
+    RT --> PY
+    RT --> LIFO
+    RT --> PS
+    RT --> CWD
+    RT --> SP
 ```
 
 Key design decision: **the filesystem is the single source of truth.** Because WebContainer exposes the container filesystem to processes via `node:fs`, and Lifo mounts `process.cwd()` through `NativeFsProvider`, browser, Node processes and Lifo all see one filesystem. There is no filesystem bridge to maintain.

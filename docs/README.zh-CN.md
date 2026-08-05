@@ -38,25 +38,35 @@
 
 ## 架构
 
-```
-┌─────────────────────────── 浏览器标签页 ───────────────────────────┐
-│  xterm.js（JetBrains Mono，暗橙主题）                              │
-│    │  terminal(command)                                           │
-│    ▼                                                              │
-│  TerminalClient — 基于共享文件系统的文件 RPC                       │
-│    /cmd.json  { id, cmd, opts }                                   │
-│    /result-<id>.json  { id, ok, exitCode, stdout, stderr, runtime }│
-└───────────────┬───────────────────────────────────────────────────┘
-                │  WebContainer（COOP/COEP，虚拟化 node:fs）
-┌───────────────▼───────────────────────────────────────────────────┐
-│  node host.js — TerminalExecutor（常驻守护进程，PID 1）            │
-│    ├─ node|npm|npx ...  → child_process.spawn  （真实 Node.js）    │
-│    ├─ python|python3 ...→ node python-runtime.js（python-wasm）    │
-│    ├─ 其余一切           → Lifo sandbox.commands.run（Unix 工具）  │
-│    ├─ ps / kill         → 统一进程注册表                          │
-│    ├─ cwd / setCwd      → 会话 cwd（cd 同步、持久化）             │
-│    └─ spawn             → 后台长驻进程                            │
-└───────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Browser["浏览器标签页"]
+        XT["xterm.js（JetBrains Mono，暗橙主题）"]
+        TC["TerminalClient — 基于共享文件系统的文件 RPC<br/>/cmd.json { id, cmd, opts }<br/>/result-&lt;id&gt;.json { id, ok, exitCode, stdout, stderr, runtime }"]
+        XT -- "terminal(command)" --> TC
+    end
+
+    WC["WebContainer（COOP/COEP，虚拟化 node:fs）"]
+
+    subgraph Host["node host.js — TerminalExecutor（常驻守护进程，PID 1）"]
+        RT["前缀分发"]
+        NODE["node | npm | npx → child_process.spawn（真实 Node.js）"]
+        PY["python | python3 → node python-runtime.js（python-wasm）"]
+        LIFO["其余一切 → Lifo sandbox.commands.run（Unix 工具）"]
+        PS["ps / kill — 统一进程注册表"]
+        CWD["cwd / setCwd — 会话 cwd（cd 同步、持久化）"]
+        SP["spawn — 后台长驻进程"]
+    end
+
+    TC -- "文件 RPC" --> WC
+    WC -- "共享 node:fs" --> Host
+
+    RT --> NODE
+    RT --> PY
+    RT --> LIFO
+    RT --> PS
+    RT --> CWD
+    RT --> SP
 ```
 
 关键设计决策：**文件系统是唯一事实源。** 因为 WebContainer 通过 `node:fs` 把容器文件系统暴露给进程，而 Lifo 通过 `NativeFsProvider` 挂载 `process.cwd()`，浏览器、Node 进程与 Lifo 看到的是同一个文件系统。没有需要维护的文件系统桥。

@@ -7,6 +7,8 @@
 
 **A browser-native Linux: a full-screen Unix terminal powered by WebContainer + Lifo, with a unified TerminalExecutor that routes `node|npm|npx` to a real Node.js runtime and everything else to a Lifo Unix userland — sharing one filesystem.**
 
+> Language: **English** | [简体中文](docs/README.zh-CN.md)
+
 Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node.js, process management, port forwarding, and a Postgres database (tinbase) without installing anything.
 
 ---

@@ -340,6 +340,16 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 
 `docs/tasks/TASK*.md` 记录本项目的增量开发历史（每个任务的规格、保留项与质量门禁）。保留在仓库中作为**历史开发档案**，不属于交付产品。
 
+## 文档索引
+
+- **功能与能力清单** — [英文](FEATURES.md) · [简体中文](FEATURES.zh-CN.md)
+- **语言支持矩阵** — [英文](LANGUAGES.md) · [简体中文](LANGUAGES.zh-CN.md)
+- **文件 RPC 协议** — [英文](PROTOCOL.md) · [简体中文](PROTOCOL.zh-CN.md)
+- **SDK 形态设计** — [英文](SDK.md) · [简体中文](SDK.zh-CN.md)
+- **Agent 与设计规范** — [英文](../AGENTS.md) · [简体中文](../AGENTS.zh-CN.md)
+- **更新日志** — [英文](../CHANGELOG.md) · [简体中文](../CHANGELOG.zh-CN.md)
+- **参与贡献** — [英文](../CONTRIBUTING.md) · [简体中文](../CONTRIBUTING.zh-CN.md)
+
 ## 路线图
 
 - [x] POC：Lifo 运行在 WebContainer 内 + 共享文件系统

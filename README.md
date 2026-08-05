@@ -355,6 +355,16 @@ The engine is the same code that powers the Succinix terminal, behind a clean AP
 
 `docs/tasks/TASK*.md` document this project's incremental development history (each task's requirements, retention rules, and quality gates). They are kept in the repository as a **historical development archive** and are not part of the shipped product.
 
+## Documentation
+
+- **Supported features & capabilities** — [English](docs/FEATURES.md) · [简体中文](docs/FEATURES.zh-CN.md)
+- **Language support matrix** — [English](docs/LANGUAGES.md) · [简体中文](docs/LANGUAGES.zh-CN.md)
+- **File RPC protocol** — [English](docs/PROTOCOL.md) · [简体中文](docs/PROTOCOL.zh-CN.md)
+- **SDK form design** — [English](docs/SDK.md) · [简体中文](docs/SDK.zh-CN.md)
+- **Agent & design guidelines** — [English](AGENTS.md) · [简体中文](AGENTS.zh-CN.md)
+- **Changelog** — [English](CHANGELOG.md) · [简体中文](CHANGELOG.zh-CN.md)
+- **Contributing** — [English](CONTRIBUTING.md) · [简体中文](CONTRIBUTING.zh-CN.md)
+
 ## Roadmap
 
 - [x] POC: Lifo inside WebContainer with shared filesystem

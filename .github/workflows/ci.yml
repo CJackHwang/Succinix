@@ -37,14 +37,14 @@ jobs:
       - name: Build (build:host + vite build)
         run: npm run build
 
-      - name: e2e deploy gate (vite preview + headless Chrome ?test=1 self-test >= 57)
+      - name: e2e deploy gate (vite preview + headless Chrome ?test=1 self-test >= 71)
         run: node scripts/verify-deploy.mjs --skip-build
 
-  # 场景套件重（10 场景，含数据库/服务自启/持久化压力），nightly 跑，不进 push 门禁。
+  # 场景套件重（14 场景，含数据库/服务自启/持久化压力/TS 生态/语言防回归），nightly 跑，不进 push 门禁。
   nightly-scenarios:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,3 +60,6 @@ jobs:
 
       - name: Run scenario suite (build + preview + CDP)
         run: node scripts/scenarios.mjs
+
+      - name: Run language verification (TASK25)
+        run: node scripts/lang-verify.mjs --skip-build

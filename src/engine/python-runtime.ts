@@ -48,6 +48,18 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // TASK25：`python -m <module>`（含 `python -m pip`）给出明确报错而非"can't open file '-m'"。
+  // 内置运行时不装模块、不打包 pip；用户应直接用标准库（python -c "<code>"）或脚本文件。
+  if (args[0] === '-m') {
+    const target = args[1] ?? '';
+    if (target === 'pip') {
+      fail('python: pip is not available in this embedded runtime (stdlib is bundled as a zip; no third-party wheels). Use the standard library via python -c "<code>" or python <script.py>');
+    } else {
+      fail(`python: running modules with -m is not supported in this embedded runtime. Use python -c "<code>" or python <script.py> instead`);
+    }
+    return 2;
+  }
+
   if (args[0] === '-c') {
     const code = args[1];
     if (code === undefined) {

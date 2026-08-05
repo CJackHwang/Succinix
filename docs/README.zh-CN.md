@@ -89,10 +89,11 @@ WebUnix 有分层测试体系，本地与 CI（GitHub Actions）一致。测试�
 - **Lint** — `npm run lint`（`eslint.config.js` flat config）。`typescript-eslint` recommended + 项目规则：禁 `any`（error）、无遗留 `console.log`（warn；`console.warn`/`error` 按降级日志约定允许，host 侧文件豁免）、无未用变量/导入。门禁：**0 error**。
 - **Typecheck** — `npm run typecheck`（`tsc -p tsconfig.json --noEmit`）。门禁：**0 error**。
 - **单测** — `npm run test`（Vitest，node 环境）覆盖纯逻辑模块 `src/log.ts`、`src/persist.ts`、`src/services.ts`、`src/pkg.ts`、`src/motd.ts`、`src/config.ts`（内存 mock，见 `tests/`）。`npm run test:coverage` 追加 v8 覆盖率门禁：核心文件 **≥70%** statements/branches/functions/lines。
-- **e2e** — `npm run test:e2e` 构建一次，然后在 headless Chrome 里对 `vite preview` 依次跑三个 CDP 脚本：
-  1. `scripts/verify-deploy.mjs` — 部署就绪门禁 + `?test=1` 自检（门禁 **≥57 passed, 0 failed**）；
+- **e2e** — `npm run test:e2e` 构建一次，然后在 headless Chrome 里对 `vite preview` 依次跑 CDP 脚本：
+  1. `scripts/verify-deploy.mjs` — 部署就绪门禁 + `?test=1` 自检（门禁 **≥71 passed, 0 failed**）；
   2. `scripts/bench.mjs` — 性能基准（JSON 输出）；
-  3. `scripts/scenarios.mjs` — 十场景真实工作流套件。
+  3. `scripts/scenarios.mjs` — 十四场景真实工作流套件（S1–S14）；
+  4. `scripts/lang-verify.mjs` — 语言生态验证套件（TASK25）。
   有意不用 Playwright：CDP 脚本让流水线保持零依赖、与本地运行一致。
 - **CI** — `.github/workflows/ci.yml` 每次 push/PR 跑 lint → typecheck → 单测（含覆盖率）→ build → `verify-deploy`（headless 自检）；定时 nightly job 跑重场景套件。见本文件顶部 CI 徽章。
 - **pre-commit（可选，零依赖）** — `npm run setup:hooks` 写入 `.git/hooks/pre-commit`，对变更文件跑 `tsc --noEmit` 与 ESLint（`scripts/pre-commit.sh`）。**不强制**：跳过 `setup:hooks` 项目照常可提交。
@@ -188,7 +189,7 @@ node scripts/verify-deploy.mjs
 
 ## 已验证行为
 
-浏览器运行时验证套件结果（见 `src/tests.ts`）：**67 passed, 0 failed, 5 skipped**（TASK24 最终轮，2026-08-05，针对压缩 host bundle）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
+浏览器运行时验证套件结果（见 `src/tests.ts`）：**75 passed, 0 failed, 5 skipped**（TASK25 轮，2026-08-05，针对压缩 host bundle；TASK24 → TASK25 新增语言生态检查：扩展标准库 import、共享 FS 读写、`python -m pip` 明确报错、`npm i -g` EACCES hint）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
 
 - 共享文件系统：浏览器 → Lifo 与 Lifo → 浏览器读写均工作。
 - 路由：`node -e "console.log(21*2)"` → `42`（`runtime=node`）；`npm --version` → 真实 npm 版本；`grep`/`cat`/`wc` → `runtime=lifo`。
@@ -204,7 +205,25 @@ node scripts/verify-deploy.mjs
 - 网络视图：`netstat` 把端口注册表渲染为虚拟监听端口表，`netstat -p` 关联 spawn 的 echo server（端口 3456）与进程；`kill` 后端口从表消失。`ip addr` 打印虚拟回环与预览域，诚实标注 `(virtual)`。
 - 系统信息：`uname` 渲染诚实的系统行（`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`）与 `-a`/`-r`/`-m` 形态；`-r`/`-m` 参数解析额外经命令分发路径断言（不只 builder）。`motd` 设置 → 读回 → 重置使 `/etc/webunix.motd` 回到默认（零残留）。
 - 冒烟：全部 23 个安全内置命令（help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown）经浏览器处理器分发无错误；`reboot` 与 `db start` 排除在自动化冒烟外（破坏性/重副作用）。
+- 语言生态（TASK23 + TASK25）：`python -c "print(6*7)"` → `42`（内置 python-wasm）；完整标准库 import 矩阵（json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib）全绿且扩展标准库进入自检；`python3 --version` 报 Python 3.11；python 读写共享 FS（浏览器 + node 读到同一文件）；`python -m pip` 明确报错（`pip is not available in this embedded runtime`）。权威、以实测为准的矩阵见 **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)**（英文 **[docs/LANGUAGES.md](LANGUAGES.md)**）。
+- 语言防回归（TASK25，场景 S14）：用户实测 5 坑逐条锁定 —— `node --version && npm --version` 链、`node -e` 嵌套引号写文件（穿透 tsc）、`npm i -g` EACCES + hint、cd 同步装包（进项目目录非根 node_modules）、python 真管道。
 - 稳定性：RPC 客户端在单槽 `/cmd.json` 通道上串行化请求（无并行通道竞态），只读命令（ping/ps/cwd）传输失败重试一次，浏览器看门狗连续 2 次 ping 失败后重注入 + 重拉 `host.js`。
+
+## 语言
+
+WebUnix 内置两个**语言运行时**（系统资产、零用户安装），并可执行预编译 WASI 模块；下列每项
+都以 `scripts/lang-verify.mjs`（真实浏览器执行）**实测为准** —— 权威矩阵见
+**[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)**（英文 **[docs/LANGUAGES.md](LANGUAGES.md)**）。
+
+| 语言 | 命令 | 状态 | 关键实测事实 |
+| ---- | ---- | ---- | ----------- |
+| **Python** | `python` / `python3` | ✅ 内置 | 3.11.1 python-wasm；11/11 标准库 import；sqlite3/json 真实可用；**无 pip**（明确报错）、无 REPL、subprocess 可导入但无法 spawn |
+| **Node.js** | `node` | ✅ 内置 | 22.22.3；真实二进制；`node -e` 引号保真；完整 TS 工具链（typescript/tsx/vitest） |
+| **npm** | `npm` | ✅ 内置 | 10.8.2；本地装进会话 cwd；全局 → EACCES + hint |
+| **TypeScript** | `npx tsc` / `tsx` | ✅ 经 npm | tsc → node → vitest 全闭环（S13/S14） |
+| **Ruby** | — | ⚠️ 仅探测 | `@ruby/wasm-wasi` v2 容器内可跑（`6*7` → 42）；未集成 |
+| **C / Rust / Go** | — | ❌ 缺失 | 无编译器（`which gcc/rustc/go` → not found） |
+| **WASI** | `node:wasi` | ✅ | 预编译 WASI 模块可经 `node:wasi` 运行 |
 
 ## 已知边界
 
@@ -217,6 +236,8 @@ node scripts/verify-deploy.mjs
 - **跨运行时流式管道**：跨运行时管道是缓冲的（对 agent 式"跑完再读"工作流足够）。
 - **`/workspace` 是 Lifo VFS 视图；真实 node/python 子进程看到真实路径**：浏览器文件系统根（`wc.fs` `/`）与 Lifo 的 `/workspace` 都映射到 host 进程 cwd（`/home/<wc-id>`），而容器根 `/` 是只读系统视图。`pwd`/`cwd` 报 Lifo 视角（`/workspace/...`），node/python 子进程里的 `process.cwd()` 报真实映射路径（`/home/<wc-id>/...`）——指向同一目录。
 - **`npm i -g` 到只读 `/usr/local` 会追加可操作提示**：`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`（权限语义不变）。
+- **Python REPL 未实现**：内置 python 运行时面向命令（`python -c "<code>"`、`python <script.py>`）。交互式 `>>>` REPL 需要持久 stdin，WebContainer 不可靠 —— 请用 `python -c`。`pip` 也不可用（python-wasm 以 zip 打包标准库；装第三方 wheel 超出范围）。TASK25 起 `python -m pip ...` 明确报 `pip is not available in this embedded runtime`（此前 `-m` 被误当脚本文件），`python -m <module>` 被显式拒绝；`subprocess` 可导入但无法 spawn——WASI 沙箱无进程/管道 API（见 [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)）。
+- **首次 `python` 命令慢**：python-wasm 运行时（~13 MB JS + wasm + stdlib）首用懒注入容器，首个 `python` 命令需数秒；后续命令快。它是系统资产、不依赖用户 `npm install`，不会被用户操作装坏。
 - **看门狗探针可能被排队命令吞掉**：host 存活看门狗向单槽 `/cmd.json` 通道写直接 `ping` 探针；若用户命令在 ~120 ms host 轮询窗口内入队会覆盖探针，该探针超时、看门狗跳过该轮（中性，不算失败）。这只是在罕见重叠时把存活检测推迟一个 30s 周期；不会误杀健康 host。
 - **单命令输出上限 1 MB**：为约束容器内存与结果文件大小，每条命令 `stdout`/`stderr` 最多保留最后 ~1 MB（大输出截断到尾部）。正常使用（`seq 1 5000`、中等文件 `cat`、`npm install` 日志）远低于上限。
 - **声明式自启（非守护进程）**：`service enable` 只记录服务供 boot 重启。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。
@@ -254,8 +275,9 @@ scripts/
   build-host.mjs     # esbuild 打包容器内 host（host.js + 懒加载 lifo-core.js）
   verify-deploy.mjs  # 部署就绪门禁：build + preview + COOP/COEP + ?test=1 自检
   bench.mjs          # headless Chrome 性能基准（JSON 输出）
-  scenarios.mjs      # 十场景真实工作流套件（headless Chrome + CDP）
-  run-e2e.mjs        # npm run test:e2e：构建一次 + 依次跑 verify-deploy/bench/scenarios
+  scenarios.mjs      # 十四场景真实工作流套件（headless Chrome + CDP；S14 = 语言防回归）
+  lang-verify.mjs    # 语言生态验证（TASK25；28 项检查，真实浏览器执行）
+  run-e2e.mjs        # npm run test:e2e：构建一次 + 依次跑 verify-deploy/bench/scenarios/lang-verify
   pre-commit.sh      # 可选 pre-commit：变更文件跑 tsc + eslint（零依赖）
   setup-hooks.mjs    # npm run setup:hooks：把 .git/hooks/pre-commit 接到 pre-commit.sh
 tests/
@@ -298,6 +320,7 @@ WebUnix 的命令执行引擎（`src/engine/`）**与 WebUnix 应用本身解耦
 
 - **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。生态使用方可只凭本文档构建替代客户端或 host，无需读实现。
 - **[docs/SDK.md](SDK.md)** — "把 WebUnix 引擎内嵌到不同人的前端项目做沙箱"的 SDK 形态设计：对比 npm 包（同页内嵌、共享文件系统）、iframe 沙箱（硬隔离）与脚手架，并给出推荐路径。
+- **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)** — 以实测为准的语言支持矩阵（Python 标准库、Node/TS 工具链、WASI、Ruby 探测、缺失的编译器）。
 
 ### 愿景
 

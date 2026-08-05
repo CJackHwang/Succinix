@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TASK25 language-ecosystem verification (real browser, zero new deps):
+  - **`scripts/lang-verify.mjs`** — CDP-driven multi-language verification (28 checks, ids `P1–P8` / `N1–N5` / `R1–R3`): python version/`-c`/script/pipes, an 11-module stdlib import matrix, `json.dumps`/`subprocess.run` behavior probes, pip error clarity, shared-FS read/write across python/node/lifo; the 5 TS/Node user-measured pits (chain, nested-quote write, full TS toolchain, EACCES hint, cwd-synced install); Ruby `@ruby/wasm-wasi` v2 probe (**runs**: `6*7` → 42), absent C/Rust/Go compilers, and a `node:wasi` minimal-wasm execution. Wired into `npm run test:e2e` (after scenarios).
+  - **`docs/LANGUAGES.md` + `docs/LANGUAGES.zh-CN.md`** — authoritative, measurement-backed language support matrix; every status cites its measured source (`LV·P1`…`LV·R3`, `ST`, `S13`/`S14`). README (+ zh) gained a Languages section and links.
+  - **Self-test additions (gate 71 → 75)**: python extended stdlib (subprocess/collections/datetime/hashlib/urllib), python shared-FS write/read, `python -m pip` clear error, and the `npm i -g` EACCES hint line (network-unreachable falls back to a known-boundary skip).
+  - **Scenario S14** (language regression): the 5 user-measured pits locked against regression — `node && npm` chain, `node -e` nested-quote write preserved through `tsc`, `npm i -g` EACCES + hint, cwd-synced npm install (packaged into the project dir), python true pipes. Now 14 scenarios.
+  - **`python -m` clear error** (`src/engine/python-runtime.ts`): `python -m pip ...` reports `pip is not available in this embedded runtime` (previously misread as a script file); `python -m <module>` is explicitly rejected.
+
+### Fixed
+
 - TASK24 复审（re-review fixes; self-test gate 67 → **71**）: four new self-test checks —
   `cwd persisted to /etc/webunix.cwd (browser view)` (proves the session cwd is written to the
   browser-visible path, i.e. survives a snapshot + refresh), `env merged into node child

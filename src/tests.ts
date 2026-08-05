@@ -765,6 +765,63 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
     `runtime=${pyPipe2.runtime} stdout=${String(pyPipe2.stdout ?? '').trim()}`
   );
 
+  // TASK25：pip 不可用 → 报错明确（不静默）。`python -m pip` 走运行时 -m 分支给出明确提示
+  //（此前被当脚本文件吞掉，报 "can't open file '-m'"）；裸 `pip` 命令则 Lifo "not found"。
+  const pyPip = await client.terminal('python -m pip --version', undefined, 60000);
+  verdict(
+    term,
+    'Languages',
+    'python -m pip errors clearly (pip not bundled)',
+    pyPip.ok === false && /pip is not available/i.test(String(pyPip.stderr ?? '')),
+    String(pyPip.stderr ?? '').trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)'
+  );
+
+  // TASK25：python 扩展标准库（支持矩阵数据源，lang-verify P5 之外补自检覆盖）。
+  const pyX = await client.terminal(
+    'python -c "import subprocess,collections,datetime,hashlib,urllib; print(len([subprocess,collections,datetime,hashlib,urllib]))"',
+    undefined,
+    60000
+  );
+  verdict(
+    term,
+    'Languages',
+    'python extended stdlib (subprocess/collections/datetime/hashlib/urllib)',
+    pyX.ok && String(pyX.stdout ?? '').trim() === '5',
+    String(pyX.stdout ?? '').trim()
+  );
+
+  // TASK25：python 读写共享 FS 文件（与 Lifo/node 同一文件）。会话 cwd 已复位 /workspace，
+  // python 相对路径写入 = 浏览器根 /selftest-py.txt；node 同 cwd 读回同一文件。
+  const pyFs = await client.terminal('python -c "open(\'selftest-py.txt\',\'w\').write(\'py-wrote\')"', undefined, 60000);
+  const pyFsRead = await wc.fs.readFile('/selftest-py.txt', 'utf8').catch(() => '');
+  const pyFsNode = await client.terminal('node -e "const fs=require(\'fs\');console.log(fs.readFileSync(\'selftest-py.txt\',\'utf8\'))"', undefined, 30000);
+  verdict(
+    term,
+    'Languages',
+    'python shared-FS write/read (browser + node)',
+    pyFs.ok && pyFsRead.trim() === 'py-wrote' && String(pyFsNode.stdout ?? '').trim() === 'py-wrote',
+    `browser=${JSON.stringify(pyFsRead.trim())} node=${String(pyFsNode.stdout ?? '').trim()}`
+  );
+  await wc.fs.rm('/selftest-py.txt', { force: true }).catch(() => {});
+
+  // TASK25：npm i -g → EACCES + 可操作 hint 行（权限语义不变，只追加提示）。
+  // 网络不可达（registry 解析失败）按已知边界 SKIP，不假报成功。
+  const eacces = await client.terminal('npm i -g left-pad', undefined, 60000);
+  const eaccesErr = String(eacces.stderr ?? '');
+  if (eaccesErr.includes('EACCES')) {
+    verdict(
+      term,
+      'Languages',
+      'npm i -g EACCES + hint line',
+      eaccesErr.includes('hint: /usr/local is read-only for guest'),
+      `EACCES=${eaccesErr.includes('EACCES')} hint=${eaccesErr.includes('hint:')}`
+    );
+  } else if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|getaddrinfo|EAI_AGAIN/i.test(eaccesErr)) {
+    boundary(term, 'Languages', 'npm i -g EACCES + hint', `network boundary: ${eaccesErr.trim().slice(0, 60)}`);
+  } else {
+    verdict(term, 'Languages', 'npm i -g EACCES + hint', false, `unexpected: exit=${eacces.exitCode} ${eaccesErr.trim().slice(0, 80)}`);
+  }
+
   // lang 列表经命令分发路径断言（浏览器侧命令）。
   const capLang = captureTerm();
   const handledLang = await tryHandleLocalCommand({ ...dispatchBase, term: capLang.term }, 'lang');

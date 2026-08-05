@@ -26,7 +26,7 @@ const portIdx = args.indexOf('--port');
 const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7892;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口，避开 preview 端口
-const MIN_PASSED = 67; // TASK24 复审门禁：preview 模式下 ?test=1 必须 >=67 passed（0 failed）
+const MIN_PASSED = 71; // TASK25 门禁：preview 模式下 ?test=1 必须 >=71 passed（0 failed）
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',

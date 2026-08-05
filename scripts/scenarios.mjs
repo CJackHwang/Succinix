@@ -6,6 +6,7 @@
 //   S7 大输出                 S8 持久化压力          S9 错误路径
 //   S10 环境边界（reboot）    S11 python 脚本工作流  S12 cd + npm install cwd 同步
 //   S13 TS 生态工作流（npm i -D typescript tsx vitest → tsc → node → vitest 1 passed）
+//   S14 语言生态防回归套件（&& 链 / 引号保真 / EACCES hint / cwd 装包 / python 管道）
 //
 // 用法：
 //   node scripts/scenarios.mjs [--skip-build] [--port 7895]
@@ -625,6 +626,22 @@ async function s10(h) {
   const rb = await h.run('reboot', 10000);
   check(checks, 'reboot triggered', rb.handled === true && rb.output.includes('Rebooting'), rb.output ? rb.output.trim() : '');
 
+  // TASK25 防回归：reboot 是 setTimeout(300) 调 location.reload()。waitForScenario 可能在旧页面
+  //（booted 仍 true）上立即返回，随后 reload 才落下来打到下一个场景 → 句柄丢失（S11+ 全崩）。
+  // 必须先等到导航真的开始（eval 抛"context destroyed" 或句柄消失）再等新 boot。
+  let navigating = false;
+  const navDeadline = Date.now() + 15000;
+  while (Date.now() < navDeadline && !navigating) {
+    try {
+      const alive = await evalValue(h.cdp, '!!window.__webunixScenario');
+      if (alive === false) navigating = true;
+    } catch {
+      navigating = true; // context destroyed == 导航已开始
+    }
+    if (!navigating) await sleep(100);
+  }
+  if (!navigating) throw new Error('reboot navigation did not begin within 15s');
+
   // 等 reload + 重新 boot + 句柄就绪
   await h.waitForScenario(120000);
 
@@ -773,9 +790,73 @@ async function s13(h) {
   return checks;
 }
 
+// ─── S14：语言生态防回归套件（TASK25）───
+// 用户实测 5 坑逐条复测，锁定行为、防止回归：
+//   1) && 链（node --version && npm --version 两行都出）
+//   2) node -e 嵌套双引号写文件（引号保真 + tsc 可编译 + node 跑产物）
+//   3) npm i -g → EACCES + hint 行
+//   4) cwd 同步装包（cd /ws/proj → npm install 装进项目目录，非根 node_modules）
+//   5) python 真管道（命中保留 / 无匹配过滤为空）
+// 引号保真与 cwd 装包共用同一项目目录（typescript 一次安装同时证明"可编译"与"装对目录"）。
+async function s14(h) {
+  const checks = [];
+  const PROJ = '/workspace/s14-proj';
+  // 0. 复位会话 cwd
+  await h.run('cd /workspace');
+
+  // 1. && 链：node --version && npm --version 两行都出（shell 链）
+  const chain = await h.run('node --version && npm --version', 60000);
+  const chainLines = String(chain.stdout || '').trim().split('\n').filter((l) => l.length > 0);
+  check(checks, 'S14 chain: node && npm both lines', chain.ok === true && chain.runtime === 'lifo' && chainLines.length >= 2 && /^v\d/.test(chainLines[0]), chainLines.join(' | '));
+
+  // 2. node -e 嵌套双引号写 TS 文件（mkdir 与 cd 分开 —— 只有整条命令以 cd 开头才同步 host 会话 cwd）
+  const mk = await h.run(`mkdir -p ${PROJ}/src`);
+  check(checks, 'S14 mkdir project dir', mk.ok === true, `ok=${mk.ok}`);
+  const cd = await h.run(`cd ${PROJ}`);
+  check(checks, 'S14 cd into project dir', cd.ok === true, `ok=${cd.ok}`);
+  const n2 = await h.run(`node -e "require('fs').writeFileSync('src/s14.ts', 'export const msg: string = \\"s14-quote-ok\\";\\nconsole.log(msg);')"`, 60000);
+  const s14Content = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/s14-proj/src/s14.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
+  check(checks, 'S14 node -e nested quotes preserved in file', n2.ok === true && typeof s14Content === 'string' && s14Content.includes('"s14-quote-ok"'), `content=${JSON.stringify(s14Content).slice(0, 70)}`);
+
+  // 3. npm init + 装 typescript（cwd = 项目目录）→ 证明"可编译"
+  const init = await h.run('npm init -y', 120000);
+  check(checks, 'S14 npm init -y', init.ok === true, `ok=${init.ok}`);
+  const inst = await h.run('npm i -D typescript', 240000);
+  check(checks, 'S14 npm i -D typescript', inst.ok === true, `ok=${inst.ok}`);
+
+  // tsc 编译引号文件 → node 跑产物（引号保真贯通编译）
+  const tsconfig = JSON.stringify({ compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true }, include: ['src'] }, null, 2);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/s14-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+  const tsc = await h.run('npx tsc -p tsconfig.json', 180000);
+  check(checks, 'S14 tsc compiles quote.ts (compilable)', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr || '').trim().slice(0, 80)}`);
+  const runQ = await h.run('node dist/s14.js', 60000);
+  check(checks, 'S14 node runs compiled artifact', runQ.ok === true && String(runQ.stdout).trim() === 's14-quote-ok', String(runQ.stdout).trim());
+
+  // 4. cwd 装包：typescript 装进 /s14-proj/node_modules，根 /node_modules 没有
+  const inProj = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/s14-proj/node_modules/typescript').then(()=>true).catch(()=>false)`);
+  const inRoot = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/node_modules/typescript').then(()=>true).catch(()=>false)`);
+  check(checks, 'S14 npm install packages into project dir (cwd sync)', inProj === true && inRoot === false, `proj=${inProj} root=${inRoot}`);
+
+  // 5. npm i -g → EACCES + hint 行
+  const g = await h.run('npm i -g left-pad', 120000);
+  const gErr = String(g.stderr || '');
+  check(checks, 'S14 npm i -g EACCES + hint line', g.ok === false && gErr.includes('EACCES') && gErr.includes('hint: /usr/local is read-only for guest'), `EACCES=${gErr.includes('EACCES')} hint=${gErr.includes('hint:')}`);
+
+  // 6. python 真管道（命中保留 / 无匹配过滤为空）
+  const pp1 = await h.run("python -c \"print('s14-pipe')\" | grep pipe", 90000);
+  check(checks, 'S14 python pipe keeps match', pp1.ok === true && pp1.runtime === 'lifo' && String(pp1.stdout).includes('s14-pipe'), `runtime=${pp1.runtime} stdout=${String(pp1.stdout).trim().slice(0, 40)}`);
+  const pp2 = await h.run("python -c \"print('abc')\" | grep zzz", 90000);
+  check(checks, 'S14 python pipe filters empty', pp2.runtime === 'lifo' && String(pp2.stdout).trim() === '', `runtime=${pp2.runtime} stdout=${JSON.stringify(String(pp2.stdout).trim())}`);
+
+  // 清理：回 /workspace，删项目目录
+  await h.run('cd /workspace');
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/s14-proj', { recursive: true, force: true })`);
+  return checks;
+}
+
 // ─── 主流程 ───
 async function main() {
-  note('WebUnix TASK24 scenario suite (real browser/container, 13 scenarios)');
+  note('WebUnix TASK25 scenario suite (real browser/container, 14 scenarios)');
 
   if (SKIP_BUILD) {
     note('skipping build (--skip-build), using existing dist/');
@@ -822,6 +903,7 @@ async function main() {
       { id: 'S11', name: 'python script workflow', run: s11 },
       { id: 'S12', name: 'cd + npm install cwd sync', run: s12 },
       { id: 'S13', name: 'TS ecosystem workflow', run: s13 },
+      { id: 'S14', name: 'language ecosystem regression (5 pits)', run: s14 },
     ];
 
     for (const sc of SCENARIOS) {

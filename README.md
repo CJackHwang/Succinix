@@ -89,10 +89,11 @@ WebUnix has a layered test setup that runs locally and in CI (GitHub Actions). N
 - **Lint** — `npm run lint` (ESLint flat config in `eslint.config.js`). `typescript-eslint` recommended + project rules: `no-explicit-any` (error), no leftover `console.log` (warn; `console.warn`/`error` allowed for the degradation-log convention, host-side files exempt), no unused vars/imports. Gate: **0 errors**.
 - **Typecheck** — `npm run typecheck` (`tsc -p tsconfig.json --noEmit`). Gate: **0 errors**.
 - **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist.ts`, `src/services.ts`, `src/pkg.ts`, `src/motd.ts`, `src/config.ts` against in-memory mocks (see `tests/`). `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on those core files.
-- **e2e** — `npm run test:e2e` builds once, then runs the three CDP scripts sequentially against `vite preview` in headless Chrome:
-  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥67 passed, 0 failed**);
+- **e2e** — `npm run test:e2e` builds once, then runs the CDP scripts sequentially against `vite preview` in headless Chrome:
+  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥71 passed, 0 failed**);
   2. `scripts/bench.mjs` — performance benchmark (JSON output);
-  3. `scripts/scenarios.mjs` — the 13 real-workflow scenario suite.
+  3. `scripts/scenarios.mjs` — the 14 real-workflow scenario suite (S1–S14);
+  4. `scripts/lang-verify.mjs` — the language-ecosystem verification suite (TASK25).
   Playwright is intentionally not used: the CDP scripts keep the pipeline zero-dependency and identical to local runs.
 - **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; a scheduled nightly job runs the heavy scenario suite. See the CI badge at the top of this file.
 - **pre-commit (optional, zero-dependency)** — `npm run setup:hooks` writes a `.git/hooks/pre-commit` that runs `tsc --noEmit` and ESLint on the changed files only (`scripts/pre-commit.sh`). It is **not forced**: skipping `setup:hooks` leaves the project fully commit-ready.
@@ -191,7 +192,7 @@ node scripts/verify-deploy.mjs
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **71 passed, 0 failed, 5 skipped** (TASK24 复审 run, 2026-08-05, against the minified host bundle; 67 → 71 with the re-review checks). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **75 passed, 0 failed, 5 skipped** (TASK25 run, 2026-08-05, against the minified host bundle; TASK24 → TASK25 added the language-ecosystem checks: extended stdlib imports, shared-FS read/write, `python -m pip` clear error, and the `npm i -g` EACCES hint). The 5 skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -210,10 +211,32 @@ Result of the browser runtime verification suite (see `src/tests.ts`): **71 pass
 - Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
 - System info: `uname` renders the honest system line (`WebUnix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; the `-r`/`-m` flag parsing is additionally asserted through the command-dispatch path (not just the builders). `motd` set → read-back → reset leaves `/etc/webunix.motd` at its default (zero residue).
 - Smoke: all 25 safe built-in commands (help/clear/sysinfo/version/whoami/ports/pwd/lang/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
-- Languages (TASK23): `python -c "print(6*7)"` returns `42` via the built-in python-wasm runtime; stdlib imports (json/csv/re/math/os/sqlite3) work; `python3 --version` reports Python 3.11; `lang` lists node/python/typescript and `lang python` reports the bundled version.
+- Languages (TASK23 + TASK25): `python -c "print(6*7)"` returns `42` via the built-in python-wasm runtime; the full stdlib import matrix (json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib) is green and extended-stdlib imports are self-tested; `python3 --version` reports Python 3.11; `lang` lists node/python/typescript and `lang python` reports the bundled version. Python reads/writes the shared FS (browser + node see the same file), `python -m pip` errors clearly (`pip is not available in this embedded runtime`), and the `?test=1` suite asserts all of it. See the **[Language Ecosystem — Verified Support Matrix](docs/LANGUAGES.md)** for the authoritative, measurement-backed matrix.
 - Session cwd (TASK23): `cd /workspace` syncs the host session cwd and a `node -e "console.log(process.cwd())"` child follows it; `cd` into a missing directory keeps the session cwd unchanged. (TASK24: `/workspace` is the Lifo VFS view — real node/python subprocesses spawn in the mapped host directory, so `process.cwd()` inside a child reports the real path such as `/home/<wc-id>/proj`; `pwd`/`cwd` still report the Lifo view `/workspace/...`.)
 - EACCES hint (TASK24): `npm i -g` hitting the read-only `/usr/local` appends an actionable hint (`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`) to the error output; permission semantics are unchanged.
+- Language regression (TASK25, scenario S14): the 5 user-measured pits are locked against regression — `node --version && npm --version` chain, `node -e` nested-quote file writes (preserved through tsc), `npm i -g` EACCES + hint, `cd`-synced npm installs (packaged into the project dir, not the root), and python true pipes.
 - Stability: the RPC client serializes requests over the single-slot `/cmd.json` channel (no more parallel-channel race), retries read-only commands (ping/ps/cwd) once on transport failure, and the browser watchdog re-injects + respawns `host.js` after 2 consecutive failed pings.
+
+## Languages
+
+WebUnix ships two **built-in language runtimes** (system assets, zero user install) and can
+execute precompiled WASI modules; every claim below is **measurement-backed** by
+`scripts/lang-verify.mjs` (real browser execution) — see the authoritative
+**[docs/LANGUAGES.md](docs/LANGUAGES.md)** matrix (中文: **[docs/LANGUAGES.zh-CN.md](docs/LANGUAGES.zh-CN.md)**).
+
+| Language | Command | Status | Notable facts (measured) |
+| -------- | ------- | ------ | ------------------------ |
+| **Python** | `python` / `python3` | ✅ built-in | 3.11.1 python-wasm; 11/11 stdlib imports; sqlite3/json real; **no pip** (clear error), no REPL, subprocess imports but can't spawn |
+| **Node.js** | `node` | ✅ built-in | 22.22.3; real binaries; `node -e` quote preservation; full TS toolchain (typescript/tsx/vitest) |
+| **npm** | `npm` | ✅ built-in | 10.8.2; local installs into session cwd; global → EACCES + hint |
+| **TypeScript** | `npx tsc` / `tsx` | ✅ via npm | tsc → node → vitest full loop (S13/S14) |
+| **Ruby** | — | ⚠️ probe only | `@ruby/wasm-wasi` v2 runs in-container (`6*7` → 42); not integrated |
+| **C / Rust / Go** | — | ❌ absent | no compilers (`which gcc/rustc/go` → not found) |
+| **WASI** | `node:wasi` | ✅ | precompiled WASI modules run under `node:wasi` |
+
+The full matrix, ecosystem replacement-degree assessment, and every known boundary are in
+**[docs/LANGUAGES.md](docs/LANGUAGES.md)**; the `lang` command lists the built-in runtimes and
+versions interactively.
 
 ## Known Boundaries
 
@@ -229,7 +252,7 @@ These are environmental constraints, not bugs:
 - **Single-command output is capped at 1 MB**: to bound container memory and result-file size, each command's `stdout`/`stderr` keeps at most the last ~1 MB of output (large dumps are truncated to their tail). Normal use (`seq 1 5000`, `cat` mid-size files, `npm install` logs) is far below the cap.
 - **Declarative autostart (not a daemon)**: `service enable` only records the service for a boot-time restart. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
 - **`log -f` (tail -f) not implemented**: interactive streaming output is deferred (POC; interactive stdin is unreliable in WebContainer). Use `log` / `log -n <count>` instead. `log clear` wipes `/var/log/webunix.log` and is therefore not itself recorded in the log.
-- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`). An interactive `>>>` REPL needs persistent stdin, which is unreliable in WebContainer — use `python -c` instead. `pip` is also not available (python-wasm ships its standard library as a zip; installing third-party wheels is out of scope).
+- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`). An interactive `>>>` REPL needs persistent stdin, which is unreliable in WebContainer — use `python -c` instead. `pip` is also not available (python-wasm ships its standard library as a zip; installing third-party wheels is out of scope). Since TASK25, `python -m pip ...` reports a clear `pip is not available in this embedded runtime` error (previously `-m` was misread as a script file), and `python -m <module>` is explicitly rejected. `subprocess` imports but cannot spawn — the WASI sandbox has no process/pipe API (see [docs/LANGUAGES.md](docs/LANGUAGES.md)).
 - **First `python` command is slow**: the python-wasm runtime (~13 MB of JS + wasm + stdlib) is lazily injected into the container on first use, so the first `python` command can take a few seconds; subsequent commands are fast. It never depends on a user `npm install` (system asset), so it cannot be broken by user actions.
 - **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
 - **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
@@ -266,8 +289,9 @@ scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
   bench.mjs          # headless-Chrome performance benchmark (JSON output)
-  scenarios.mjs      # 10 real-workflow scenario suite (headless Chrome + CDP)
-  run-e2e.mjs        # npm run test:e2e: build once + run verify-deploy/bench/scenarios sequentially
+  scenarios.mjs      # 14 real-workflow scenario suite (headless Chrome + CDP; S14 = language regression)
+  lang-verify.mjs    # language-ecosystem verification (TASK25; 28 checks, real browser execution)
+  run-e2e.mjs        # npm run test:e2e: build once + run verify-deploy/bench/scenarios/lang-verify sequentially
   pre-commit.sh      # optional pre-commit: tsc + eslint on changed files (zero-dependency)
   setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh
 tests/
@@ -310,6 +334,7 @@ The public surface is `src/engine/index.ts` (the future `@webunix/engine` packag
 
 - **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts. An ecosystem consumer can build an alternative client or host against this document alone, without reading the implementation.
 - **[docs/SDK.md](docs/SDK.md)** — the SDK form design for "embed the WebUnix engine into different people's frontend projects to provide a sandbox": it compares an npm package (same-page embedding, shared filesystem), an iframe sandbox (hard isolation), and a scaffold, then recommends a path.
+- **[docs/LANGUAGES.md](docs/LANGUAGES.md)** — the measurement-backed language support matrix (Python stdlib, Node/TS toolchain, WASI, Ruby probe, absent compilers).
 
 ### Vision
 

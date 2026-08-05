@@ -1,0 +1,463 @@
+#!/usr/bin/env node
+// WebUnix TASK25 语言生态验证（lang-verify）：headless Chrome + CDP 驱动真实浏览器/容器执行。
+// 零新依赖（复用 verify-deploy.mjs / scenarios.mjs 的 CDP 模式）。每项断言带稳定 SC id：
+//   Python 生态  P1 版本  P2 -c 执行  P3 脚本文件  P4 真管道  P5 标准库矩阵
+//                P6 pip 不可用报错明确  P7 共享 FS 读写（python/node/lifo 同一文件）
+//   TS/Node 生态 N1 shell 链（node && npm） N2 node -e 嵌套双引号写文件（引号保真 + 可编译）
+//                N3 TS 工具链全流程（npm i -D typescript tsx vitest → tsc → node → vitest）
+//                N4 npm i -g → EACCES + hint  N5 cwd 同步装包（进项目目录非根 node_modules）
+//   其他语言探测 R1 Ruby（@ruby/wasm-wasi 可行性） R2 编译语言无编译器（确认）
+//                R3 WASI 可行性（node:wasi 实测最小 wasm）
+// 真实执行、真实断言；docs/LANGUAGES.md 支持矩阵的每项都标实测来源（lang-verify.mjs · <SC id>）。
+//
+// 用法：
+//   node scripts/lang-verify.mjs [--skip-build] [--port 7896]
+//   （默认先 npm run build 再用 vite preview 托管 dist/；--skip-build 要求 dist/ 已是最新。）
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, '..');
+
+const args = process.argv.slice(2);
+const SKIP_BUILD = args.includes('--skip-build');
+const portIdx = args.indexOf('--port');
+// 7898/7899 避开 verify 7892 / bench 7894 / scenarios 7895 / 本机 Clash 代理 7897。
+const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7898;
+const BASE = `http://127.0.0.1:${PORT}`;
+const DEBUG_PORT = PORT + 1;
+const CHROME_CANDIDATES = [
+  process.env.CHROME_PATH,
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+].filter(Boolean);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── 结果汇总 ───
+let globalPass = 0;
+let globalFail = 0;
+const results = [];
+
+function note(msg) {
+  console.log(`[lang-verify] ${msg}`);
+}
+function check(id, name, ok, detail = '') {
+  results.push({ id, name, ok, detail });
+  globalPass += ok ? 1 : 0;
+  globalFail += ok ? 0 : 1;
+  const mark = ok ? '[  OK  ]' : '[ FAIL ]';
+  const color = ok ? '\x1b[33m' : '\x1b[31m';
+  console.log(`  ${color}${mark}\x1b[0m ${id} ${name}${detail ? ` (${detail})` : ''}`);
+}
+
+// ─── 子进程工具 ───
+function run(cmd, cmdArgs, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, cmdArgs, { stdio: opts.silent ? 'ignore' : 'inherit', ...opts.spawn });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
+  });
+}
+
+async function waitForHttp(url, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return;
+      lastErr = new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      lastErr = e;
+    }
+    await sleep(300);
+  }
+  throw lastErr ?? new Error(`timeout waiting for ${url}`);
+}
+
+// ─── 最小 CDP 客户端（同 scenarios.mjs，无新依赖）───
+class CDP {
+  constructor(url) {
+    this.ws = new WebSocket(url);
+    this.id = 0;
+    this.pending = new Map();
+  }
+  async open() {
+    await new Promise((resolve, reject) => {
+      this.ws.onopen = resolve;
+      this.ws.onerror = () => reject(new Error('CDP websocket failed to open'));
+    });
+    this.ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.id && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
+      }
+    };
+  }
+  send(method, params = {}) {
+    const id = ++this.id;
+    this.ws.send(JSON.stringify({ id, method, params }));
+    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+  }
+  close() {
+    try {
+      this.ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function findChrome() {
+  for (const p of CHROME_CANDIDATES) {
+    if (p && existsSync(p)) return p;
+  }
+  return null;
+}
+
+async function launchChrome() {
+  const chromePath = await findChrome();
+  if (!chromePath) throw new Error('headless Chrome not found');
+  const profileDir = mkdtempSync(join(tmpdir(), 'webunix-lang-verify-'));
+  const chrome = spawn(chromePath, [
+    '--headless=new',
+    `--remote-debugging-port=${DEBUG_PORT}`,
+    '--remote-allow-origins=*',
+    `--user-data-dir=${profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--window-size=1440,900',
+    'about:blank',
+  ], { stdio: 'ignore' });
+  return { chrome, profileDir };
+}
+
+async function connectCDP() {
+  let versionUrl = '';
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    try {
+      const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+      if (v.ok) {
+        versionUrl = (await v.json()).webSocketDebuggerUrl;
+        break;
+      }
+    } catch {
+      /* 尚未就绪 */
+    }
+    await sleep(300);
+  }
+  if (!versionUrl) throw new Error(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`);
+
+  let pageUrl = '';
+  for (let i = 0; i < 20 && !pageUrl; i++) {
+    const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
+    pageUrl = (list.find((t) => t.type === 'page') || {}).webSocketDebuggerUrl || '';
+    if (!pageUrl) await sleep(200);
+  }
+  if (!pageUrl) throw new Error('no page target available via CDP');
+
+  const cdp = new CDP(pageUrl);
+  await cdp.open();
+  await cdp.send('Page.enable');
+  await cdp.send('Runtime.enable');
+  return cdp;
+}
+
+async function evalValue(cdp, expression) {
+  const res = await cdp.send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  if (res.exceptionDetails) {
+    const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'unknown';
+    throw new Error(`page eval failed: ${desc.slice(0, 400)}`);
+  }
+  return res.result.value;
+}
+
+function makeHarness(cdp) {
+  const h = {
+    cdp,
+    async evalValue(expression) {
+      return evalValue(cdp, expression);
+    },
+    async run(cmd, timeoutMs) {
+      const expr = `(async () => JSON.stringify(await window.__webunixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
+      return JSON.parse(await evalValue(cdp, expr));
+    },
+    async waitFor(condExpr, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      let last;
+      while (Date.now() < deadline) {
+        try {
+          const v = await evalValue(cdp, condExpr);
+          if (v) return v;
+          last = v;
+        } catch (e) {
+          last = e;
+        }
+        await sleep(300);
+      }
+      throw new Error(`waitFor timeout: ${condExpr} (last=${String(last).slice(0, 120)})`);
+    },
+    async waitForScenario(timeoutMs = 120000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          const v = await evalValue(cdp, '!!window.__webunixScenario && window.__webunixScenario.booted === true');
+          if (v) return;
+        } catch {
+          /* 导航期间上下文销毁：下一轮再试 */
+        }
+        await sleep(400);
+      }
+      throw new Error(`scenario handle did not become ready within ${timeoutMs}ms`);
+    },
+  };
+  return h;
+}
+
+// ─── Python 生态（python 内置运行时）───
+async function pySection(h) {
+  // P1: python --version → Python 3.11.x
+  const p1 = await h.run('python --version', 90000);
+  const p1Out = String(p1.stdout ?? '').trim();
+  check('P1', 'python --version reports Python 3.11.x', p1.ok && /3\.11/.test(p1Out), p1Out.slice(0, 40) || String(p1.stderr ?? '').slice(0, 40));
+
+  // P2: python -c "print(6*7)" → 42
+  const p2 = await h.run('python -c "print(6*7)"', 90000);
+  check('P2', 'python -c executes (print(6*7) == 42)', p2.ok && String(p2.stdout ?? '').trim() === '42', String(p2.stdout ?? '').trim());
+
+  // P3: 写 .py 脚本 → python 跑 → 输出正确（含 os.getcwd()）
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-p3.py', 'print("p3-script-ok")\\nimport os\\nprint("cwd=" + os.getcwd())\\n')`);
+  const p3 = await h.run('python /lang-p3.py', 90000);
+  const p3Out = String(p3.stdout ?? '');
+  check('P3', 'python script file runs (write .py -> python)', p3.ok && p3Out.includes('p3-script-ok'), p3Out.trim().split('\n')[0] ?? '');
+
+  // P4: 真管道形态（shell 元字符 → Lifo shell 层解析，python 段转真运行时）
+  const p4a = await h.run("python -c \"print('hello-pipe')\" | grep pipe", 90000);
+  check('P4', 'python pipe keeps match (grep pipe)', p4a.ok && p4a.runtime === 'lifo' && String(p4a.stdout ?? '').includes('hello-pipe'), `runtime=${p4a.runtime} stdout=${String(p4a.stdout ?? '').trim().slice(0, 40)}`);
+  const p4b = await h.run("python -c \"print('abc')\" | grep zzz", 90000);
+  check('P4', 'python pipe filters empty (grep zzz)', p4b.runtime === 'lifo' && String(p4b.stdout ?? '').trim() === '', `runtime=${p4b.runtime} stdout=${JSON.stringify(String(p4b.stdout ?? '').trim())}`);
+
+  // P5: 标准库矩阵（支持矩阵数据源）—— 逐项 import 并报告
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-p5.py', 'import importlib\\nmods = [\\'json\\',\\'csv\\',\\'re\\',\\'math\\',\\'os\\',\\'sqlite3\\',\\'subprocess\\',\\'collections\\',\\'datetime\\',\\'hashlib\\',\\'urllib\\']\\nok = []\\nbad = []\\nfor m in mods:\\n    try:\\n        importlib.import_module(m)\\n        ok.append(m)\\n    except Exception:\\n        bad.append(m)\\nprint(\\'OK=\\' + \\',\\'.join(ok))\\nprint(\\'BAD=\\' + \\',\\'.join(bad))\\nprint(\\'COUNT=\\' + str(len(ok)))\\n')`);
+  const p5 = await h.run('python /lang-p5.py', 90000);
+  const p5Out = String(p5.stdout ?? '');
+  const p5OkLine = p5Out.split('\n').find((l) => l.startsWith('OK=')) ?? '';
+  const p5BadLine = p5Out.split('\n').find((l) => l.startsWith('BAD=')) ?? '';
+  const p5Count = Number((p5Out.split('\n').find((l) => l.startsWith('COUNT=')) ?? 'COUNT=0').slice('COUNT='.length));
+  const ALL_MODS = ['json', 'csv', 're', 'math', 'os', 'sqlite3', 'subprocess', 'collections', 'datetime', 'hashlib', 'urllib'];
+  const p5Ok = p5.ok && p5BadLine === 'BAD=' && p5Count === ALL_MODS.length && ALL_MODS.every((m) => p5OkLine.includes(m));
+  check('P5', `python stdlib matrix (${ALL_MODS.length} modules import)`, p5Ok, p5BadLine || p5Out.trim().slice(-80));
+
+  // P5 补充：sqlite3 不只是可导入 —— 内存库真实建表/插入/查询（docs/LANGUAGES.md 实测依据）。
+  const p5sqlite = await h.run("python -c \"import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create table t(a)'); c.execute('insert into t values (1)'); print(c.execute('select count(*) from t').fetchone()[0])\"", 90000);
+  check('P5', 'python sqlite3 in-memory DB works (live query)', p5sqlite.ok && String(p5sqlite.stdout ?? '').trim() === '1', String(p5sqlite.stdout ?? '').trim());
+
+  // P8: 文档声称的行为探测（LANGUAGES.md 的 json.dumps / subprocess.run 行为标注必须有实测来源）。
+  const p8json = await h.run('python -c "import json; print(json.dumps({\'a\':1}))"', 90000);
+  check('P8', 'python json.dumps behaves (serializes)', p8json.ok && String(p8json.stdout ?? '').trim() === '{"a": 1}', String(p8json.stdout ?? '').trim());
+  const p8sub = await h.run("python -c \"import subprocess; subprocess.run(['echo','hi'])\"", 60000);
+  const p8subErr = String(p8sub.stderr ?? '') + String(p8sub.stdout ?? '');
+  check('P8', 'python subprocess.run cannot spawn (WASI no process API)', p8sub.ok === false && /NOT IMPLEMENTED|RuntimeError/i.test(p8subErr), p8subErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no error)');
+
+  // P6: pip 不可用 → 报错明确（不静默）
+  const p6a = await h.run('python -m pip --version', 60000);
+  const p6aErr = String(p6a.stderr ?? '');
+  check('P6', 'python -m pip errors clearly (no silent)', p6a.ok === false && /pip|not available/i.test(p6aErr), p6aErr.trim().split('\n')[0]?.slice(0, 90) ?? '(no stderr)');
+  const p6b = await h.run('pip install some-pkg-xyz', 30000);
+  const p6bErr = String(p6b.stderr ?? '');
+  check('P6', 'pip command not found (clear error)', p6b.ok === false && p6b.runtime === 'lifo' && /pip|not found/i.test(p6bErr), p6bErr.trim().split('\n')[0]?.slice(0, 60) ?? '(no stderr)');
+
+  // P7: 共享 FS 读写（python / node / lifo 同一文件）
+  await h.run('cd /workspace', 15000);
+  const p7a = await h.run('python -c "open(\'lang-p7-py.txt\',\'w\').write(\'python-wrote-this\')"', 90000);
+  const p7b = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-p7-py.txt','utf8').then(t=>t).catch(()=>'MISSING')`);
+  check('P7', 'python writes shared-FS file (browser reads)', p7a.ok && p7b === 'python-wrote-this', `browser=${JSON.stringify(p7b)}`);
+  const p7c = await h.run('node -e "const fs=require(\'fs\');console.log(fs.readFileSync(\'lang-p7-py.txt\',\'utf8\'))"', 60000);
+  check('P7', 'node reads the same file', p7c.ok && String(p7c.stdout ?? '').trim() === 'python-wrote-this', String(p7c.stdout ?? '').trim());
+  const p7d = await h.run('cat lang-p7-py.txt', 30000);
+  check('P7', 'lifo reads the same file', p7d.ok && String(p7d.stdout ?? '').trim() === 'python-wrote-this', String(p7d.stdout ?? '').trim());
+  const p7e = await h.run('node -e "const fs=require(\'fs\');fs.writeFileSync(\'lang-p7-node.txt\',\'node-wrote-this\')"', 60000);
+  check('P7', 'node writes shared-FS file', p7e.ok === true, `ok=${p7e.ok}`);
+  const p7f = await h.run('python -c "print(open(\'lang-p7-node.txt\').read())"', 90000);
+  check('P7', 'python reads node-written file', p7f.ok && String(p7f.stdout ?? '').trim() === 'node-wrote-this', String(p7f.stdout ?? '').trim());
+}
+
+// ─── TS/Node 生态（用户实测 5 坑修复后复测）───
+async function nodeSection(h) {
+  const PROJ = '/workspace/lang-node-proj';
+
+  // N1: node --version && npm --version 两行都出（shell 链）
+  const n1 = await h.run('node --version && npm --version', 60000);
+  const n1Lines = String(n1.stdout ?? '').trim().split('\n').filter((l) => l.length > 0);
+  check('N1', 'node && npm chain prints both versions', n1.ok && n1.runtime === 'lifo' && n1Lines.length >= 2 && /^v\d+/.test(n1Lines[0]), n1Lines.join(' | '));
+
+  // N2 + N3 共用项目目录（引号保真文件直接进 TS 工具链编译，一石二鸟）
+  // 注意：mkdir 与 cd 必须分开（只有整条命令以 cd 开头才同步 host 会话 cwd —— 见 S13 同款写法）。
+  const mk = await h.run(`mkdir -p ${PROJ}/src`, 30000);
+  check('N2', 'project dir ready', mk.ok === true, `ok=${mk.ok}`);
+  await h.run(`cd ${PROJ}`, 15000);
+
+  // N2: node -e 嵌套双引号写 TS 文件 → 文件引号保真 + 可编译（tsc 在 N3 里编译）
+  const n2 = await h.run(`node -e "require('fs').writeFileSync('src/quote.ts', 'export const msg: string = \\"n2-quote-ok\\";\\nconsole.log(msg);')"`, 60000);
+  const n2Content = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-node-proj/src/quote.ts','utf8').then(t=>t).catch(()=>'MISSING')`);
+  check('N2', 'node -e nested double quotes write file (quotes preserved)', n2.ok && typeof n2Content === 'string' && n2Content.includes('"n2-quote-ok"'), `content=${JSON.stringify(n2Content).slice(0, 80)}`);
+
+  // N3: npm i -D typescript tsx vitest → tsc → node 跑产物 → vitest（复刻 S13）
+  const init = await h.run(`cd ${PROJ} && npm init -y`, 120000);
+  check('N3', 'npm init -y', init.ok === true, `ok=${init.ok}`);
+  const inst = await h.run(`cd ${PROJ} && npm i -D typescript tsx vitest`, 300000);
+  check('N3', 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok} ${String(inst.stderr ?? '').trim().split('\n').slice(-1)[0]?.slice(0, 60) ?? ''}`);
+
+  const tsconfig = JSON.stringify({
+    compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true, esModuleInterop: true },
+    include: ['src'],
+  }, null, 2);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/tsconfig.json', ${JSON.stringify(tsconfig)})`);
+
+  const tsc = await h.run(`cd ${PROJ} && npx tsc -p tsconfig.json`, 180000);
+  check('N3', 'tsc compiles TS (incl. quote.ts)', tsc.ok === true, `ok=${tsc.ok} ${String(tsc.stderr ?? '').trim().slice(0, 100)}`);
+  const distQuote = await h.evalValue(`window.__webunixScenario.wc.fs.readFile('/lang-node-proj/dist/quote.js','utf8').then(()=>true).catch(()=>false)`);
+  check('N3', 'dist/quote.js artifact produced', distQuote === true, `present=${distQuote}`);
+
+  const runQ = await h.run(`cd ${PROJ} && node dist/quote.js`, 60000);
+  check('N3', 'node runs compiled artifact (quote preserved through tsc)', runQ.ok && String(runQ.stdout ?? '').trim() === 'n2-quote-ok', String(runQ.stdout ?? '').trim());
+
+  await h.evalValue(`window.__webunixScenario.wc.fs.mkdir('/lang-node-proj/test', { recursive: true })`);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/src/greet.ts', 'export function greet(name: string): string { return "hello " + name; }\\n')`);
+  await h.evalValue(`window.__webunixScenario.wc.fs.writeFile('/lang-node-proj/test/quote.test.ts', 'import { test, expect } from "vitest"; import { greet } from "../src/greet"; test("greet", () => { expect(greet("ts")).toBe("hello ts"); });\\n')`);
+  const vitest = await h.run(`cd ${PROJ} && npx vitest run`, 180000);
+  const vtOut = String(vitest.stdout ?? '') + String(vitest.stderr ?? '');
+  check('N3', 'vitest run: 1 passed', vitest.ok && /1 passed/.test(vtOut), vtOut.trim().split('\n').filter((l) => /passed|failed|Test Files/.test(l)).slice(-3).join(' | '));
+
+  // N4: npm i -g <real pkg> → EACCES + hint 行
+  const n4 = await h.run('npm i -g left-pad', 120000);
+  const n4Err = String(n4.stderr ?? '');
+  check('N4', 'npm i -g -> EACCES + hint line', n4.ok === false && n4Err.includes('EACCES') && n4Err.includes('hint: /usr/local is read-only for guest'), `EACCES=${n4Err.includes('EACCES')} hint=${n4Err.includes('hint:')}`);
+
+  // N5: cwd 同步装包 → 包装进项目目录（非根 node_modules）
+  const n5 = await h.run(`cd ${PROJ} && npm i left-pad`, 180000);
+  const n5InProj = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/lang-node-proj/node_modules/left-pad').then(()=>true).catch(()=>false)`);
+  const n5InRoot = await h.evalValue(`window.__webunixScenario.wc.fs.readdir('/node_modules/left-pad').then(()=>true).catch(()=>false)`);
+  check('N5', 'npm i in project dir installs to project node_modules', n5.ok === true && n5InProj === true && n5InRoot === false, `proj=${n5InProj} root=${n5InRoot}`);
+
+  // 清理
+  await h.run('cd /workspace', 15000);
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/lang-node-proj', { recursive: true, force: true })`);
+}
+
+// ─── 其他语言（可行性探测，报告即可）───
+async function otherSection(h) {
+  // R2: 编译语言无编译器（确认）
+  const r2 = [];
+  for (const tool of ['gcc', 'rustc', 'go']) {
+    const r = await h.run(`which ${tool}`, 15000);
+    r2.push({ tool, found: r.ok === true && r.exitCode === 0 });
+  }
+  check('R2', 'no C/Rust/Go compilers (which gcc/rustc/go)', r2.every((x) => x.found === false), r2.map((x) => `${x.tool}=${x.found ? 'present' : 'absent'}`).join(' '));
+
+  // R3: WASI 可行性 —— node:wasi 实测最小 wasm（无编译器依赖，50 字节手写 wasm）
+  const wasmB64 = 'AGFzbQEAAAABBAFgAAADAgEABQMBAAEHEwIGX3N0YXJ0AAAGbWVtb3J5AgAKBAECAAs=';
+  const wasiRunner = `const {WASI}=require('node:wasi');const fs=require('fs');fs.writeFileSync('wasi-min.wasm',Buffer.from('${wasmB64}','base64'));(async()=>{const wasi=new WASI({version:'preview1'});const mod=await WebAssembly.compile(fs.readFileSync('wasi-min.wasm'));const inst=await WebAssembly.instantiate(mod,wasi.getImportObject());try{wasi.start(inst);console.log('WASI_RUN_OK')}catch(e){console.log('WASI_RUN_ERR '+String(e))}})()`;
+  const r3 = await h.run(`node -e ${JSON.stringify(wasiRunner)}`, 60000);
+  const r3Out = String(r3.stdout ?? '');
+  check('R3', 'node:wasi runs a minimal wasm in-container', r3.ok && r3Out.includes('WASI_RUN_OK'), r3Out.trim().split('\n').filter((l) => l.includes('WASI_')).join(' '));
+
+  // R1: Ruby 可行性 —— @ruby/wasm-wasi + @ruby/head-wasm-wasi 安装并真实执行（v2 API: dist/node）
+  const RPROJ = '/workspace/lang-ruby-proj';
+  await h.run(`mkdir -p ${RPROJ} && cd ${RPROJ} && npm init -y`, 60000);
+  const r1inst = await h.run(`cd ${RPROJ} && npm i @ruby/wasm-wasi @ruby/head-wasm-wasi`, 300000);
+  if (r1inst.ok === true) {
+    const rubyRunner = `const {DefaultRubyVM}=require('@ruby/wasm-wasi/dist/node');const fs=require('fs');(async()=>{try{const module=await WebAssembly.compile(fs.readFileSync('node_modules/@ruby/head-wasm-wasi/dist/ruby.wasm'));const {vm}=await DefaultRubyVM(module);const v=vm.eval('6*7');console.log('RUBY_OK val='+String(v));}catch(e){console.log('RUBY_ERR '+String(e).slice(0,300))}})()`;
+    const r1run = await h.run(`cd ${RPROJ} && node -e ${JSON.stringify(rubyRunner)}`, 90000);
+    const r1Out = String(r1run.stdout ?? '');
+    check('R1', 'Ruby @ruby/wasm-wasi runs in-container (6*7 == 42)', r1run.ok && r1Out.includes('RUBY_OK val=42'), r1Out.trim().split('\n').filter((l) => l.includes('RUBY_')).join(' '));
+  } else {
+    check('R1', 'Ruby @ruby/wasm-wasi runs in-container (6*7 == 42)', false, `npm install failed: ${String(r1inst.stderr ?? r1inst.stdout ?? '').trim().split('\n').slice(-1)[0]?.slice(0, 100)}`);
+  }
+  await h.run('cd /workspace', 15000);
+  await h.evalValue(`window.__webunixScenario.wc.fs.rm('/lang-ruby-proj', { recursive: true, force: true })`);
+}
+
+// ─── 主流程 ───
+async function main() {
+  note('WebUnix TASK25 language-ecosystem verification (real browser/container)');
+
+  if (SKIP_BUILD) {
+    note('skipping build (--skip-build), using existing dist/');
+  } else {
+    note('building...');
+    await run('npm', ['run', 'build'], { silent: true });
+    note('build ok');
+  }
+  if (!existsSync(join(ROOT, 'dist', 'index.html'))) {
+    throw new Error('dist/index.html missing — run npm run build first');
+  }
+
+  note(`starting vite preview on :${PORT}...`);
+  const preview = spawn(process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js'), 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
+  let chrome = null;
+  let cdp = null;
+  let profileDir = null;
+  try {
+    await waitForHttp(BASE, 20000);
+    note(`preview reachable at ${BASE}`);
+
+    const launched = await launchChrome();
+    chrome = launched.chrome;
+    profileDir = launched.profileDir;
+    cdp = await connectCDP();
+    await cdp.send('Page.navigate', { url: `${BASE}/?scenario=1` });
+    note('waiting for boot + scenario handle...');
+    const h = makeHarness(cdp);
+    await h.waitForScenario(150000);
+    note('scenario handle ready');
+
+    await h.run('cd /workspace', 15000);
+
+    note('\n--- Python ecosystem ---');
+    await pySection(h);
+    note('\n--- TS/Node ecosystem ---');
+    await nodeSection(h);
+    note('\n--- Other languages (probes) ---');
+    await otherSection(h);
+
+    // 汇总
+    console.log('\n=== LANG-VERIFY SUMMARY ===');
+    for (const r of results) {
+      console.log(`  ${r.ok ? '[  OK  ]' : '[ FAIL ]'} ${r.id} ${r.name} — ${r.detail ? `(${r.detail})` : ''}`);
+    }
+    console.log(`\nlang-verify: ${globalPass} passed, ${globalFail} failed`);
+    process.exitCode = globalFail === 0 ? 0 : 1;
+  } finally {
+    cdp?.close();
+    chrome?.kill('SIGTERM');
+    if (profileDir) {
+      try {
+        rmSync(profileDir, { recursive: true, force: true });
+      } catch {
+        /* 临时目录清理失败不影响结果 */
+      }
+    }
+    preview.kill('SIGTERM');
+  }
+}
+
+main().catch((e) => {
+  console.error(`[lang-verify] FATAL: ${e.stack ?? e}`);
+  process.exitCode = 1;
+});

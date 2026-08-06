@@ -1,6 +1,6 @@
 {
   "name": "@succinix/engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Succinix engine: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, sharing the container filesystem with the host app. Browser client + in-container host assets.",
   "type": "module",
   "main": "./dist/index.js",
@@ -45,5 +45,9 @@
   },
   "peerDependencies": {
     "@webcontainer/api": "^1.6.4"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

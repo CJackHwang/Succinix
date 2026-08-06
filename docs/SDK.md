@@ -149,3 +149,8 @@ Each stage is gated on the previous one; none of them changes the wire protocol
   process registry, built to `public/host.js` + `public/lifo-core.js`.
 - `docs/PROTOCOL.md` — the authoritative wire contract.
 - This document — the SDK form decision.
+
+## Version strategy (TASK-S1/S2 decision)
+
+- **Main project** stays `0.2.0` (continuity with WebUnix history).
+- **`@succinix/engine`** ships `0.1.0` — decoupled first release; the package is a new artifact with its own version lifecycle.

@@ -7,6 +7,15 @@
     "node": ">=22"
   },
   "description": "POC: Lifo (Unix-in-TypeScript) running inside WebContainer, sharing the container filesystem via node:fs mount.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CJackHwang/Succinix.git"
+  },
+  "homepage": "https://github.com/CJackHwang/Succinix",
+  "bugs": {
+    "url": "https://github.com/CJackHwang/Succinix/issues"
+  },
   "scripts": {
     "dev": "node scripts/start-dev.mjs",
     "build:host": "node scripts/build-host.mjs",

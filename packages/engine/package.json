@@ -1,0 +1,49 @@
+{
+  "name": "@succinix/engine",
+  "version": "0.1.0",
+  "description": "Succinix engine: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, sharing the container filesystem with the host app. Browser client + in-container host assets.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./host.js": "./assets/host.js",
+    "./lifo-core.js": "./assets/lifo-core.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "webcontainer",
+    "sandbox",
+    "unix",
+    "terminal",
+    "succinix",
+    "lifo"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CJackHwang/Succinix.git"
+  },
+  "homepage": "https://github.com/CJackHwang/Succinix",
+  "bugs": {
+    "url": "https://github.com/CJackHwang/Succinix/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@webcontainer/api": "^1.6.4"
+  }
+}

@@ -119,6 +119,12 @@ app in one command.
    - Publish `@succinix/engine` from `src/engine/` + the host assets (`public/host.js`,
      `public/lifo-core.js`); the consumer serves those two files (or we fetch from a CDN).
    - Define a release/versioning flow and a smoke test against an external Vite app.
+
+> **Status — implemented (TASK-S2):** the package structure landed locally in
+> `packages/engine/` as `@succinix/engine@0.1.0`: build-artifact publish (clean ESM
+> `dist/` + `.d.ts`), host assets shipped in-package and exposed as `./host.js` /
+> `./lifo-core.js` subpath exports, `npm pack --dry-run` + an offline consumer typecheck
+> verified. Publishing is intentionally deferred (release agent).
 3. **Stage 2 — postMessage bridge (Form B, optional).**
    - Prerequisites: Form A shipped; define the bridge schema as a 1:1 mapping of the
      file-RPC protocol (request id → result, port events relayed); document COOP/COEP

@@ -31,6 +31,10 @@ public/lifo-core.js
 public/python/
 public/pyodide/
 
+# @succinix/engine npm 包构建产物（TASK-S2：本地发布准备，产物不入库，发布前由 build:engine-package 生成）
+packages/engine/dist/
+packages/engine/assets/
+
 # Local environment variables
 .env
 .env.local

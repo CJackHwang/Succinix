@@ -20,6 +20,8 @@
     "dev": "node scripts/start-dev.mjs",
     "build:host": "node scripts/build-host.mjs",
     "build": "npm run build:host && vite build",
+    "build:engine-package": "npm run build:host && node scripts/build-engine-package.mjs",
+    "verify:engine-package": "npm run build:engine-package && cd packages/engine && npm pack --dry-run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

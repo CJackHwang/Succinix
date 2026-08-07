@@ -88,7 +88,7 @@ Per-command response fields:
 |----------|------------------------------------------------------------------|
 | `run`    | `{ ok, exitCode, stdout, stderr, runtime }` (+ optional `cwd` on a successful `cd`, TASK23) |
 | `spawn`  | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
-| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, exitCode?, outputTail? }] }` |
+| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
 | `kill`   | `{ ok, killed, message }`                                        |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
 | `setCwd` | `{ ok, kind: "cwd", cwd }` (the new session cwd)                 |
@@ -175,6 +175,14 @@ settling the result, so result files are bounded even for huge dumps.
 - **Process table** (`host-procs`): every real child is registered with `{ pid, cmd,
   status: running|exited, startTime, exitCode?, outputTail? }`. The table caps at 100
   entries, pruning the oldest exited entries.
+- **Process ownership** (TASK-CISOL): each `ps` entry additionally carries `scope`
+  (`system` | `container` | `unknown`) and, for `scope=container`, `containerId`
+  (e.g. `c-1`). Classification is heuristic: commands matching Succinix system assets
+  (`node host.js`, `node python-daemon.js`, any `/usr/lib/succinix/` path) → `system`;
+  otherwise a child spawned with its cwd inside a container root (`.../c-<id>`, as happens
+  when the caller runs `cd /workspace/c-<id> && <cmd>`) → `container` + `containerId`;
+  otherwise `unknown`. These are new fields — the existing `pid/cmd/status/...` contract
+  is unchanged.
 - **`kill`** sends SIGTERM to a table entry; the entry flips to `exited` on the child's
   `close` event. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
   `close` never fires in that case.

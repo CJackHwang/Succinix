@@ -83,7 +83,7 @@ host 为每个请求恰好写一个结果文件，以请求 id 命名。浏览�
 |----------|------------------------------------------------------------------|
 | `run`    | `{ ok, exitCode, stdout, stderr, runtime }`（成功 `cd` 时另附 `cwd` 字段，TASK23） |
 | `spawn`  | `{ ok: true, pid, runtime: "node" }`（立即）；确认窗口内失败 `{ ok: false, exitCode, error, runtime }` |
-| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, exitCode?, outputTail? }] }` |
+| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
 | `kill`   | `{ ok, killed, message }`                                        |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
 | `setCwd` | `{ ok, kind: "cwd", cwd }`（新的会话 cwd）                 |
@@ -157,6 +157,12 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
   调用方无感知。
 - **进程表**（`host-procs`）：每个真实子进程注册为 `{ pid, cmd, status: running|exited,
   startTime, exitCode?, outputTail? }`。表上限 100 条，清理最老的 exited 条目。
+- **进程归属**（TASK-CISOL）：每个 `ps` 条目额外携带 `scope`（`system` | `container` |
+  `unknown`），`scope=container` 时带 `containerId`（如 `c-1`）。判定为启发式：命令命中
+  Succinix 系统资产（`node host.js`、`node python-daemon.js`、任何 `/usr/lib/succinix/`
+  路径）→ `system`；否则子进程 spawn cwd 落在容器根（`.../c-<id>`，即调用方执行
+  `cd /workspace/c-<id> && <cmd>` 时的形态）→ `container` + `containerId`；其余 → `unknown`。
+  均为新增字段，既有 `pid/cmd/status/...` 契约不变。
 - **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。失败 spawn（如
   ENOENT）显式标记 `exited`，因为该情况下 `close` 永不触发。
 - **Lifo 侧进程仅可列出**——它们不在表中，`kill` 报 "not in process table" 消息而非假装终止。

@@ -211,12 +211,15 @@ function registerRealBinaryCommands(
   // V1 H1-2：把 Lifo 混合链拉起的 node/npm/npx 真实子进程登记进 host 进程表（host-procs.ts），
   // 使前台 `cd <root> && npm test` 这类混合链命令的活跃子进程在 ps() 可见、kill 可终止——
   // 此前它们只在 Lifo shell 内部运行，UI 进程表完全不可见。
+  // TASK-CISOL（R1）：登记时带上 spawn 的启动 cwd（realCwd），host-procs 据此判定容器归属
+  // （cd /workspace/c-<id> 前缀 → 子进程 cwd 落在容器根 → scope=container + containerId）。
   const forward = (
     ctx: { stdout: { write(s: string): void }; stderr: { write(s: string): void }; signal?: AbortSignal | null },
     child: ReturnType<typeof spawn>,
-    cmd: string
+    cmd: string,
+    realCwd: string
   ): Promise<number> => {
-    const pid = registerProcess(cmd, child);
+    const pid = registerProcess(cmd, child, realCwd);
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (d: Buffer) => {
@@ -250,8 +253,9 @@ function registerRealBinaryCommands(
 
   for (const name of ['node', 'npm', 'npx']) {
     sandbox.commands.register(name, async (ctx) => {
-      const child = spawn(name, ctx.args, { cwd: lifoSpawnCwd(ctx.cwd), env: mergedEnv() });
-      return forward(ctx, child, [name, ...ctx.args].join(' '));
+      const realCwd = lifoSpawnCwd(ctx.cwd);
+      const child = spawn(name, ctx.args, { cwd: realCwd, env: mergedEnv() });
+      return forward(ctx, child, [name, ...ctx.args].join(' '), realCwd);
     });
   }
   // TASK27：python/pip 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段
@@ -515,8 +519,10 @@ function spawnChild(
   reqId: number,
   label: string
 ): void {
-  const child = spawn(prog, args, { cwd: spawnCwd(), env: mergedEnv() });
-  registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
+  const realCwd = spawnCwd();
+  const child = spawn(prog, args, { cwd: realCwd, env: mergedEnv() });
+  // TASK-CISOL：登记时记录 spawn cwd（容器根 → scope=container + containerId）。
+  registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, realCwd);
 
   let stdout = '';
   let stderr = '';
@@ -593,8 +599,10 @@ function dispatchSpawn(req: CommandRequest): void {
     return;
   }
   const [prog, ...args] = t.tokens;
-  const child = spawn(prog, args, { cwd: spawnCwd(), env: mergedEnv() });
-  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child);
+  const realCwd = spawnCwd();
+  const child = spawn(prog, args, { cwd: realCwd, env: mergedEnv() });
+  // TASK-CISOL：登记时记录 spawn cwd（spawn 前 setCwd 到容器根 → scope=container + containerId）。
+  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, realCwd);
   child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
   let settled = false;

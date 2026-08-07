@@ -1,5 +1,9 @@
 // 进程表模块：登记 host 通过 child_process.spawn 拉起的真实子进程。
-// 供 ps / kill 协议使用；Lifo 侧进程由 sandbox 内部管理，不在本表内（仅支持列表）。
+// 供 ps / kill 协议使用。
+// V1 H1-2：除 run 的 node 直启分支 / spawn 后台进程外，Lifo 混合链中经
+// registerRealBinaryCommands 转发拉起的 node/npm/npx 真实子进程也登记进本表——
+// 前台 `cd <root> && npm test` 这类命令的活跃子进程因此 ps() 可见、kill 可终止。
+// 纯 Lifo 内置命令（echo / mkdir / grep ...）在 sandbox 内执行，不占本表（仅支持列表）。
 import type { ChildProcess } from 'node:child_process';
 
 export interface ProcInfo {

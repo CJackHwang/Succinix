@@ -208,21 +208,28 @@ function registerRealBinaryCommands(
   };
   // 共享转发：spawn 一个真实子进程，stdout/stderr 累积后写入 Lifo 命令上下文流；
   // 超时/中断（Lifo shell 的 signal）时子进程一并杀掉。
+  // V1 H1-2：把 Lifo 混合链拉起的 node/npm/npx 真实子进程登记进 host 进程表（host-procs.ts），
+  // 使前台 `cd <root> && npm test` 这类混合链命令的活跃子进程在 ps() 可见、kill 可终止——
+  // 此前它们只在 Lifo shell 内部运行，UI 进程表完全不可见。
   const forward = (
     ctx: { stdout: { write(s: string): void }; stderr: { write(s: string): void }; signal?: AbortSignal | null },
-    child: ReturnType<typeof spawn>
+    child: ReturnType<typeof spawn>,
+    cmd: string
   ): Promise<number> => {
+    const pid = registerProcess(cmd, child);
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (d: Buffer) => {
       const s = d.toString();
       stdout += s;
       if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
+      appendProcessOutput(pid, s);
     });
     child.stderr?.on('data', (d: Buffer) => {
       const s = d.toString();
       stderr += s;
       if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
+      appendProcessOutput(pid, s);
     });
     const onAbort = () => child.kill();
     ctx.signal?.addEventListener('abort', onAbort);
@@ -244,7 +251,7 @@ function registerRealBinaryCommands(
   for (const name of ['node', 'npm', 'npx']) {
     sandbox.commands.register(name, async (ctx) => {
       const child = spawn(name, ctx.args, { cwd: lifoSpawnCwd(ctx.cwd), env: mergedEnv() });
-      return forward(ctx, child);
+      return forward(ctx, child, [name, ...ctx.args].join(' '));
     });
   }
   // TASK27：python/pip 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段

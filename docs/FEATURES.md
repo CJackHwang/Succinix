@@ -194,7 +194,7 @@ Accepted environment constraints — not bugs, and never simulated:
 
 | Boundary | Detail | Source |
 | -------- | ------ | ------ |
-| No real kernel / `apt` / native binaries | Physically impossible in the sandbox; a future v86 layer is emulation, not native | README, AGENTS.md |
+| No real kernel / `apt` / native binaries | Physically impossible in the sandbox; Succinix is a browser-native Linux | README, AGENTS.md |
 | No multi-user / permission bits | Single-user browser sandbox; `guest` is the only user; `chmod` semantics are not faked | README, AGENTS.md |
 | No inbound network | Ports are virtual previews; tunnels are outbound bridges, not real inbound | TASK14 |
 | No interactive REPL stdin | File-based RPC replaces stdin; `log -f` and REPL-style processes unsupported | TASK1, README |

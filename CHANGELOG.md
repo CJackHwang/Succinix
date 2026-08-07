@@ -181,4 +181,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CORS restricts direct `curl` to external sites without CORS headers (use `https://r.jina.ai/<url>`).
 - Lifo VFS does not support symlinks.
-- No `apt` / native binaries (reserved for a future v86 fallback).
+- No `apt` / native binaries (physically impossible in the sandbox; Succinix is a browser-native Linux).

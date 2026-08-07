@@ -241,7 +241,7 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 - **CORS**：对无 CORS 头的网站 `curl` 失败（`exit 7`）。用 CORS 友好代理，如 `curl https://r.jina.ai/<url>`。
 - **Symlink**：Lifo VFS 不支持（`ln` 报告限制）。
-- **无包管理器 / 原生二进制**：没有 `apt`；原生可执行文件无法运行。这层预留给未来 v86 后端。
+- **无包管理器 / 原生二进制**：没有 `apt`；原生可执行文件无法运行。Succinix 是浏览器原生 Linux。
 - **交互进程的 stdin**：WebContainer 环境不可靠；设计改用基于文件的 RPC。
 - **跨运行时流式管道**：跨运行时管道是缓冲的（对 agent 式"跑完再读"工作流足够）。
 - **`/workspace` 是 Lifo VFS 视图；真实 node/python 子进程看到真实路径**：浏览器文件系统根（`wc.fs` `/`）与 Lifo 的 `/workspace` 都映射到 host 进程 cwd（`/home/<wc-id>`），而容器根 `/` 是只读系统视图。`pwd`/`cwd` 报 Lifo 视角（`/workspace/...`），node/python 子进程里的 `process.cwd()` 报真实映射路径（`/home/<wc-id>/...`）——指向同一目录。
@@ -362,7 +362,7 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 - [x] 工作区分拆：多虚拟目录隔离状态（类似 Sunam 工作区）
 - [x] 虚拟网络视图：`netstat` 虚拟监听端口表 + `ip addr` 诚实虚拟身份
 - [ ] SunamAI 集成：`shell_run` 引擎换 TerminalExecutor——**暂缓**（计划为 TASK8；未排期）
-- [ ] 可选：外部访问 WebSocket 隧道、v86 回退层
+- [ ] 可选：外部访问 WebSocket 隧道
 
 ## 许可
 

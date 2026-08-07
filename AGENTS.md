@@ -24,7 +24,7 @@ Browser-environment limits are accepted as-is. Do not build simulations with no 
 
 - **Multi-user / login / permission isolation.** Single-user browser sandbox; a login ritual without real isolation has no value. `guest` is the only user.
 - **Permission-bit management (`chmod` semantics).** Simulated modes add no value; do not fake them.
-- **Real kernel / apt / native binaries.** Physically impossible in the sandbox (a future v86 layer is emulation, not native).
+- **Real kernel / apt / native binaries.** Physically impossible in the sandbox. Succinix is a browser-native Linux (JS runtime + Lifo userland).
 - **Inbound external networking.** Ports are virtual previews; tunnels are outbound bridges, not real inbound.
 - **Direct external `curl` without CORS.** Use `https://r.jina.ai/<url>`-style proxies.
 - **Interactive stdin (REPL-style processes).** Unreliable in WebContainer (verified); file-based RPC replaces it.

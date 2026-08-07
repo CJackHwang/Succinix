@@ -26,7 +26,7 @@
 
 - **多用户 / 登录 / 权限隔离（multi-user）。** 单用户浏览器沙箱 sandbox；没有真实隔离的登录仪式无价值。`guest` 是唯一用户。
 - **权限位管理（`chmod` 语义）。** 模拟模式无实际价值；不伪造。
-- **真实内核 / apt / 原生二进制。** 沙箱内物理不可行（未来 v86 层是模拟，不是原生）。
+- **真实内核 / apt / 原生二进制。** 沙箱内物理不可行。Succinix 是浏览器原生 Linux（JS 运行时 + Lifo 用户态）。
 - **入站外部网络（inbound networking）。** 端口是虚拟 preview；隧道是出站桥接，不是真实入站。
 - **无 CORS 的直接外部 `curl`。** 请用 `https://r.jina.ai/<url>` 风格代理。
 - **交互式 stdin（REPL 风格进程）。** WebContainer 中不可靠（已实测）；以文件 RPC 替代。

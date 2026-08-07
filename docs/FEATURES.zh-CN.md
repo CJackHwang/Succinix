@@ -179,7 +179,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 | 边界 | 详情 | 来源 |
 | -------- | ------ | ------ |
-| 无真实内核 / `apt` / 原生二进制 | 沙箱内物理不可行；未来 v86 层是模拟，不是原生 | README, AGENTS.md |
+| 无真实内核 / `apt` / 原生二进制 | 沙箱内物理不可行；Succinix 是浏览器原生 Linux | README, AGENTS.md |
 | 无多用户 / 权限位 | 单用户浏览器沙箱；`guest` 是唯一用户；不伪造 `chmod` 语义 | README, AGENTS.md |
 | 无入站网络 | 端口是虚拟 preview；隧道是出站桥接，不是真实入站 | TASK14 |
 | 无交互式 REPL stdin | 文件 RPC 替代 stdin；`log -f` 与 REPL 风格进程不支持 | TASK1, README |

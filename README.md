@@ -254,7 +254,7 @@ These are environmental constraints, not bugs:
 
 - **CORS**: `curl` to sites without CORS headers fails (`exit 7`). Use a CORS-friendly proxy, e.g. `curl https://r.jina.ai/<url>`.
 - **Symlinks**: not supported by the Lifo VFS (`ln` reports the limitation).
-- **No package manager / native binaries**: there is no `apt`; native executables cannot run. This layer is reserved for a future v86-backed fallback.
+- **No package manager / native binaries**: there is no `apt`; native executables cannot run. Succinix is a browser-native Linux.
 - **stdin for interactive processes**: unreliable in the WebContainer environment; the design uses file-based RPC instead.
 - **Streaming cross-runtime pipes**: cross-runtime pipes are buffered (fine for agent-style "run then read" workflows).
 - **`/workspace` is a Lifo VFS view; real node/python children see real paths**: the browser filesystem root (`wc.fs` `/`) and Lifo's `/workspace` both map to the host process cwd (`/home/<wc-id>`), and the container root `/` is a read-only system view. `pwd`/`cwd` report the Lifo view (`/workspace/...`), while `process.cwd()` inside a node/python child reports the real mapped path (`/home/<wc-id>/...`). They point at the same directory.
@@ -377,7 +377,7 @@ The engine is the same code that powers the Succinix terminal, behind a clean AP
 - [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor — **deferred** (planned as TASK8; not scheduled)
-- [ ] Optional: WebSocket tunnel for external access, v86 fallback layer
+- [ ] Optional: WebSocket tunnel for external access
 
 ## License
 

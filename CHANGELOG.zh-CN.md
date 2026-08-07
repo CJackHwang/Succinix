@@ -181,4 +181,4 @@
 
 - CORS 限制对无 CORS 头外部站点的直接 `curl`（用 `https://r.jina.ai/<url>`）。
 - Lifo VFS 不支持符号链接。
-- 无 `apt` / 原生二进制（预留给未来 v86 回退）。
+- 无 `apt` / 原生二进制（沙箱内物理不可行；Succinix 是浏览器原生 Linux）。

@@ -4,12 +4,13 @@
 // server-ready 端口注册表。输出目标由调用方注入的 BootUI 决定（TASK4 呈现层重构）。
 import { WebContainer, type FileSystemAPI, type WebContainerProcess } from '@webcontainer/api';
 import type { BootUI } from './boot-ui.js';
-import { TerminalClient, bootEngineHost, waitForHostReady, type CommandLogEntry } from './engine/index.js';
+import { TerminalClient, bootEngineHost, waitForHostReady, type CommandLogEntry, type EngineBootHooks } from './engine/index.js';
 import { loadSnapshot } from './persist.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
 import { ensureServicesFiles, readAutostart, startService } from './services.js';
 import { initLogger, log } from './log.js';
 import { ensureMotd } from './motd.js';
+import { respawnWithKillFirst } from './host-restart.js';
 
 export interface SuccinixServices {
   wc: WebContainer;
@@ -27,16 +28,41 @@ function bootPhase(name: string): void {
   if (t && t.phases) t.phases[name] = performance.now();
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ─── R2：boot 步骤计数（实时进度 N/M）───
+// boot 日志每行带步骤计数（marker 后、消息前，如 `[  OK  ] 3/8 Started WebContainer runtime`）。
+// 只有 ok()/note() 参与计数；ui.log 的 info/fail/WARN 行、restartHost 的运行期日志、?test=1
+// 自检的 verdict/boundary 均不计数。总步数在 WebContainer.boot 成功后确定
+// （BOOT_BASE_STEPS + autostart 服务数）；异常分支多出的 note 行会让计数溢出总步数 ——
+// 仅在失败场景，正常 boot 精确递增到 M/M。
+let bootStep = 0;
+let bootTotal = 0;
+
+// 重置计数并设定总步数。首次 ok/note 输出前调用（需 wc 读取 autostart 计数，幂等）。
+function initBootSteps(total: number): void {
+  bootStep = 0;
+  bootTotal = total;
+}
+
+// 当前进度前缀 "N/M "（计数未开始即 bootTotal===0 时为空 —— 如 WebContainer.boot 重试期）。
+function progressPrefix(): string {
+  return bootTotal > 0 ? `${bootStep}/${bootTotal} ` : '';
+}
+
 // systemd 风格：暗橙 [  OK  ] 标记 + 默认色消息（渲染到覆盖层日志区）。
 // TASK12：同步写 BOOT 级日志到 /var/log/succinix.log（initLogger 之后生效；之前为 no-op）。
+// R2：步骤计数自动加在 marker 之后、消息之前 —— 行首 marker 保持原样，boot-ui 仍可识别。
 function ok(ui: BootUI, msg: string): void {
-  ui.log(`[  OK  ] ${msg}`, 'ok');
+  bootStep++;
+  ui.log(`[  OK  ] ${progressPrefix()}${msg}`, 'ok');
   void log('BOOT', msg);
 }
 
 // 灰色 [ .... ] 标记，用于中间过程的过渡说明
 function note(ui: BootUI, msg: string): void {
-  ui.log(`[ .... ] ${msg}`, 'note');
+  bootStep++;
+  ui.log(`[ .... ] ${progressPrefix()}${msg}`, 'note');
   void log('BOOT', msg);
 }
 
@@ -141,8 +167,61 @@ function makeClientLogger(): (entry: CommandLogEntry) => void {
   };
 }
 
-// 主启动流程内联替换 ensureTerminalHost / waitForHostReady：引擎的 bootEngineHost 返回
-// host 进程句柄，就绪探活仍在配置/服务初始化之后调用（保持 boot 日志顺序不变）。
+// ─── R3：关键步骤失败自动重试（最多 3 次）───
+
+// R3.1：WebContainer.boot() 失败重试上限（含首次）。间隔 1s 退避。
+const MAX_BOOT_ATTEMPTS = 3;
+// R3.2：host 就绪（waitForHostReady）失败重试上限（含首次）。
+const MAX_HOST_READY_ATTEMPTS = 3;
+
+// R2 总步数 = 基础 8 步 + autostart 服务数。基础 8 步为正常 boot 固定序列：
+//  1 Started WebContainer runtime
+//  2 Restored / Initialized fresh workspace
+//  3 host.js missing in container (onInjected)
+//  4 Mounted shared filesystem (onSpawned)
+//  5 Starting Lifo kernel (onSpawned)
+//  6 Workspace '...' (initWorkspace)
+//  7 Loaded N environment variables
+//  8 TerminalExecutor ready
+const BOOT_BASE_STEPS = 8;
+
+// R3.2：waitForHostReady 失败自动重试。每次重试先 kill 旧 hostProc 再重新 spawn
+// （respawnWithKillFirst 模式，防双 host 同时轮询 cmd.json）。重试只补 spawn：
+// onInjected/onSpawned 置空避免 boot 步骤重复累计；onServerReady/onServerClosed 已在
+// 首次注册到 wc，无需重复注册。3 次全败抛出，走 main.ts catch → 错误页路径。
+async function waitForHostReadyWithRetry(
+  ui: BootUI,
+  wc: WebContainer,
+  client: TerminalClient,
+  hostProc: WebContainerProcess,
+  hostHooks: EngineBootHooks
+): Promise<WebContainerProcess> {
+  let current = hostProc;
+  for (let attempt = 1; attempt <= MAX_HOST_READY_ATTEMPTS; attempt++) {
+    try {
+      await waitForHostReady(client);
+      return current;
+    } catch (e) {
+      if (attempt >= MAX_HOST_READY_ATTEMPTS) throw e;
+      ui.log(`[ WARN ] ${progressPrefix()}TerminalExecutor not ready (attempt ${attempt}/${MAX_HOST_READY_ATTEMPTS}), respawning host...`);
+      current = await respawnWithKillFirst(
+        () => {
+          try {
+            current?.kill();
+          } catch {
+            /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
+          }
+        },
+        () =>
+          bootEngineHost(wc, client, {
+            hostSrc: hostHooks.hostSrc,
+            lifoCoreSrc: hostHooks.lifoCoreSrc,
+          })
+      );
+    }
+  }
+  return current;
+}
 
 // ─── 主启动流程 ───
 
@@ -166,12 +245,32 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
   const hostFetch = fetch('/host.js').then((r) => r.text()).catch(() => null);
   const lifoCoreFetch = fetch('/lifo-core.js').then((r) => r.text()).catch(() => null);
 
-  let wc: WebContainer;
-  try {
-    wc = await WebContainer.boot();
-  } catch (e) {
-    ui.fail([`WebContainer runtime failed to start: ${String(e)}`]);
+  // R3.1：WebContainer.boot() 失败自动重试（最多 3 次，1s 退避）。计数尚未开始
+  // （总步数需 wc 读 autostart），故重试 WARN 不带 N/M 前缀（progressPrefix 为空）。
+  let wc: WebContainer | null = null;
+  let bootError: unknown = null;
+  for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt++) {
+    try {
+      wc = await WebContainer.boot();
+      break;
+    } catch (e) {
+      bootError = e;
+      if (attempt < MAX_BOOT_ATTEMPTS) {
+        ui.log(`[ WARN ] WebContainer boot failed (attempt ${attempt}/${MAX_BOOT_ATTEMPTS}), retrying...`);
+        await sleep(1000);
+      }
+    }
+  }
+  if (!wc) {
+    ui.fail([`WebContainer runtime failed to start: ${String(bootError)}`]);
     return null;
+  }
+  // R2：总步数 = 基础 8 步 + autostart 服务数。提前读 autostart 只取计数（幂等，
+  // 文件缺失回落空清单；与启动阶段的实际读取结果一致）。
+  try {
+    initBootSteps(BOOT_BASE_STEPS + (await readAutostart(wc.fs)).length);
+  } catch {
+    initBootSteps(BOOT_BASE_STEPS);
   }
   ok(ui, 'Started WebContainer runtime');
   bootPhase('wc-booted');
@@ -199,7 +298,10 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
   // TASK21：终端客户端与 host 拉起都由引擎提供；端口事件经 onServerReady/onServerClosed 维护
   // 预览端口注册表（bootEngineHost 内部注册 wc.on('server-ready'/'port')，此处接线）。
   const client = new TerminalClient(wc, { onCommand: makeClientLogger() });
-  const hostProc = await bootEngineHost(wc, client, {
+  // R3.2：host 就绪失败需重试整个 bootEngineHost（kill 旧 host 再 spawn）。hooks 提为常量
+  // 复用：重试时只补 spawn（onInjected/onSpawned 置空，不重复打 boot 步骤；端口回调首次已
+  // 注册到 wc，重试不重复注册）。
+  const hostHooks: EngineBootHooks = {
     hostSrc: await hostFetch,
     lifoCoreSrc: await lifoCoreFetch,
     onInjected: () => note(ui, 'host.js missing in container; injected from build artifact'),
@@ -210,7 +312,8 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
     },
     onServerReady: (port, url) => void ports.set(port, url),
     onServerClosed: (port) => void ports.delete(port),
-  });
+  };
+  let hostProc = await bootEngineHost(wc, client, hostHooks);
   bootPhase('host-spawned');
 
   // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。在快照恢复之后调用，
@@ -260,7 +363,8 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
   // 探活：命令轮询循环就绪，TerminalExecutor 可用（host 预热已与配置读取重叠完成）。
   // TASK18：waitForHostReady 已确认 pong；删去其后的冗余 ping（在延迟预热窗口内，
   // 多余 ping 会被 Sandbox.create 的同步前缀阻塞，白白拖慢 boot）。
-  await waitForHostReady(client);
+  // R3.2：探活失败自动重试（最多 3 次，含首次），返回最终存活 host 句柄。
+  hostProc = await waitForHostReadyWithRetry(ui, wc, client, hostProc, hostHooks);
   bootPhase('host-ready');
   ok(ui, 'TerminalExecutor ready');
 

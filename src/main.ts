@@ -77,6 +77,9 @@ let line = '';
 let busy = false;
 const queue: string[] = [];
 let ctx: CommandContext;
+// R1（TASK-BOOTGATE）：boot 门禁 —— boot（含可选 ?test=1 自检）完成前为 false，
+// handleData 静默忽略一切输入（不 echo、不排队、不执行）。boot 失败路径不置位（错误页常驻）。
+let booted = false;
 
 const testMode = new URLSearchParams(location.search).get('test') === '1';
 // TASK18：性能基准模式（scripts/bench.mjs 用 ?bench=1 打开）。与 ?test=1 完全独立：
@@ -102,6 +105,9 @@ function prompt(): void {
 
 // 浏览器侧输入处理：回车执行、Ctrl+L 清屏、Ctrl+C 中断、支持粘贴。
 function handleData(data: string): void {
+  // R1：boot 门禁 —— boot（含 ?test=1 自检）完成前静默忽略一切输入。
+  // 不 echo、不排队、不显示提示；Ctrl+L/Ctrl+C/退格等控制键一并忽略。
+  if (!booted) return;
   for (let i = 0; i < data.length; i++) {
     const ch = data[i];
     if (ch === '\r') {
@@ -501,6 +507,10 @@ async function main(): Promise<void> {
     } else if (testCrashed) {
       term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
     }
+
+    // R1：boot（及可选自检）完成，解锁输入。置于 motd + 提示符输出之前：
+    // ?test=1 模式下在自检结果输出后、motd 前；失败路径（catch → ui.fail）不置位。
+    booted = true;
 
     const motdText = await readMotd(services.wc.fs);
     if (motdText) {

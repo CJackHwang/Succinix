@@ -1,6 +1,6 @@
 {
   "name": "@succinix/engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Succinix engine: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, sharing the container filesystem with the host app. Browser client + in-container host assets.",
   "type": "module",
   "main": "./dist/index.js",

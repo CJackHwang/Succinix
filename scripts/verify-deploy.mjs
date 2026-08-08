@@ -114,24 +114,14 @@ class CDP {
 }
 
 // 注入页面的观察脚本：把 ?test=1 自检汇总行与错误页状态记录到 window.__succinixResult / __succinixError。
-// 覆盖层淡出后 #boot-log 会被移除，所以用 MutationObserver 在汇总行出现的第一时间抓取。
+// 自检输出全程走 xterm（canvas 渲染，DOM 不可读文本），结果由 main.ts 在 ?test=1 完成时写到
+// window.__succinixResult；这里只观察错误页状态（boot-error-mode）并原地抓一次初始态。
 const INJECT_SCRIPT = `(() => {
   if (window.__succinixResult !== undefined) return;
   window.__succinixResult = null;
   window.__succinixError = null;
   const grab = () => {
-    const logEl = document.getElementById('boot-log');
-    const text = logEl ? logEl.innerText || '' : '';
-    const m = text.match(/Self-test result:\\s*(\\d+)\\s+passed,\\s*(\\d+)\\s+failed,\\s*(\\d+)\\s+skipped/);
-    if (m) {
-      window.__succinixResult = {
-        passed: Number(m[1]),
-        failed: Number(m[2]),
-        skipped: Number(m[3]),
-        fails: text.split('\\n').filter((l) => l.includes('[ FAIL ]')).slice(0, 30),
-      };
-      return;
-    }
+    if (window.__succinixResult) return;
     const ov = document.getElementById('boot-overlay');
     if (ov && ov.classList.contains('boot-error-mode')) {
       const head = document.getElementById('boot-error-head');
@@ -139,10 +129,7 @@ const INJECT_SCRIPT = `(() => {
       window.__succinixError = {
         head: head ? head.textContent : '',
         list: list ? list.textContent : '',
-        log: text.slice(-800),
       };
-    } else if (/Startup failed/.test(text)) {
-      window.__succinixError = { head: 'Startup failed', list: text.slice(-800) };
     }
   };
   const obs = new MutationObserver(grab);
@@ -221,9 +208,10 @@ async function runHeadlessSelfTest() {
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SCRIPT });
     await cdp.send('Page.navigate', { url: `${BASE}/?test=1` });
 
-    // 轮询自检结果；同时把运行中的 boot-log 尾部打出来，便于诊断慢/挂。
-    const testDeadline = Date.now() + 300000; // 自检含网络边界等待，给足 5 分钟
-    let lastTail = '';
+    // 轮询自检结果；结果来自 main.ts 写入的 window.__succinixResult（终端 canvas 无法读文本）。
+    const testStart = Date.now();
+    const testDeadline = testStart + 300000; // 自检含网络边界等待，给足 5 分钟
+    let lastHeartbeat = 0;
     while (Date.now() < testDeadline) {
       await sleep(500);
       const res = await cdp.send('Runtime.evaluate', {
@@ -241,17 +229,11 @@ async function runHeadlessSelfTest() {
         fail(`page entered error state: ${state.error.head} — ${state.error.list.slice(0, 200)}`);
         return null;
       }
-      // 打点：每 10s 输出一次当前 boot-log 尾部（证明仍在推进）
-      if (Date.now() % 10000 < 1000) {
-        const tail = await cdp.send('Runtime.evaluate', {
-          expression: 'document.getElementById("boot-log")?.innerText.slice(-160) || ""',
-          returnByValue: true,
-        });
-        const t = tail.result.value ?? '';
-        if (t && t !== lastTail) {
-          lastTail = t;
-          note(`  self-test still running, log tail: ${JSON.stringify(t.slice(-80))}`);
-        }
+      // 打点：每 30s 输出一次 heartbeat（证明页面未挂死）
+      const elapsed = Math.round((Date.now() - testStart) / 1000);
+      if (elapsed >= 30 && elapsed % 30 === 0 && elapsed !== lastHeartbeat) {
+        lastHeartbeat = elapsed;
+        note(`  self-test still running (${elapsed}s elapsed)`);
       }
     }
     fail('self-test did not produce a summary within 300s (page hung)');

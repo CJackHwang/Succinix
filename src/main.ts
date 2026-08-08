@@ -1,12 +1,12 @@
-// Succinix 入口：全屏暗橙终端 + DOM 居中启动覆盖层 + REPL。
-// 默认进入终端；URL 带 ?test=1 时在覆盖层日志区自动跑完整系统自检（boot diagnostics）。
+// Succinix 入口：全屏暗橙终端 + REPL；boot 日志全程写入终端（无 DOM splash 覆盖层）。
+// 默认进入终端；URL 带 ?test=1 时在终端里自动跑完整系统自检（boot diagnostics）。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
 import { bootSuccinix } from './boot.js';
-import { createBootUI, overlayTerminalShim } from './boot-ui.js';
+import { createBootUI } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
 import { log } from './log.js';
@@ -25,7 +25,7 @@ const RESET = '\x1b[0m';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// 欢迎横幅：覆盖层淡出后显示在终端里（TASK3 的"启动后进入系统首页"）。
+// 欢迎横幅：boot 日志之后显示在终端里（TASK3 的"启动后进入系统首页"）。
 // TASK15：默认横幅改由 /etc/succinix.motd 提供（可编辑、随快照持久）；此处仅作
 // motd 文件缺失时的兜底。
 const WELCOME_BANNER =
@@ -420,7 +420,7 @@ async function restartHost(ctx: CommandContext): Promise<void> {
 
 // ─── 主流程 ───
 async function main(): Promise<void> {
-  const ui = createBootUI();
+  const ui = createBootUI(term);
   try {
     const services = await bootSuccinix(ui);
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
@@ -461,25 +461,24 @@ async function main(): Promise<void> {
     let testResult: TestResult | null = null;
     let testCrashed = '';
     if (testMode) {
-      // 自检期间把用户输入排队，避免与断言互相干扰；自检输出走覆盖层日志区。
+      // 自检期间把用户输入排队，避免与断言互相干扰；自检输出直接写终端。
       busy = true;
-      const shim = overlayTerminalShim(ui) as unknown as Terminal;
       try {
-        testResult = await runTests({ wc: services.wc, client: services.client, ports: services.ports, term: shim });
+        testResult = await runTests({ wc: services.wc, client: services.client, ports: services.ports, term });
       } catch (e) {
         // 自检自身异常（非环境问题）：显示 self-test crashed，不误报成 Startup failed。
         testCrashed = String(e);
-        shim.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
+        term.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
       } finally {
         busy = false;
       }
     }
 
-    // boot（及可选自检）完成：淡出覆盖层、显示终端，然后打印登录横幅（motd）+ 提示符。
+    // boot（及可选自检）完成：移除错误页 DOM（终端全程可见），然后打印登录横幅（motd）+ 提示符。
     await ui.complete();
     fitAddon.fit();
 
-    // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）——覆盖层淡出后结果可回溯。
+    // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）——结果留在滚动历史可回溯。
     // 失败 >0 时暗红显示失败行；全绿只打印 summary 行。
     if (testResult) {
       const summary = `Self-test result: ${testResult.pass} passed, ${testResult.fail} failed, ${testResult.skip} skipped`;
@@ -491,6 +490,14 @@ async function main(): Promise<void> {
       } else {
         term.writeln(`${AMBER}${summary}${RESET}`);
       }
+      // TASK-BOOTUI：自检输出全程走终端（canvas 无法经 DOM 读文本），把结果暴露到
+      // window.__succinixResult，供 scripts/verify-deploy.mjs 的 CDP 轮询读取（?test=1）。
+      (window as unknown as { __succinixResult?: { passed: number; failed: number; skipped: number; fails: string[] } }).__succinixResult = {
+        passed: testResult.pass,
+        failed: testResult.fail,
+        skipped: testResult.skip,
+        fails: testResult.failures,
+      };
     } else if (testCrashed) {
       term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
     }

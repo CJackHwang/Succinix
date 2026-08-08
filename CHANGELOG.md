@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Process ownership annotation (process isolation for host projects)** — `ps()` responses now carry a `scope` field (`system` / `container` / `unknown`) plus an optional `containerId`, derived from the process launch cwd (`cd /workspace/c-<id>` prefix). Protocol-compatible extension: existing fields unchanged, new fields additive. Host projects (SunamAI) use it to filter processes per container and block cross-container kills.
+
+- **Boot screen simplified (no splash overlay, boot log streams into the terminal)** — removed the DOM splash overlay (ASCII-art title + system-info grid); boot logs (`[  OK  ]` lines) are written straight to xterm, the motd/prompt follow directly after the self-test without clearing the screen (scrollback shows the full boot log). Environment-error page stays DOM. `?test=1` / `?bench=1` / `?scenario=1` modes unaffected; `verify-deploy.mjs` reads `__succinixResult`.
+
 - **Brand migration (TASK26): the project is now Succinix (SuccinixOS)** — unified rename with zero functional change and no old-name compatibility layer.
   - Identity: package name `succinix`, `<title>` / boot-version / env-error page, boot banner (`Succinix 0.2.0 ...`), boot-splash ASCII art (SUCCINIX), terminal prompt `guest@succinix:~$`, `uname` identity (`Succinix 0.2.0 ...`, hostname `succinix`), help / reboot / self-test strings.
   - State files `/etc/succinix.*` (`env` / `settings` / `services` / `autostart` / `motd` / `cwd` / `engine.json`), log `/var/log/succinix.log`, python runtime assets `/usr/lib/succinix`.

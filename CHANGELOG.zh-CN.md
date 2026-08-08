@@ -11,6 +11,10 @@
 
 ### Changed
 
+- **进程归属标注（为宿主项目提供进程隔离）** —— `ps()` 响应新增 `scope` 字段（`system` / `container` / `unknown`）+ 可选 `containerId`，依据进程启动 cwd（`cd /workspace/c-<id>` 前缀）判定。协议兼容扩展：现有字段不变，新字段纯增量。宿主项目（SunamAI）据此按容器过滤进程并拦截跨容器 kill。
+
+- **启动界面精简（去掉覆盖层，boot 日志直接进终端）** —— 移除 DOM 覆盖层（ASCII 大标题 + 系统信息网格）；boot 日志（`[  OK  ]` 行）直接写入 xterm，motd + 提示符接在自检后（不清屏，滚动可回看完整 boot 日志）。环境错误页保留 DOM。`?test=1` / `?bench=1` / `?scenario=1` 模式不受影响；`verify-deploy.mjs` 改读 `__succinixResult`。
+
 - **品牌迁移（TASK26）：项目现更名为 Succinix（SuccinixOS）** —— 统一改名，零功能改动，无旧名兼容层。
   - 身份标识（Identity）：包名 `succinix`、`<title>` / boot 版本 / 环境错误页、boot 横幅（`Succinix 0.2.0 ...`）、boot-splash ASCII art（SUCCINIX）、终端提示符 `guest@succinix:~$`、`uname` 身份（`Succinix 0.2.0 ...`，主机名 `succinix`）、help / reboot / 自检字符串。
   - 状态文件（State files）`/etc/succinix.*`（`env` / `settings` / `services` / `autostart` / `motd` / `cwd` / `engine.json`）、日志 `/var/log/succinix.log`、python 运行时资产 `/usr/lib/succinix`。

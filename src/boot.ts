@@ -11,6 +11,7 @@ import { ensureServicesFiles, readAutostart, startService } from './services.js'
 import { initLogger, log } from './log.js';
 import { ensureMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
+import { sleep } from './util.js';
 
 export interface SuccinixServices {
   wc: WebContainer;
@@ -27,8 +28,6 @@ function bootPhase(name: string): void {
   const t = (window as unknown as { __bootTimes?: { phases?: Record<string, number> } }).__bootTimes;
   if (t && t.phases) t.phases[name] = performance.now();
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ─── R2：boot 步骤计数（实时进度 N/M）───
 // boot 日志每行带步骤计数（marker 后、消息前，如 `[  OK  ] 3/8 Started WebContainer runtime`）。

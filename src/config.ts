@@ -3,20 +3,8 @@
 // 随快照持久化（persist.ts 遍历 / 时天然收录，重启保留）。
 // 解析要健壮：空行 / # 注释跳过；值可含 =（按第一个 = 切分）；读取失败一律按空处理。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { saveSnapshot } from './persist.js';
-
-// H1 修复：等长值修改（如 preview-port 3001→3002、env FOO=a→FOO=b）不改变文件数/总字节，
-// persist 的内容盲签名会跳过自动快照写，重启即回滚。因此写盘成功后强制落盘一次。
-// 单次 saveSnapshot(fs, true) 已足够：persist 的 inflight 重入保护里，force 调用若遇并发
-// 自动快照会先等其完成再重跑一次全量保存（saveSnapshot 内部逻辑），无需调用方重复保存。
-async function forcePersist(fs: FileSystemAPI): Promise<void> {
-  try {
-    await saveSnapshot(fs, true);
-  } catch (e) {
-    // 文件已写盘成功，快照失败只记日志，不打断配置命令（与自动快照的降级一致）。
-    console.warn('[config] force snapshot after write failed:', e);
-  }
-}
+import { forcePersist } from './persist.js';
+import { ensureParentDir } from './util.js';
 
 export const ENV_FILE = '/etc/succinix.env';
 export const SETTINGS_FILE = '/etc/succinix.settings';
@@ -56,17 +44,6 @@ export function serializeKeyValue(map: Map<string, string>): string {
   );
 }
 
-// 确保文件所在目录存在（WebContainer 全新 FS 没有 /etc，首次写前建目录）。
-async function ensureParentDir(fs: FileSystemAPI, file: string): Promise<void> {
-  const idx = file.lastIndexOf('/');
-  if (idx <= 0) return;
-  try {
-    await fs.mkdir(file.slice(0, idx), { recursive: true });
-  } catch {
-    /* 目录已存在等，写入继续 */
-  }
-}
-
 // ─── env 文件 ───
 
 export async function readEnvFile(fs: FileSystemAPI): Promise<Map<string, string>> {
@@ -90,7 +67,7 @@ export async function setEnvVar(fs: FileSystemAPI, key: string, value: string): 
   const map = await readEnvFile(fs);
   map.set(key, value);
   await writeEnvFile(fs, map);
-  await forcePersist(fs); // 写盘成功后强制落盘（H1：等长修改也要持久）
+  await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1：等长修改也要持久）
 }
 
 // 删除变量；返回是否原本存在（供输出 removed / not set）。
@@ -99,7 +76,7 @@ export async function unsetEnvVar(fs: FileSystemAPI, key: string): Promise<boole
   const had = map.delete(key);
   if (had) {
     await writeEnvFile(fs, map);
-    await forcePersist(fs); // 门控回归：删除是内容变更（等长/结构不变），自动快照目录签名捕捉不到，写盘后强制落盘
+    await forcePersist(fs, 'config'); // 门控回归：删除是内容变更（等长/结构不变），自动快照目录签名捕捉不到，写盘后强制落盘
   }
   return had;
 }
@@ -138,7 +115,7 @@ export async function setSetting(fs: FileSystemAPI, key: string, value: string):
   const map = await readSettingsFile(fs);
   map.set(key, value);
   await writeSettingsFile(fs, map);
-  await forcePersist(fs); // 写盘成功后强制落盘（H1）
+  await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1）
 }
 
 // 恢复默认 = 删除存储值；返回是否原本存在自定义值。
@@ -147,7 +124,7 @@ export async function resetSetting(fs: FileSystemAPI, key: string): Promise<bool
   const had = map.delete(key);
   if (had) {
     await writeSettingsFile(fs, map);
-    await forcePersist(fs); // 写盘成功后强制落盘（H1）
+    await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1）
   }
   return had;
 }

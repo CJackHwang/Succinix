@@ -15,21 +15,17 @@ import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
+import { AMBER, RED, GRAY, RESET } from './theme.js';
+import { sleep } from './util.js';
+import { SUCCINIX_VERSION } from './version.js';
 import type { ExecResult } from './engine/index.js';
 import { ensurePythonRuntime } from './engine/index.js';
 
-const AMBER = '\x1b[33m';
-const RED = '\x1b[31m';
-const GRAY = '\x1b[90m';
-const RESET = '\x1b[0m';
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 // 欢迎横幅：boot 日志之后显示在终端里（TASK3 的"启动后进入系统首页"）。
 // TASK15：默认横幅改由 /etc/succinix.motd 提供（可编辑、随快照持久）；此处仅作
-// motd 文件缺失时的兜底。
+// motd 文件缺失时的兜底。版本号构建期注入（P2-7，随 package.json 单一来源）。
 const WELCOME_BANNER =
-  `Succinix 0.2.0 — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
+  `Succinix ${SUCCINIX_VERSION} — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
   `Type 'help' to see available commands.`;
 
 // ─── xterm：全屏暗橙终端（JetBrains Mono，暖色暗调色板）───
@@ -76,6 +72,10 @@ const promptStr = 'guest@succinix:~$ ';
 let line = '';
 let busy = false;
 const queue: string[] = [];
+// P5-16：命令历史（内存，会话内有效）+ 上下箭头浏览位置。historyIdx 指向当前浏览条目；
+// 末尾哨兵 = history.length（新输入，按上箭头回退到最后一条）。
+const history: string[] = [];
+let historyIdx = -1;
 let ctx: CommandContext;
 // R1（TASK-BOOTGATE）：boot 门禁 —— boot（含可选 ?test=1 自检）完成前为 false，
 // handleData 静默忽略一切输入（不 echo、不排队、不执行）。boot 失败路径不置位（错误页常驻）。
@@ -108,13 +108,36 @@ function handleData(data: string): void {
   // R1：boot 门禁 —— boot（含 ?test=1 自检）完成前静默忽略一切输入。
   // 不 echo、不排队、不显示提示；Ctrl+L/Ctrl+C/退格等控制键一并忽略。
   if (!booted) return;
+  // P5-16：完整转义序列 —— xterm 把箭头/Tab 作为单条 data 交付（onData 合并字节）。
+  if (data === '\x1b[A') {
+    historyNavigate(-1);
+    return;
+  }
+  if (data === '\x1b[B') {
+    historyNavigate(1);
+    return;
+  }
+  if (data === '\t' || data === '\x1b[Z') {
+    void handleTab();
+    return;
+  }
   for (let i = 0; i < data.length; i++) {
     const ch = data[i];
+    if (ch === '\x1b') {
+      // 残缺/未知转义序列（顶部已处理完整箭头/Tab）：丢弃整段，避免把 '[' / 字母回显成乱码。
+      i = data.length;
+      continue;
+    }
     if (ch === '\r') {
       term.write('\r\n');
       const cmd = line;
       line = '';
       const trimmed = cmd.trim();
+      // P5-16：非空命令进历史（busy 排队也一样记录），浏览位置复位到末尾。
+      if (trimmed) {
+        history.push(cmd);
+        historyIdx = history.length;
+      }
       if (busy) {
         if (trimmed) {
           queue.push(trimmed);
@@ -139,7 +162,10 @@ function handleData(data: string): void {
     }
     if (ch === '\u0003') {
       if (busy) {
-        term.write(`^C\r\n${GRAY}running, not interrupted${RESET}\r\n`);
+        term.write(`^C\r\n`);
+        // P5-15/17：Ctrl+C 中断当前命令 + 清空队列。当前命令 settle 后 runCommand 的
+        // finally 会回到提示符（队列已清空，不会接续执行被丢弃的命令）。
+        void interruptCommand();
       } else {
         term.write('^C\r\n');
         prompt();
@@ -159,6 +185,75 @@ function handleData(data: string): void {
   }
 }
 term.onData(handleData);
+
+// P5-16：上下箭头浏览命令历史。方向 dir：-1=上（旧），+1=下（新）。
+// 底部哨兵 = history.length（回到"正在输入的新行"）。重绘时先清当前行再写历史行。
+function historyNavigate(dir: -1 | 1): void {
+  if (history.length === 0) return;
+  const next = historyIdx + dir;
+  if (next < 0 || next > history.length) return; // 越界忽略
+  historyIdx = next;
+  const entry = historyIdx < history.length ? history[historyIdx] ?? '' : '';
+  term.write(`\r${promptStr}${' '.repeat(line.length)}\r${promptStr}`);
+  line = entry;
+  term.write(entry);
+}
+
+// 内置命令表（P5-16 Tab 补全候选；与 commands.ts tryHandleLocalCommand 的 case 对齐）。
+const BUILTIN_COMMANDS = [
+  'help', 'clear', 'sysinfo', 'ports', 'db', 'snapshot', 'free', 'top', 'reboot', 'shutdown',
+  'cache', 'workspace', 'env', 'settings', 'service', 'log', 'pkg', 'netstat', 'ip', 'uname',
+  'motd', 'lang', 'pwd', 'version', 'whoami',
+];
+
+function commonPrefix(xs: string[]): string {
+  if (xs.length === 0) return '';
+  let p = xs[0];
+  for (const x of xs.slice(1)) {
+    while (!x.startsWith(p)) p = p.slice(0, -1);
+  }
+  return p;
+}
+
+// P5-16：Tab 补全 —— 首 token 补内置命令名；含 / 的 token 按目录 readdir 补文件路径；
+// 无 / 的 token 补根目录条目。唯一命中直接补全，多命中列出 + 共同前缀。
+async function handleTab(): Promise<void> {
+  const tokens = line.split(/\s+/);
+  const token = tokens[tokens.length - 1] ?? '';
+  const candidates = new Set<string>();
+  if (tokens.length === 1) {
+    for (const c of BUILTIN_COMMANDS) candidates.add(c);
+  }
+  try {
+    const hasSlash = token.includes('/');
+    const dir = hasSlash ? token.slice(0, token.lastIndexOf('/') + 1) || '/' : '/';
+    const entries = await ctx.wc.fs.readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const name = String(e.name);
+      const isDir = typeof e.isDirectory === 'function' && e.isDirectory();
+      candidates.add((hasSlash ? dir : '') + name + (isDir ? '/' : ''));
+    }
+  } catch {
+    /* 目录不可读：只保留内置命令候选 */
+  }
+  const matches = [...candidates].filter((c) => c.startsWith(token)).sort();
+  if (matches.length === 0) return;
+  if (matches.length === 1) {
+    const add = matches[0].slice(token.length);
+    line += add;
+    term.write(add);
+    return;
+  }
+  const common = commonPrefix(matches);
+  if (common.length > token.length) {
+    const add = common.slice(token.length);
+    line += add;
+    term.write(add);
+    return;
+  }
+  // 多候选且无共同前缀：列出候选并重绘提示符。
+  term.write(`\r\n${matches.join('  ')}\r\n${promptStr}${line}`);
+}
 
 // 协议命令（ps/cwd/kill/spawn...）没有 stdout，直接呈现字段。
 function printProtocolResponse(res: ExecResult): void {
@@ -189,6 +284,28 @@ function printProtocolResponse(res: ExecResult): void {
   if (res.kind === 'bye') term.writeln('bye');
 }
 
+// P2-10：execute / scenarioRun 的共享核心 —— python 预注入 + client.terminal RPC 调用。
+// 浏览器侧拦截（tryHandleLocalCommand）留在各调用方（两者语义不同：execute 写终端 + 记日志，
+// scenarioRun 捕获进 lines）。phase 区分 python 资产注入失败与 RPC 失败（execute 的日志文案不同）。
+type HostRpcOutcome = { res: ExecResult } | { error: string; phase: 'python' | 'rpc' };
+
+async function callHostRpc(ctx: CommandContext, cmd: string, timeoutMs: number): Promise<HostRpcOutcome> {
+  // TASK27：python/pip 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
+  // 宽松触发（tokenize 后任一 token 为 python/python3/pip/pip3）——注入幂等，~13MB 仅一次。
+  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
+    try {
+      await ensurePythonRuntime(ctx.wc);
+    } catch (e) {
+      return { error: String(e), phase: 'python' };
+    }
+  }
+  try {
+    return { res: await ctx.client.terminal(cmd, undefined, timeoutMs) };
+  } catch (e) {
+    return { error: String(e), phase: 'rpc' };
+  }
+}
+
 // 执行一条命令：浏览器侧拦截 → 否则发 host；输出前空行分隔，stderr 红色，exit≠0 灰色标注。
 // TASK12：本地命令记录 runtime=browser（log clear 除外：它清空日志文件，记录会破坏"清空后为空"语义）；
 // host 命令由 TerminalClient 记录；exec 异常 / host 掉线记 ERROR。
@@ -209,25 +326,16 @@ async function execute(cmd: string): Promise<void> {
     return;
   }
 
-  let res: ExecResult;
-  // TASK27：python/pip 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
-  // 宽松触发（tokenize 后任一 token 为 python/python3/pip/pip3）——注入幂等，~13MB 仅一次。
-  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
-    try {
-      await ensurePythonRuntime(ctx.wc);
-    } catch (e) {
-      term.write(`${RED}${String(e)}${RESET}`);
-      void log('ERROR', `cmd: ${cmd} python asset inject failed: ${String(e)}`);
-      return;
-    }
-  }
-  try {
-    res = await ctx.client.terminal(cmd, undefined, 60000);
-  } catch (e) {
-    term.write(`${RED}${String(e)}${RESET}`);
-    void log('ERROR', `cmd: ${cmd} error: ${String(e)}`);
+  const rpc = await callHostRpc(ctx, cmd, 60000);
+  if ('error' in rpc) {
+    term.write(`${RED}${rpc.error}${RESET}`);
+    void log(
+      'ERROR',
+      rpc.phase === 'python' ? `cmd: ${cmd} python asset inject failed: ${rpc.error}` : `cmd: ${cmd} error: ${rpc.error}`
+    );
     return;
   }
+  const res = rpc.res;
 
   // 协议命令响应直接呈现
   if (Array.isArray(res.processes) || typeof res.pid === 'number' || res.cwd || res.message || res.kind) {
@@ -275,29 +383,26 @@ async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000):
   if (handled) {
     return { handled: true, ok: true, output: lines.join('\n'), lines };
   }
-  try {
-    // TASK27：python/pip 命令（含链中段）首用前懒注入运行时资产（与 execute() 相同路径）。
-    if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
-      await ensurePythonRuntime(ctx.wc);
-    }
-    const res = await ctx.client.terminal(cmd, undefined, timeoutMs);
-    return {
-      handled: false,
-      ok: res.ok,
-      exitCode: res.exitCode,
-      stdout: String(res.stdout ?? ''),
-      stderr: String(res.stderr ?? ''),
-      runtime: res.runtime,
-      error: res.error,
-      message: res.message,
-      pid: res.pid,
-      processes: res.processes,
-      killed: res.killed,
-      kind: res.kind,
-    };
-  } catch (e) {
-    return { handled: false, ok: false, error: String(e), thrown: true };
+  const rpc = await callHostRpc(ctx, cmd, timeoutMs);
+  if ('error' in rpc) {
+    // python 注入失败 / RPC 失败都按 thrown 处理（与旧实现一致：二者原在同一 try 内）。
+    return { handled: false, ok: false, error: rpc.error, thrown: true };
   }
+  const res = rpc.res;
+  return {
+    handled: false,
+    ok: res.ok,
+    exitCode: res.exitCode,
+    stdout: String(res.stdout ?? ''),
+    stderr: String(res.stderr ?? ''),
+    runtime: res.runtime,
+    error: res.error,
+    message: res.message,
+    pid: res.pid,
+    processes: res.processes,
+    killed: res.killed,
+    kind: res.kind,
+  };
 }
 
 async function runCommand(cmd: string): Promise<void> {
@@ -315,13 +420,51 @@ async function runCommand(cmd: string): Promise<void> {
   }
 }
 
+// P5-15/17：busy 时 Ctrl+C —— 向 host 发 interrupt（杀掉当前 node run 子进程）并清空队列。
+// 清空先做：之后 runCommand 的 finally 从空队列 shift 不到命令 → 回到提示符。
+// 中断只对 node run 子进程生效；Lifo 沙箱无 abort API、后台 spawn 服务不被误杀（如实提示）。
+async function interruptCommand(): Promise<void> {
+  const discarded = queue.length;
+  queue.length = 0;
+  if (discarded > 0) term.write(`${GRAY}queued commands discarded (${discarded})${RESET}\r\n`);
+  const res = await ctx.client.interruptDirect();
+  if (res && typeof res.pid === 'number') {
+    term.write(`${GRAY}interrupting command (pid=${res.pid})...${RESET}\r\n`);
+  } else if (res) {
+    term.write(`${GRAY}no running node command to interrupt; waiting for the current command to finish${RESET}\r\n`);
+  } else {
+    term.write(`${GRAY}could not send interrupt (channel busy); waiting for the current command to finish${RESET}\r\n`);
+  }
+}
+
 // 自动快照：每 ~2.5s 保存一次容器 FS 快照到 IndexedDB（persist 内部做"内容变化"去重，
 // 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前强制保存一次
 // （force=true 跳过内容缓存——等长编辑在关闭时也必须落盘，否则必丢）。
+// P4-13：空闲退避 —— saveSnapshot 返回 reason='changed'（真实内容/结构变化）时复位 2.5s；
+// 否则（dedup/age 等）连续空闲拉长到 5s/8s/15s。P0-1 的最大年龄强制（30s）在 persist
+// 内部兜底等长编辑，与退避解耦：即使用户等长编辑后空闲，也会在 30s 内被年龄强制写盘。
+const AUTO_SNAPSHOT_BASE_MS = 2500;
+const AUTO_SNAPSHOT_MAX_MS = 15000;
+
 function startAutoSnapshot(ctx: CommandContext): void {
-  setInterval(() => {
-    void saveSnapshot(ctx.wc.fs).catch((e) => console.warn('[persist] auto snapshot failed:', e));
-  }, 2500);
+  let interval = AUTO_SNAPSHOT_BASE_MS;
+  let idleTicks = 0;
+  const tick = async () => {
+    try {
+      const r = await saveSnapshot(ctx.wc.fs);
+      if (r.reason === 'changed') {
+        idleTicks = 0;
+        interval = AUTO_SNAPSHOT_BASE_MS; // 有真实变化：恢复灵敏
+      } else {
+        idleTicks++;
+        if (idleTicks >= 2) interval = Math.min(interval * 2, AUTO_SNAPSHOT_MAX_MS); // 空闲退避
+      }
+    } catch (e) {
+      console.warn('[persist] auto snapshot failed:', e);
+    }
+    setTimeout(tick, interval); // 句柄不保留：定时器自持闭包，随页面卸载由 pagehide flush 兜底
+  };
+  setTimeout(tick, AUTO_SNAPSHOT_BASE_MS);
   const flush = () => {
     void saveSnapshot(ctx.wc.fs, true).catch(() => {});
   };

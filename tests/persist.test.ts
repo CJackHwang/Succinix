@@ -2,7 +2,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
-import { saveSnapshot, loadSnapshot, clearSnapshot, getSnapshotMeta } from '../src/persist.js';
+import {
+  saveSnapshot,
+  loadSnapshot,
+  clearSnapshot,
+  getSnapshotMeta,
+  isAgeForced,
+  AUTO_SNAPSHOT_FORCE_INTERVAL_MS,
+} from '../src/persist.js';
 
 // persist 的 dbPromise 是模块级缓存，跨测试引用同一个 fake；beforeEach 用 reset() 清状态。
 const idb = installFakeIDB();
@@ -198,5 +205,49 @@ describe('persist force semantics + size guard', () => {
     await saveSnapshot(src as unknown as FileSystemAPI, true);
     await clearSnapshot();
     expect(await loadSnapshot(new FakeFS() as unknown as FileSystemAPI)).toBeNull();
+  });
+});
+
+describe('persist 最大年龄强制（P0-1）', () => {
+  it('isAgeForced 纯决策：未保存过不强制；未超间隔不强制；超间隔强制', () => {
+    expect(isAgeForced(0, 100000)).toBe(false); // lastFullSaveAt=0（未保存过）
+    expect(isAgeForced(1000, 1000 + AUTO_SNAPSHOT_FORCE_INTERVAL_MS - 1)).toBe(false);
+    expect(isAgeForced(1000, 1000 + AUTO_SNAPSHOT_FORCE_INTERVAL_MS)).toBe(true);
+    expect(isAgeForced(1000, 1000 + AUTO_SNAPSHOT_FORCE_INTERVAL_MS + 5000)).toBe(true);
+  });
+
+  it('自定义间隔可注入', () => {
+    expect(isAgeForced(1000, 1000 + 100, 100)).toBe(true);
+    expect(isAgeForced(1000, 1000 + 99, 100)).toBe(false);
+  });
+
+  it('等长编辑在最大年龄间隔后被抓取（age 强制写，reason=age）', async () => {
+    vi.useFakeTimers();
+    try {
+      const src = new FakeFS();
+      await src.writeFile('/a.txt', 'AAAA');
+      // 首次保存：lastFullSaveAt 记录为当前（假）时间。
+      const first = await saveSnapshot(src as unknown as FileSystemAPI, false);
+      expect(first.reason).toBe('changed');
+      const putsAfterFirst = idb.puts;
+
+      // 等长编辑：目录签名与内容签名都不变 → 非 force 且未超年龄间隔时跳过写。
+      await src.writeFile('/a.txt', 'BBBB');
+      const dedup = await saveSnapshot(src as unknown as FileSystemAPI, false);
+      expect(dedup.reason).toBe('dedup');
+      expect(idb.puts).toBe(putsAfterFirst);
+      let rec = idb.store.get('current') as { files: Array<{ path: string; content: string }> };
+      expect(rec.files.find((f) => f.path === '/a.txt')?.content).toBe('AAAA'); // 旧内容仍在
+
+      // 越过最大年龄间隔 → 下一次自动快照强制全量收集 + 写盘，抓到等长编辑。
+      vi.advanceTimersByTime(AUTO_SNAPSHOT_FORCE_INTERVAL_MS);
+      const age = await saveSnapshot(src as unknown as FileSystemAPI, false);
+      expect(age.reason).toBe('age');
+      expect(idb.puts).toBe(putsAfterFirst + 1);
+      rec = idb.store.get('current') as { files: Array<{ path: string; content: string }> };
+      expect(rec.files.find((f) => f.path === '/a.txt')?.content).toBe('BBBB'); // 新内容入库
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

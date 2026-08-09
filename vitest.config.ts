@@ -16,6 +16,8 @@ export default defineConfig({
         'src/pkg.ts',
         'src/motd.ts',
         'src/config.ts',
+        'src/engine/host-route.ts', // P1-4：host.ts 纯逻辑抽取，重构回归保护
+        'src/engine/client.ts', // P3-11：串行队列 / 只读重试 / pingDirect 通道判定
       ],
       thresholds: {
         lines: 70,

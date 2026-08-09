@@ -18,6 +18,24 @@ import path from 'node:path';
 import { registerProcess, listProcesses, killProcess, appendProcessOutput, markProcessExited } from './host-procs.js';
 import { tokenize, hasShellMetaToken } from './tokenize.js';
 import { pythonDaemon, PYTHON_DAEMON_JS } from './python-daemon-client.js';
+// P1-4：纯逻辑（路由判定 / 路径映射 / 截断 / EACCES 提示）抽到 host-route.ts，可单测。
+import {
+  WORKSPACE_MOUNT,
+  NODE_PREFIX_RE,
+  PIP_PREFIX_RE,
+  classifyPrefix,
+  classifyRoute,
+  vfsToReal,
+  spawnCwdFor,
+  pythonRuntimeArgs,
+  lifoSpawndCwd,
+  isUnderWorkspace,
+  capOutput,
+  MAX_OUTPUT_BYTES,
+  withEaccesHint,
+  parseKillPid,
+  CD_PREFIX_RE,
+} from './host-route.js';
 
 const CMD_FILE = 'cmd.json';
 const RESULT_PREFIX = 'result-'; // result-<id>.json
@@ -26,10 +44,6 @@ const RESULT_PREFIX = 'result-'; // result-<id>.json
 let RESULT_TTL_MS = 120000;
 const LIFO_TIMEOUT_MS = 25000; // Lifo 命令默认超时
 const NODE_TIMEOUT_MS = 30000; // node 子进程默认超时兜底
-// TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。
-// 正常命令（seq 1 5000 约 25KB / npm install 日志 / cat 中大型文件）远低于此上限；
-// 超出时保留尾部，避免容器内内存与结果文件无限增长。
-const MAX_OUTPUT_BYTES = 1024 * 1024;
 // TASK19：spawn 确认窗口（ms）。后台进程（node/npm/npx）在此窗口内以非零退出视为"启动失败"，
 // 立即向浏览器报 ok:false（如 npx 包不存在、node 脚本语法错误、端口被占直接退出）。
 // 后台服务（tinbase / http server）都会存活超过该窗口，仅多等一拍，对调用方无感知。
@@ -66,19 +80,8 @@ if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs
 // `process.cwd()/etc/` 下；若 CWD_FILE 仍用 node 虚拟系统根 `/etc/succinix.cwd`（只读系统根），
 // 写不进去/读不到 → 刷新后 cwd 永久丢失。统一用 process.cwd() 拼接。
 const CWD_FILE = `${process.cwd()}/etc/succinix.cwd`;
-const WORKSPACE_MOUNT = '/workspace';
-
-function isUnderWorkspace(p: string): boolean {
-  return p === WORKSPACE_MOUNT || p.startsWith(WORKSPACE_MOUNT + '/');
-}
-
-// VFS 路径 → host 真实路径：/workspace → process.cwd()，/workspace/foo → process.cwd()/foo。
-// 非 /workspace 路径（真实路径 / 其他 VFS 私有路径）原样返回。spawn cwd 与会话 cwd 校验共用。
-function vfsToReal(p: string): string {
-  if (p === WORKSPACE_MOUNT) return process.cwd();
-  if (p.startsWith(WORKSPACE_MOUNT + '/')) return process.cwd() + p.slice(WORKSPACE_MOUNT.length);
-  return p;
-}
+// WORKSPACE_MOUNT / isUnderWorkspace / vfsToReal / spawnCwdFor / resolveBrowserPath /
+// pythonRuntimeArgs / lifoSpawndCwd / capOutput / MAX_OUTPUT_BYTES 均在 host-route.ts（P1-4）。
 
 // 启动读持久化 cwd；文件缺失 / 目录已不存在（被删）时回落 process.cwd()。
 // 校验用 vfsToReal 映射到 host 真实路径再 statSync —— 持久化的值可能是 Lifo VFS 路径
@@ -87,7 +90,7 @@ function loadSessionCwd(): string {
   try {
     const saved = fs.readFileSync(CWD_FILE, 'utf8').trim();
     if (saved) {
-      const real = vfsToReal(saved);
+      const real = vfsToReal(saved, process.cwd());
       if (fs.existsSync(real) && fs.statSync(real).isDirectory()) {
         return saved; // 返回持久化的会话 cwd（显示语义不变，spawn 时再映射）
       }
@@ -111,41 +114,11 @@ function persistSessionCwd(): void {
   }
 }
 
-// TASK24（自检崩溃根因修复）：会话 cwd 在 Lifo 侧是 VFS 路径（/workspace 挂载视图），但
-// 真实容器 FS 没有 /workspace（容器根只读，无法创建 —— 浏览器 wc.fs 的 `/` 映射到 host
-// process.cwd() 即 /home/<wc-id>，Lifo 的 /workspace 只是那个目录的挂载别名）。
-// 直接 spawn(node, { cwd: '/workspace' }) 会因 chdir 失败在 WebContainer 里挂起（spawn
-// 不报 ENOENT，子进程永不退出）→ 自检 `timeout: run`。子进程 spawn 前必须把 VFS 路径
-// 映射回 host 真实路径：/workspace → process.cwd()，/workspace/foo → process.cwd()/foo。
-// 非 /workspace 路径（如持久化的真实路径）原样使用；仅影响 spawn，不改会话 cwd 显示语义。
+// TASK24（自检崩溃根因修复）：子进程 spawn 前必须把 VFS 路径映射回 host 真实路径
+// （/workspace → process.cwd()，/workspace/foo → process.cwd()/foo）；直接 spawn
+// { cwd: '/workspace' } 会因 chdir 失败在 WebContainer 里挂起（spawn 不报 ENOENT）。
 function spawnCwd(): string {
-  return vfsToReal(sessionCwd);
-}
-
-// 浏览器视角的绝对路径 → host 真实路径。wc.fs 的 `/` 与 Lifo 的 /workspace 都映射到
-// process.cwd()（/home/<wc-id>），所以 `/foo` 和 `/workspace/foo` 的真实位置都是
-// process.cwd()/foo。node/python 子进程收到这类绝对路径参数（如 `python /script.py`）时
-// 若原样传给真实容器根 `/`（bin/dev/etc...）会找不到文件；映射后脚本可读。
-function resolveBrowserPath(p: string): string {
-  if (!p.startsWith('/')) return p; // 相对路径：由 spawn cwd（真实路径）解析
-  const rel = p === WORKSPACE_MOUNT ? '/' : p.startsWith(WORKSPACE_MOUNT + '/') ? p.slice(WORKSPACE_MOUNT.length) : p;
-  return process.cwd() + rel;
-}
-
-// python 运行时参数：脚本模式（第一个参数是文件路径，非 -c/--version）的绝对路径映射到 host
-// 真实路径，否则 `python /script.py` 在真实容器根找不到浏览器写入的脚本。runPython 与 Lifo
-// 转发（管道/链内 python 段）共用，保证两种路径下脚本文件都可读。
-function pythonRuntimeArgs(rawArgs: string[]): string[] {
-  const first = rawArgs[0];
-  if (first !== undefined && first !== '-c' && first !== '--version') {
-    return [resolveBrowserPath(first), ...rawArgs.slice(1)];
-  }
-  return rawArgs;
-}
-
-// 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
-function capOutput(s: string): string {
-  return s.length > MAX_OUTPUT_BYTES ? s.slice(-MAX_OUTPUT_BYTES) : s;
+  return spawnCwdFor(sessionCwd, process.cwd());
 }
 
 // TASK18：Lifo 内核懒加载 + 延迟预热（评估成本后的选择）。
@@ -199,13 +172,7 @@ function getSandbox(): Promise<Awaited<ReturnType<typeof import('./lifo-core.js'
 function registerRealBinaryCommands(
   sandbox: Awaited<ReturnType<typeof import('./lifo-core.js').Sandbox.create>>
 ): void {
-  const lifoSpawnCwd = (vfsCwd: string): string => {
-    if (vfsCwd === WORKSPACE_MOUNT) return process.cwd();
-    if (vfsCwd.startsWith(WORKSPACE_MOUNT + '/')) {
-      return process.cwd() + vfsCwd.slice(WORKSPACE_MOUNT.length);
-    }
-    return spawnCwd();
-  };
+  const lifoSpawnCwd = (vfsCwd: string): string => lifoSpawndCwd(vfsCwd, sessionCwd, process.cwd());
   // 共享转发：spawn 一个真实子进程，stdout/stderr 累积后写入 Lifo 命令上下文流；
   // 超时/中断（Lifo shell 的 signal）时子进程一并杀掉。
   // V1 H1-2：把 Lifo 混合链拉起的 node/npm/npx 真实子进程登记进 host 进程表（host-procs.ts），
@@ -220,27 +187,15 @@ function registerRealBinaryCommands(
     realCwd: string
   ): Promise<number> => {
     const pid = registerProcess(cmd, child, realCwd);
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => {
-      const s = d.toString();
-      stdout += s;
-      if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
-      appendProcessOutput(pid, s);
-    });
-    child.stderr?.on('data', (d: Buffer) => {
-      const s = d.toString();
-      stderr += s;
-      if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
-      appendProcessOutput(pid, s);
-    });
+    // both：既累积（写 ctx 流）也追加进程表（ps/kill 可见）。
+    const out = attachOutputCollector(child, pid, 'both');
     const onAbort = () => child.kill();
     ctx.signal?.addEventListener('abort', onAbort);
     return new Promise<number>((resolve) => {
       child.on('close', (code) => {
         ctx.signal?.removeEventListener('abort', onAbort);
-        ctx.stdout.write(stdout);
-        ctx.stderr.write(withEaccesHint(stderr));
+        ctx.stdout.write(out.stdout());
+        ctx.stderr.write(withEaccesHint(out.stderr()));
         resolve(code ?? -1);
       });
       child.on('error', (e: Error) => {
@@ -276,7 +231,7 @@ function registerRealBinaryCommands(
     return r.exitCode;
   };
   for (const name of ['python', 'python3']) {
-    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, pythonRuntimeArgs(ctx.args)));
+    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, pythonRuntimeArgs(ctx.args, process.cwd())));
   }
   for (const name of ['pip', 'pip3']) {
     sandbox.commands.register(name, async (ctx) => pythonForward(ctx, ['-m', 'pip', ...ctx.args]));
@@ -290,37 +245,12 @@ setTimeout(() => {
 }, 150);
 
 // ─── 命令路由 ───
-
-// 以 node / npm / npx 开头（后跟空格或直接结束）的整条命令 → 真 Node 子进程
-const NODE_PREFIX_RE = /^(node|npm|npx)(\s|$)/;
-// TASK27：python / python3 开头 → 专用 python 运行时（host 常驻 Pyodide daemon）。
-// 独立命令而非并入 node 系：python 需要专用启动逻辑（先确保资产注入、daemon 懒启动）。
-const PYTHON_PREFIX_RE = /^(python|python3)(\s|$)/;
-// TASK27：pip / pip3 命令 → 映射到 Pyodide 的 micropip（daemon 内 `-m pip <args>`）。
-// 与 python 共用路由（含 shell 元字符时整条回退 Lifo shell，pip 段转发到 daemon）。
-const PIP_PREFIX_RE = /^(pip|pip3)(\s|$)/;
-// TASK23：Lifo 的 cd 命令（成功后会同步会话 cwd）。只匹配整条命令以 cd 开头。
-const CD_PREFIX_RE = /^cd(\s|$)/;
-// python daemon 脚本在容器内的位置（浏览器首用 python/pip 时懒注入 assets 到同一目录）。
-// TASK24 双根铁律：浏览器 wc.fs 的 `/` == host 进程 cwd（/home/<wc-id>），python-assets.ts
-// 经 wc.fs 把运行时写到 `/usr/lib/succinix/python/...`，即 host 视角的 `process.cwd()/usr/lib/...`；
-// 若这里仍用 node 虚拟系统根 `/usr/lib/...`（bin/dev/etc 那个根）会找不到 → 报
-// "assets not injected yet"。统一用 process.cwd() 拼接，两侧对齐。
-// PYTHON_DAEMON_JS 由 ./python-daemon-client.js 导出（同一 process.cwd() 拼接），本文件不再自建。
+// NODE_PREFIX_RE / PYTHON_PREFIX_RE / PIP_PREFIX_RE / CD_PREFIX_RE 与 EACCES 提示
+// 均在 host-route.ts（P1-4，可单测）；分类逻辑用 classifyRoute / classifyPrefix。
 
 // python 命令默认超时（比 node 子进程宽松）：首个命令含 daemon 懒启动 + 可能的重装恢复，
 // pip install 走网络拉 wheel —— 120s 内可完成；daemon 内部也有同等超时兜底。
 const PYTHON_TIMEOUT_MS = 150000;
-
-// TASK24 坑 3：npm i -g 在 /usr/local 只读时的可操作提示。只在 stderr 含 EACCES + /usr/local
-// 时**追加**一行（不替换原错误），权限语义保持（真实 Linux 同样无 sudo 装不了全局）。
-const EACCES_HINT =
-  'hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)';
-
-function withEaccesHint(stderr: string): string {
-  if (!stderr.includes('EACCES') || !stderr.includes('/usr/local')) return stderr;
-  return `${stderr.replace(/\s+$/, '')}\n${EACCES_HINT}\n`;
-}
 
 interface CommandRequest {
   /** 协议版本（TASK21：客户端写 protocol: 1；缺失按 v1 处理，向后兼容） */
@@ -403,6 +333,9 @@ async function handleCommand(req: CommandRequest): Promise<void> {
     case 'kill':
       dispatchKill(req);
       return;
+    case 'interrupt':
+      dispatchInterrupt(req);
+      return;
     case 'exit':
       writeResult(req.id, { ok: true, kind: 'bye' });
       return;
@@ -415,40 +348,32 @@ async function handleCommand(req: CommandRequest): Promise<void> {
 // TASK24 坑 1：node 系命令含 shell 元字符（&& / | / > / 2>&1 ...）时，整条命令回退给
 // Lifo shell 执行 —— Lifo 的 shell 层解析管道/重定向/链，各 node 段经 registerRealBinaryCommands
 // 转回真 node/npm/npx（见 getSandbox）。结果 runtime 仍标 'lifo'（shell 层执行），文档注明。
-// 纯 node 命令（无元字符）行为不变（直启子进程）。
+// 纯 node 命令（无元字符）行为不变（直启子进程）。路由判定抽到 host-route.ts（P1-4）。
 async function dispatchRun(req: CommandRequest): Promise<void> {
   const command = String(req.opts?.command ?? '').trim();
   if (!command) {
     writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: 'empty command', runtime: 'lifo' });
     return;
   }
-  if (NODE_PREFIX_RE.test(command)) {
+  const prefix = classifyPrefix(command);
+  if (prefix !== 'lifo') {
+    // node/python/pip 系才分词做 shell 元字符检查（与旧行为一致：纯 Lifo 命令不经过
+    // 分词，未闭合引号交给 Lifo shell 自己处理）。
     const t = tryTokenize(command);
     if (!t.ok) {
       writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
       return;
     }
-    if (hasShellMetaToken(t.tokens)) {
-      await runLifo(command, req.opts, req.id); // 混合链：Lifo shell 层执行
+    const route = classifyRoute(command, hasShellMetaToken(t.tokens));
+    if (route === 'node') {
+      runNode(command, req.opts, req.id); // 立即返回；子进程结束时异步写结果
       return;
     }
-    runNode(command, req.opts, req.id); // 立即返回；子进程结束时异步写结果
-    return;
-  }
-  if (PYTHON_PREFIX_RE.test(command) || PIP_PREFIX_RE.test(command)) {
-    // TASK27：python/pip 命令含 shell 元字符（| / > / && ...）时整条经 Lifo shell 执行
-    // —— Lifo 的 shell 层解析管道/重定向/链，python/pip 段经 registerRealBinaryCommands 转回
-    // 常驻 daemon（见 getSandbox）。纯 python/pip 命令（无元字符）走 daemon 直启。
-    const t = tryTokenize(command);
-    if (!t.ok) {
-      writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
+    if (route === 'python') {
+      await runPython(command, req.opts, req.id); // daemon 响应后写结果
       return;
     }
-    if (hasShellMetaToken(t.tokens)) {
-      await runLifo(command, req.opts, req.id); // 混合链：Lifo shell 层执行
-      return;
-    }
-    await runPython(command, req.opts, req.id); // daemon 响应后写结果
+    await runLifo(command, req.opts, req.id); // 混合链：Lifo shell 层执行
     return;
   }
   await runLifo(command, req.opts, req.id);
@@ -497,7 +422,7 @@ async function runPython(command: string, opts: Record<string, unknown> | undefi
     return;
   }
   const [, ...rawArgs] = t.tokens; // 丢弃 python/python3/pip/pip3 前缀
-  const args = PIP_PREFIX_RE.test(command) ? ['-m', 'pip', ...rawArgs] : pythonRuntimeArgs(rawArgs);
+  const args = PIP_PREFIX_RE.test(command) ? ['-m', 'pip', ...rawArgs] : pythonRuntimeArgs(rawArgs, process.cwd());
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : PYTHON_TIMEOUT_MS;
   const r = await pythonDaemon.exec(args, spawnCwd(), timeoutMs);
   writeResult(reqId, {
@@ -507,6 +432,54 @@ async function runPython(command: string, opts: Record<string, unknown> | undefi
     stderr: withEaccesHint(capOutput(r.stderr)),
     runtime: 'node',
   });
+}
+
+// ─── 共享子进程工具（P2-8）───
+// 三处 spawn（Lifo 混合链 forward / run 的 spawnChild / 后台 dispatchSpawn）都做同一件事的变体：
+// spawn(prog, args, {cwd, env}) → registerProcess → stdout/stderr 接线。差异只在输出去向：
+//   accumulate —— 累积字符串（增量 2 倍上限截断），settle 时写结果文件
+//   append     —— 追加进进程表 outputTail（ps 尾部展示，不截断）
+//   both       —— 两者都要（Lifo 混合链：既写 ctx 流也登记进程表）
+type OutputMode = 'accumulate' | 'append' | 'both';
+
+// 接线 stdout/stderr 数据处理器。返回累积取读函数（accumulate/both 模式）。
+function attachOutputCollector(
+  child: ReturnType<typeof spawn>,
+  pid: number,
+  mode: OutputMode
+): { stdout: () => string; stderr: () => string } {
+  let stdout = '';
+  let stderr = '';
+  const collect = (which: 'stdout' | 'stderr') => (d: Buffer) => {
+    const s = d.toString();
+    if (mode !== 'append') {
+      // 增量截断：累积超过 2 倍上限时先裁到 1 倍，防止内存随输出无限增长（OOM 防护）。
+      if (which === 'stdout') {
+        stdout += s;
+        if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
+      } else {
+        stderr += s;
+        if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
+      }
+    }
+    if (mode !== 'accumulate') appendProcessOutput(pid, s);
+  };
+  child.stdout?.on('data', collect('stdout'));
+  child.stderr?.on('data', collect('stderr'));
+  return { stdout: () => stdout, stderr: () => stderr };
+}
+
+// spawn + 进程登记 + 输出接线一步到位（三处共用）。登记时记录 spawn cwd
+// （TASK-CISOL：容器根 → scope=container + containerId）。
+function spawnTracked(
+  prog: string,
+  args: string[],
+  opts: { cwd: string; mode: OutputMode }
+): { pid: number; child: ReturnType<typeof spawn>; out: ReturnType<typeof attachOutputCollector> } {
+  const child = spawn(prog, args, { cwd: opts.cwd, env: mergedEnv() });
+  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd);
+  const out = attachOutputCollector(child, pid, opts.mode);
+  return { pid, child, out };
 }
 
 // 共享子进程捕获逻辑：runNode（node/npm/npx）与 runPython（python 运行时）共用。
@@ -520,12 +493,10 @@ function spawnChild(
   label: string
 ): void {
   const realCwd = spawnCwd();
-  const child = spawn(prog, args, { cwd: realCwd, env: mergedEnv() });
-  // TASK-CISOL：登记时记录 spawn cwd（容器根 → scope=container + containerId）。
-  registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, realCwd);
+  const { pid, child, out } = spawnTracked(prog, args, { cwd: realCwd, mode: 'accumulate' });
+  // P5-15：登记为当前前台 run（Ctrl+C 中断目标）；settle 时清除。
+  currentRunPid = pid;
 
-  let stdout = '';
-  let stderr = '';
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -533,24 +504,15 @@ function spawnChild(
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    if (currentRunPid === pid) currentRunPid = null;
     // TASK18 输出上限：最终截断在 settle 应用，保证结果文件有界。
     // TASK24 坑 3：EACCES 提示在截断之后追加，保证即使输出超上限提示也在。
     writeResult(reqId, {
       ...payload,
-      stdout: capOutput(stdout),
-      stderr: withEaccesHint(capOutput(stderr)),
+      stdout: capOutput(out.stdout()),
+      stderr: withEaccesHint(capOutput(out.stderr())),
     });
   };
-
-  // 增量截断：累积超过 2 倍上限时先裁到 1 倍，防止内存随输出无限增长（OOM 防护）。
-  child.stdout?.on('data', (d: Buffer) => {
-    stdout += d.toString();
-    if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
-  });
-  child.stderr?.on('data', (d: Buffer) => {
-    stderr += d.toString();
-    if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
-  });
 
   // 超时兜底：避免挂死的子进程永久占坑；可被 opts.timeout 覆盖
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : NODE_TIMEOUT_MS;
@@ -560,7 +522,6 @@ function spawnChild(
       settle({
         ok: false,
         exitCode: -1,
-        stdout,
         stderr: `${label} subprocess timed out after ${timeoutMs}ms, killed`,
         runtime: 'node',
       });
@@ -568,10 +529,10 @@ function spawnChild(
   }, timeoutMs);
 
   child.on('close', (code: number | null) =>
-    settle({ ok: code === 0, exitCode: code ?? -1, stdout, stderr, runtime: 'node' })
+    settle({ ok: code === 0, exitCode: code ?? -1, runtime: 'node' })
   );
   child.on('error', (e: Error) =>
-    settle({ ok: false, exitCode: -1, stdout, stderr: String(e), runtime: 'node' })
+    settle({ ok: false, exitCode: -1, stderr: String(e), runtime: 'node' })
   );
 }
 
@@ -600,11 +561,8 @@ function dispatchSpawn(req: CommandRequest): void {
   }
   const [prog, ...args] = t.tokens;
   const realCwd = spawnCwd();
-  const child = spawn(prog, args, { cwd: realCwd, env: mergedEnv() });
-  // TASK-CISOL：登记时记录 spawn cwd（spawn 前 setCwd 到容器根 → scope=container + containerId）。
-  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, realCwd);
-  child.stdout?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
-  child.stderr?.on('data', (d: Buffer) => appendProcessOutput(pid, d.toString()));
+  // 后台进程输出只追加进程表 outputTail（不截断累积）；TASK-CISOL 登记 cwd 供归属判定。
+  const { pid, child } = spawnTracked(prog, args, { cwd: realCwd, mode: 'append' });
   let settled = false;
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   const settle = (payload: Record<string, unknown>) => {
@@ -675,6 +633,26 @@ function dispatchKill(req: CommandRequest): void {
   writeResult(req.id, { ok: r.killed, killed: r.killed, message: r.message });
 }
 
+// interrupt（P5-15）：浏览器 Ctrl+C —— 终止当前前台 run 的 node 子进程。
+// 只杀 currentRunPid（spawnChild 登记的当前 run），不动后台 spawn 服务。
+// 进程被杀后 close 事件触发 spawnChild settle → 写 run 结果文件、清 currentRunPid，
+// 浏览器侧在途 exec 随即读到结果，busy 结束回到提示符。
+// 无当前 run（纯 Lifo 命令 / 空闲）→ 返回 pid:null，浏览器如实提示。
+function dispatchInterrupt(req: CommandRequest): void {
+  if (currentRunPid !== null) {
+    const r = killProcess(currentRunPid);
+    writeResult(req.id, {
+      ok: true,
+      kind: 'interrupted',
+      pid: currentRunPid,
+      killed: r.killed,
+      message: r.message,
+    });
+    return;
+  }
+  writeResult(req.id, { ok: true, kind: 'interrupted', pid: null });
+}
+
 // setCwd：显式设置会话 cwd（TASK23 协议新增，向后兼容 —— 客户端可选使用）。
 // 校验绝对路径且为已存在目录；cd 命令的自动同步已覆盖交互路径，此命令供生态/自检显式设置。
 function dispatchSetCwd(req: CommandRequest): void {
@@ -684,7 +662,7 @@ function dispatchSetCwd(req: CommandRequest): void {
     return;
   }
   try {
-    const real = vfsToReal(raw);
+    const real = vfsToReal(raw, process.cwd());
     if (!fs.statSync(real).isDirectory()) {
       writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` });
       return;
@@ -699,26 +677,29 @@ function dispatchSetCwd(req: CommandRequest): void {
 }
 
 // kill 协议支持 { cmd: 'kill', opts: { pid } }，也兼容 "kill 1234" 字符串形式。
+// 解析逻辑在 host-route.ts（P1-4）。
 function parsePid(req: CommandRequest): number {
-  const fromOpts = Number(req.opts?.pid);
-  if (Number.isInteger(fromOpts) && fromOpts > 0) return fromOpts;
-  const m = /^kill\s+(\d+)$/.exec(req.cmd);
-  return m ? Number(m[1]) : NaN;
+  return parseKillPid(req.cmd, req.opts?.pid);
 }
 
 // ─── 轮询循环：文件 RPC 通道 ───
 // 保持原有的 cmd.json → result-<id>.json 轮询协议，仅把处理逻辑结构化。
 let processedId = -1;
 let busy = false;
+// P5-15：当前前台 run 的 node 子进程 pid（interrupt 协议用）。spawnChild 启动时登记、
+// settle 时清除（只清自己启动的）。后台 spawn / Lifo 混合链 / 纯 Lifo 命令不在此列——
+// 后台服务不应被 Ctrl+C 误杀，Lifo 沙箱无 abort API（host 侧 busy 期间 interrupt 也进不来）。
+let currentRunPid: number | null = null;
 
 // 定期清理被放弃请求留下的陈旧结果文件（浏览器已超时放弃的请求）。
 setInterval(pruneStaleResults, 60000);
 
 setInterval(async () => {
   if (busy) return;
+  let req: CommandRequest | null = null;
   try {
     if (!fs.existsSync(CMD_FILE)) return;
-    const req = JSON.parse(fs.readFileSync(CMD_FILE, 'utf8')) as CommandRequest;
+    req = JSON.parse(fs.readFileSync(CMD_FILE, 'utf8')) as CommandRequest;
     if (typeof req.id !== 'number' || req.id === processedId) return;
     processedId = req.id;
     busy = true;
@@ -735,6 +716,20 @@ setInterval(async () => {
       writeResult(-1, { ok: false, error: String(e).slice(0, 200) });
     } catch {
       /* FS 不可用 */
+    }
+  } finally {
+    // P0-2（正确性）：处理完（或失败）后删除 /cmd.json —— 防陈旧命令在 host 重启后被执行一次。
+    // processedId 是 host 进程内变量，新 host 起步是 -1，跨进程无法去重；若残留未删的
+    // /cmd.json，看门狗 kill + respawn 后新 host 会把旧请求当作新命令真实执行一次。
+    // 删除后新 host 读到的是干净通道；浏览器下一拍仍会覆盖写入，行为不变。
+    // 时序安全：host 在 50ms 轮询周期内读到并处理请求，浏览器侧串行链在结果返回后才写下一请求
+    // （见 client.ts enqueue/doExec），此处删除先于浏览器可能写下一请求，不会吞掉新命令。
+    if (req) {
+      try {
+        fs.unlinkSync(CMD_FILE);
+      } catch {
+        /* 已删除 / 不存在：忽略 */
+      }
     }
   }
 }, 50); // TASK18：轮询 120ms → 50ms（命令往返的 host 侧等待减半；fs.existsSync 每 50ms 一次开销可忽略）

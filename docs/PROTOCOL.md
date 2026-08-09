@@ -36,7 +36,7 @@ The browser writes a JSON object to `/cmd.json`:
 {
   "protocol": 1,        // protocol version (added in v1; a missing field is treated as 1)
   "id": 42,             // unique request id, strictly increasing per client
-  "cmd": "run",         // one of: run | spawn | ps | kill | cwd | setCwd | ping | exit
+  "cmd": "run",         // one of: run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
   "opts": {             // command-specific options (optional)
     "command": "...",   // full command string (run / spawn)
     "pid": 1234,        // target process id (kill)
@@ -46,20 +46,26 @@ The browser writes a JSON object to `/cmd.json`:
 }
 ```
 
-| `cmd`    | Purpose                                        | `opts`               |
-|----------|------------------------------------------------|----------------------|
-| `run`    | Execute one command (unified routing)          | `command`, `timeout` |
-| `spawn`  | Start a background long-running process (node) | `command`, `timeout` |
-| `ps`     | List the process table                         | —                    |
-| `kill`   | Terminate a real child process                 | `pid`                |
-| `cwd`    | Return the session working directory           | —                    |
-| `setCwd` | Explicitly set the session working directory   | `cwd`                |
-| `ping`   | Liveness probe                                 | —                    |
-| `exit`   | Graceful shutdown handshake                    | —                    |
+| `cmd`       | Purpose                                        | `opts`               |
+|-------------|------------------------------------------------|----------------------|
+| `run`       | Execute one command (unified routing)          | `command`, `timeout` |
+| `spawn`     | Start a background long-running process (node) | `command`, `timeout` |
+| `ps`        | List the process table                         | —                    |
+| `kill`      | Terminate a real child process                 | `pid`                |
+| `interrupt` | Kill the current foreground `run` child (Ctrl+C) | —                  |
+| `cwd`       | Return the session working directory           | —                    |
+| `setCwd`    | Explicitly set the session working directory   | `cwd`                |
+| `ping`      | Liveness probe                                 | —                    |
+| `exit`      | Graceful shutdown handshake                    | —                    |
 
 The host polls `/cmd.json` every **50 ms**. It tracks the last processed `id` and ignores
 a request whose `id` is not a number or equals the previous one (dedup). Unknown `cmd`
 values are answered with `{ "ok": false, "error": "unknown command: <cmd>" }`.
+
+After processing a request the host **deletes `/cmd.json`** (P0-2). `processedId` is an
+in-process dedup that starts at `-1` in a freshly spawned host, so a stale `/cmd.json`
+surviving a watchdog kill + respawn would otherwise be executed once by the new host; the
+delete closes that window (the browser simply rewrites the file on its next request).
 
 ## 3. Response format (`/result-<id>.json`)
 
@@ -90,10 +96,23 @@ Per-command response fields:
 | `spawn`  | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
 | `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
 | `kill`   | `{ ok, killed, message }`                                        |
+| `interrupt` | `{ ok, kind: "interrupted", pid, killed, message }` — `pid` is a number when a current foreground `run` child was targeted (SIGTERM sent), `null` when no interruptible run is in flight |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
 | `setCwd` | `{ ok, kind: "cwd", cwd }` (the new session cwd)                 |
 | `ping`   | `{ ok, kind: "pong" }`                                           |
 | `exit`   | `{ ok, kind: "bye" }`                                            |
+
+### Interrupt (`interrupt`)
+
+`interrupt` implements browser **Ctrl+C** (P5-15). The host tracks the pid of the most
+recent foreground `run` child (a real Node subprocess); `interrupt` sends it SIGTERM.
+Scope: it only targets that foreground `run` — **background `spawn` services are never
+interrupted**, and pure Lifo commands (which run inside the sandbox, not as a table child)
+are not interruptible (the sandbox has no abort API). After the kill, the child's `close`
+event settles the original `run` request (its result file appears) and clears the tracked
+pid, so the browser's in-flight wait unblocks. The client sends it via `interruptDirect()`
+— a direct `/cmd.json` write that bypasses the serialized queue (a queued `interrupt` would
+only run *after* the very command it is meant to stop).
 
 ### Session cwd (`cwd` / `setCwd`)
 

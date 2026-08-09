@@ -2,22 +2,14 @@
 // boot 完成、进入终端前打印（main.ts 读取）；motd 命令查看 / 设置 / 恢复默认。
 // 文件落在容器共享 FS（wc.fs 读写），与 config/services 同一模式：缺失时 boot 落默认内容。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { saveSnapshot } from './persist.js';
+import { forcePersist } from './persist.js';
+import { ensureParentDir } from './util.js';
+import { SUCCINIX_VERSION } from './version.js';
 
 export const MOTD_FILE = '/etc/succinix.motd';
 
-// 默认内容（一条欢迎行；英文，无 emoji）。
-export const DEFAULT_MOTD = "Welcome to Succinix 0.2.0 — browser-native Linux. Type 'help' for commands.";
-
-async function ensureParentDir(fs: FileSystemAPI, file: string): Promise<void> {
-  const idx = file.lastIndexOf('/');
-  if (idx <= 0) return;
-  try {
-    await fs.mkdir(file.slice(0, idx), { recursive: true });
-  } catch {
-    /* 目录已存在等，写入继续 */
-  }
-}
+// 默认内容（一条欢迎行；英文，无 emoji）。版本号构建期注入（P2-7，随 package.json 单一来源）。
+export const DEFAULT_MOTD = `Welcome to Succinix ${SUCCINIX_VERSION} — browser-native Linux. Type 'help' for commands.`;
 
 // 确保文件存在：缺失时写默认内容（boot 调用；用户可随后 motd <text> 编辑）。
 export async function ensureMotd(fs: FileSystemAPI): Promise<void> {
@@ -42,24 +34,12 @@ export async function readMotd(fs: FileSystemAPI): Promise<string | null> {
   }
 }
 
-// H1 等长编辑防护 + 门控回归：与 config 一致，写盘成功后强制落盘（快照内容盲，
-// 等长/结构不变的内容替换不会自动收录）。单次 saveSnapshot(fs, true) 已足够——
-// persist 的 inflight 重入保护里，force 调用若遇并发自动快照会先等其完成再重跑一次
-// 全量保存（saveSnapshot 内部逻辑），无需调用方重复保存。
-async function forcePersist(fs: FileSystemAPI): Promise<void> {
-  try {
-    await saveSnapshot(fs, true);
-  } catch (e) {
-    // 文件已写盘成功，快照失败只记日志，不打断 motd 命令（与自动快照的降级一致）。
-    console.warn('[motd] force snapshot after write failed:', e);
-  }
-}
-
 // 设置 motd：写文件并强制落盘（随快照持久）。
+// 等长编辑防护 + 门控回归与 config 一致（见 persist.forcePersist）。
 export async function writeMotd(fs: FileSystemAPI, text: string): Promise<void> {
   await ensureParentDir(fs, MOTD_FILE);
   await fs.writeFile(MOTD_FILE, text);
-  await forcePersist(fs);
+  await forcePersist(fs, 'motd');
 }
 
 // 恢复默认：写回 DEFAULT_MOTD 并强制落盘。

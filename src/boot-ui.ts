@@ -3,6 +3,7 @@
 // 写入终端；systemInfo 为 no-op（去掉系统信息网格）；fail() 显示 DOM 错误页并停留。
 // 与业务逻辑分离（boot.ts 只调用这里的渲染接口，不直接碰 DOM / xterm）。
 import type { Terminal } from '@xterm/xterm';
+import { AMBER, RED, GRAY, RESET } from './theme.js';
 
 export type LogKind = 'ok' | 'note' | 'skip' | 'fail' | 'info';
 
@@ -30,11 +31,7 @@ const MARKER_KIND: Record<(typeof MARKERS)[number], LogKind> = {
   '[preview]': 'ok',
 };
 
-// 终端色（与 main.ts / tests.ts 一致：33m 暗橙、31m 暗红、90m 暗灰）
-const AMBER = '\x1b[33m';
-const RED = '\x1b[31m';
-const GRAY = '\x1b[90m';
-const RESET = '\x1b[0m';
+// 终端色（自 src/theme.ts 单一来源：33m 暗橙、31m 暗红、90m 暗灰，与 main/commands/tests 一致）
 
 // kind → 终端前景色：ok 暗橙 / fail 暗红 / note+skip 暗灰 / info 默认暖白（不加色）。
 const KIND_COLOR: Record<LogKind, string> = {

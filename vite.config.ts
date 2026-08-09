@@ -15,11 +15,26 @@ function resolveApiRuntimeVersion(): string {
   }
 }
 
+// P2-7：Succinix 自身版本从根 package.json 注入（单一事实来源，升版本只改一处）。
+// src/version.ts 的 SUCCINIX_VERSION 消费；version / uname / motd / welcome 横幅一致跟随。
+function resolveSuccinixVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL('./package.json', import.meta.url), 'utf8')
+    ) as { version?: string };
+    return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0'; // package.json 不可读：构建期大概率已失败；'0.0.0' 由 version.ts 兜底
+  }
+}
+
 // WebContainer requires cross-origin isolation (COOP/COEP) + SharedArrayBuffer.
 export default defineConfig({
   define: {
     // 供 src/commands.ts 的 uname -r 使用（declare const 声明；Vite 构建期文本替换为字面量）。
     __UNAME_RUNTIME__: JSON.stringify(resolveApiRuntimeVersion()),
+    // 供 src/version.ts 的 SUCCINIX_VERSION 使用（同上模式；根 package.json 版本单一来源）。
+    __SUCCINIX_VERSION__: JSON.stringify(resolveSuccinixVersion()),
   },
   server: {
     port: 7892,

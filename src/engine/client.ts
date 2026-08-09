@@ -1,6 +1,7 @@
 // TerminalExecutor 客户端：浏览器侧单一入口，内部走文件型 RPC。
 // 通道与 host 保持一致：/cmd.json {id,cmd,opts} → /result-<id>.json（每请求独立结果文件）。
 import type { WebContainer } from '@webcontainer/api';
+import { sleep } from './sleep.js';
 
 // host 响应统一形状；具体字段依 cmd 而定（run/ps/kill/spawn/cwd/ping/exit）。
 export interface ExecResult {
@@ -32,8 +33,6 @@ export interface TerminalClientOptions {
   /** 命令执行采集点：terminal/spawn 完成后回调（宿主负责过滤与落盘；缺省不记录） */
   onCommand?: (entry: CommandLogEntry) => void;
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // 只读/幂等协议命令：RPC 传输失败时允许重试 1 次（TASK16 稳定性）。
 // ping/ps/cwd 重发安全；kill / run / spawn 等非幂等命令一律不重试。
@@ -204,6 +203,42 @@ export class TerminalClient {
       }
       if (Date.now() - start > timeoutMs) return false;
       await sleep(100); // TASK18：看门狗探活轮询 150→100ms（非热路径，100ms 已足够）
+    }
+  }
+
+  // P5-15：中断当前在途命令（浏览器 Ctrl+C）。必须绕过互斥队列 —— 当前命令占着队列，
+  // 排队的中断要等它 settle 才有用（那正是要避免的）。直接写 /cmd.json 让 host 轮询读到
+  // （node run 是 fire-and-forget，host 轮询循环此时空闲，能立刻处理 interrupt）。
+  // 复用 pingDirect 的通道安全判定：不覆盖 host 可能还没读的在途 cmd.json（margin），
+  // 队列有未开始请求时跳过（中断会被吞）。
+  // 返回：ExecResult（pid 为数字 = 已向该进程发 kill；pid 为 null = 无当前 run 可中断）；
+  // null = 通道忙 / 无法发送（浏览器侧如实提示，不假装成功）。
+  async interruptDirect(timeoutMs = 2000): Promise<ExecResult | null> {
+    if (this.pending > this.active) return null;
+    if (Date.now() - this.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
+    const id = ++this.id;
+    try {
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd: 'interrupt' }));
+    } catch {
+      return null; // FS 不可写：按无法发送处理
+    }
+    const resultFile = `/result-${id}.json`;
+    const start = Date.now();
+    for (;;) {
+      try {
+        const raw = await this.wc.fs.readFile(resultFile, 'utf8');
+        const m = JSON.parse(raw) as ExecResult;
+        try {
+          await this.wc.fs.rm(resultFile);
+        } catch {
+          /* 清理失败不影响 */
+        }
+        return m;
+      } catch {
+        /* 结果未就绪 */
+      }
+      if (Date.now() - start > timeoutMs) return null;
+      await sleep(100);
     }
   }
 }

@@ -7,7 +7,7 @@ import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { TerminalClient } from './engine/index.js';
 import { detectSystemInfo } from './boot.js';
-import { saveSnapshot, clearSnapshot, getSnapshotMeta } from './persist.js';
+import { saveSnapshot, clearSnapshot, getSnapshotMeta, forcePersist } from './persist.js';
 import {
   isValidWorkspaceName,
   readEnvFile,
@@ -44,6 +44,9 @@ import {
   type PkgContext,
 } from './pkg.js';
 import { readMotd, writeMotd, resetMotd } from './motd.js';
+import { AMBER, RED, GRAY, RESET } from './theme.js';
+import { sleep } from './util.js';
+import { SUCCINIX_VERSION } from './version.js';
 
 export interface CommandContext {
   wc: WebContainer;
@@ -57,14 +60,7 @@ export interface CommandContext {
   hostProc?: WebContainerProcess;
 }
 
-const RED = '\x1b[31m';
-const AMBER = '\x1b[33m';
-const GRAY = '\x1b[90m';
-const RESET = '\x1b[0m';
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-const VERSION = 'Succinix 0.2.0 (browser-native Linux)';
+const VERSION = `Succinix ${SUCCINIX_VERSION} (browser-native Linux)`;
 const DB_PORT_DEFAULT = 3001;
 const DB_PKG = 'tinbase';
 
@@ -86,7 +82,7 @@ const GIB = 1024 ** 3;
 const PROC_EST_MB = 50;
 
 // 二进制换算：MB/GB 保留 1 位小数，整数尾数 .0 去掉（与 Linux free 观感一致）。
-function fmtUnit(bytes: number, unit: 'MB' | 'GB'): string {
+export function fmtUnit(bytes: number, unit: 'MB' | 'GB'): string {
   const v = bytes / (unit === 'GB' ? GIB : MIB);
   const s = v.toFixed(1);
   return `${s.endsWith('.0') ? s.slice(0, -2) : s} ${unit}`;
@@ -170,6 +166,10 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   dbActivePort = port; // 记录本次启动端口（M1：status/stop 用记录值）
   term.writeln('Checking whether tinbase is installed in the container...');
 
+  // P2-9：dbStart 四路失败输出收敛 —— "failed to start (engine wasm): <why>" 骨架只留一处。
+  // 各失败路径差异只在 why 文案；输出与旧实现逐字节一致。
+  const fail = (why: string): void => term.writeln(`${RED}tinbase: failed to start (engine wasm): ${why}${RESET}`);
+
   // 1. 检查 /workspace/node_modules/tinbase 是否存在（test -d：不存在时 exit≠0，比 ls+stdout 包含判断可靠，
   //    避免 Lifo 把 "No such file or directory" 打到 stdout 造成误判重复 npm install）
   //    N1（TASK20）：绝对路径 —— npm install 装进 process.cwd()（/workspace）下的 node_modules，
@@ -189,12 +189,12 @@ async function dbStart(ctx: CommandContext): Promise<void> {
       if (!r.ok) {
         const why = r.stderr || r.stdout || r.error || 'npm install exited non-zero';
         term.writeln(`${RED}tinbase: install failed: ${String(why).slice(0, 300)}${RESET}`);
-        term.writeln(`${RED}tinbase: failed to start (engine wasm): install failed, check container network.${RESET}`);
+        fail('install failed, check container network.');
         return;
       }
     } catch (e) {
       term.writeln(`${RED}tinbase: install failed: ${String(e)}${RESET}`);
-      term.writeln(`${RED}tinbase: failed to start (engine wasm): install failed, check container network.${RESET}`);
+      fail('install failed, check container network.');
       return;
     }
     term.writeln('tinbase installed');
@@ -225,15 +225,15 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   try {
     const r = await client.spawn(`npx tinbase start --port ${port} --engine wasm`, undefined, 8000);
     if (!r.ok || !r.pid) {
-      term.writeln(`${RED}tinbase: failed to start (engine wasm): ${r.error || r.stderr || 'spawn returned failure'}${RESET}`);
-      term.writeln(`${RED}tinbase: failed to start (engine wasm): check container compatibility.${RESET}`);
+      fail(r.error || r.stderr || 'spawn returned failure');
+      fail('check container compatibility.');
       return;
     }
     pid = r.pid;
     term.writeln(`started in background (pid=${pid}); waiting for port ${port} to be ready...`);
   } catch (e) {
-    term.writeln(`${RED}tinbase: failed to start (engine wasm): ${String(e)}${RESET}`);
-    term.writeln(`${RED}tinbase: failed to start (engine wasm): check container network/compatibility.${RESET}`);
+    fail(String(e));
+    fail('check container network/compatibility.');
     return;
   }
 
@@ -256,7 +256,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
         const procs = Array.isArray(ps.processes) ? ps.processes : [];
         const proc = procs.find((p) => Number(p.pid) === pid);
         if (proc && proc.status === 'exited') {
-          term.writeln(`${RED}tinbase: failed to start (engine wasm): process exited (pid=${pid}) before port ${port} became ready.${RESET}`);
+          fail(`process exited (pid=${pid}) before port ${port} became ready.`);
           term.writeln(`${RED}Run 'db status' to inspect the process output tail, then 'db stop' and retry.${RESET}`);
           return;
         }
@@ -266,11 +266,8 @@ async function dbStart(ctx: CommandContext): Promise<void> {
     }
     await sleep(500);
   }
-  term.writeln(`${RED}tinbase: failed to start (engine wasm): port ${port} not ready within 30s.${RESET}`);
-  term.writeln(
-    `${RED}tinbase: failed to start (engine wasm): WebContainer may not run WASM servers. ` +
-      `Run db stop and retry, or use an external service.${RESET}`
-  );
+  fail(`port ${port} not ready within 30s.`);
+  fail('WebContainer may not run WASM servers. Run db stop and retry, or use an external service.');
 }
 
 async function dbStatus(ctx: CommandContext): Promise<void> {
@@ -570,7 +567,7 @@ export async function workspaceSwitch(fs: FileSystemAPI, name: string): Promise<
   // H1 类盲区：等长工作区名切换（如 main→test 同为 4 字符）不改变文件数/总字节，
   // persist 的内容盲签名会跳过自动快照写，重启即回滚 —— 写盘成功后强制落盘一次。
   // 快照失败只记日志，不把已成功的切换报为失败（与 config/motd 的 forcePersist 降级一致）。
-  await saveSnapshot(fs, true).catch((e) => console.warn('[workspace] force snapshot after switch failed:', e));
+  await forcePersist(fs, 'workspace');
   return { ok: true, message: `Switched to workspace '${name}'. Your files live in /ws/${name}. cd /ws/${name} to start working.` };
 }
 
@@ -1031,7 +1028,7 @@ async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
 // 从进程命令提取简短可读标签：npx <pkg> ... → <pkg>；node 且含 http.createServer → node http server；
 // node <script>.js → node <script>.js；其余取命令首词。标签只做摘要，不改写事实。
 // TASK16：npx/node 跳过前置 flag（--yes / --watch 等），取第一个非 flag 参数作为包/脚本名。
-function processLabel(cmd: string): string {
+export function processLabel(cmd: string): string {
   const words = cmd.trim().split(/\s+/);
   const first = words[0] ?? '';
   if (first === 'npx' || first === 'node') {
@@ -1168,6 +1165,11 @@ export function detectUnameArch(): string {
   return 'unknown';
 }
 
+// uname -r 的运行时版本（TASK17/R1）：构建期由 vite.config.ts 注入。vitest 环境无该全局
+// （vite define 不作用于 vitest），typeof 守卫回落空串 —— 与 version.ts 的 SUCCINIX_VERSION
+// 同款模式，让 uname 纯函数在单测里可调用。
+const UNAME_RUNTIME: string = typeof __UNAME_RUNTIME__ === 'string' ? __UNAME_RUNTIME__ : '';
+
 interface UnameFields {
   s: string; // 系统名（uname -s）
   n: string; // 主机名（uname -n，与提示符 guest@succinix 一致）
@@ -1182,9 +1184,9 @@ function unameFields(): UnameFields {
   return {
     s: 'Succinix',
     n: 'succinix',
-    version: '0.2.0',
+    version: SUCCINIX_VERSION,
     v: 'js-runtime+webcontainer',
-    r: __UNAME_RUNTIME__,
+    r: UNAME_RUNTIME,
     m: detectUnameArch(),
     o: 'browser-native',
   };

@@ -7,6 +7,11 @@
 // TASK-CISOL（R1）：登记时记录子进程启动 cwd，ps() 响应为每个进程附加归属字段
 // scope（system/container/unknown）+ containerId（scope=container 时）——容器隔离完善：
 // 不同容器的 Agent 据此在 SunamAI 侧做查询过滤 / kill 拦截。现有契约字段一字不改，只加新字段。
+//
+// ⚠️ 边界声明（P1-5）：scope 判定是**启发式**（命令串正则 + spawn cwd 路径），可被伪装 ——
+// 任何用户进程只要命令串长得像系统进程（如 `node /usr/lib/succinix/fake.js`）就会被标为 system。
+// 该字段面向 **UI 展示与查询过滤**（ps 归属列、按容器过滤），**不是安全边界**：不能作为
+// 权限 / 隔离 / kill 拦截的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传 scope）。
 import type { ChildProcess } from 'node:child_process';
 
 /** 进程归属：system（Succinix 运行时）/ container（某虚拟容器 c-*）/ unknown（无法判定）。 */

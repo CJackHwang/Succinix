@@ -7,7 +7,8 @@ import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from './engine/index.js';
 import { getSetting } from './config.js';
 import { log } from './log.js';
-import { saveSnapshot } from './persist.js';
+import { forcePersist } from './persist.js';
+import { sleep, ensureParentDir } from './util.js';
 
 export const SERVICES_FILE = '/etc/succinix.services';
 export const AUTOSTART_FILE = '/etc/succinix.autostart';
@@ -55,8 +56,6 @@ export interface ServiceActionResult {
   pid?: number;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 // TASK19：npx 服务缺包安装 —— node_modules 不随快照持久，刷新/重开容器后 npx <pkg> 的包必然缺失。
 // 若服务命令以 npx 开头且 /workspace/node_modules/<pkg> 不存在，先真实 npm install（与 dbStart 的安装路径一致），
 // 再 spawn —— 否则 autostart 里 npx 的即时下载会跟 30s 端口等待竞态，时好时坏。
@@ -82,28 +81,10 @@ async function ensureNpxPackage(ctx: ServiceContext, command: string): Promise<v
 
 // 门控回归防护：自动快照的目录签名门控（persist collectDir）只看目录结构+总字节，
 // 捕捉不到"内容变更但大小不变"的写入。定义/自启文件的写入靠此强制落盘一次
-// （与 config 的 forcePersist 模式一致：try/catch + console.warn 降级，不打断命令）。
-async function forcePersist(fs: FileSystemAPI): Promise<void> {
-  try {
-    await saveSnapshot(fs, true);
-  } catch (e) {
-    console.warn('[services] force snapshot after write failed:', e);
-  }
-}
+// （与 config/motd 的 forcePersist 一致：try/catch + console.warn 降级，不打断命令）。
+// 实现收敛到 persist.forcePersist（P2-6），tag 标注模块名便于定位。
 
 // ─── 文件 I/O ───
-
-async function ensureParentDir(fs: FileSystemAPI, file: string): Promise<void> {
-  const idx = file.lastIndexOf('/');
-  if (idx <= 0) return;
-  try {
-    await fs.mkdir(file.slice(0, idx), { recursive: true });
-  } catch {
-    /* 目录已存在等，写入继续 */
-  }
-}
-
-// 确保定义/自启文件存在：缺失时写内置预置 / 空清单（boot 调用，用户可随后编辑）。
 export async function ensureServicesFiles(fs: FileSystemAPI): Promise<void> {
   await ensureParentDir(fs, SERVICES_FILE);
   try {
@@ -169,7 +150,7 @@ export async function writeServicesText(fs: FileSystemAPI, text: string): Promis
 export async function addServiceDef(fs: FileSystemAPI, name: string, command: string, port: number | null): Promise<void> {
   const text = (await readServicesRaw(fs)).trimEnd();
   await writeServicesText(fs, `${text}${text ? '\n' : ''}${name}|${command}|${port ?? ''}\n`);
-  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
+  await forcePersist(fs, 'services'); // 内容变更门控回归：写盘成功后强制落盘
 }
 
 // 按名字过滤移除定义（保留注释与其他行）；返回是否真有移除。
@@ -185,7 +166,7 @@ export async function removeServiceDef(fs: FileSystemAPI, name: string): Promise
     .join('\n');
   if (kept === text) return false;
   await writeServicesText(fs, kept);
-  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
+  await forcePersist(fs, 'services'); // 内容变更门控回归：写盘成功后强制落盘
   return true;
 }
 
@@ -225,7 +206,7 @@ export async function enableAutostart(fs: FileSystemAPI, name: string): Promise<
   }
   names.push(name);
   await writeAutostart(fs, names);
-  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
+  await forcePersist(fs, 'services'); // 内容变更门控回归：写盘成功后强制落盘
   void log('INFO', `service enable: ${name}`);
   return true;
 }
@@ -238,7 +219,7 @@ export async function disableAutostart(fs: FileSystemAPI, name: string): Promise
     return false;
   }
   await writeAutostart(fs, names.filter((n) => n !== name));
-  await forcePersist(fs); // 内容变更门控回归：写盘成功后强制落盘
+  await forcePersist(fs, 'services'); // 内容变更门控回归：写盘成功后强制落盘
   void log('INFO', `service disable: ${name}`);
   return true;
 }

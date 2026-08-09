@@ -44,6 +44,8 @@ import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
 import { ensurePythonRuntime } from './engine/index.js';
 import { tokenize } from './engine/tokenize.js';
+import { AMBER, RED, GRAY, RESET } from './theme.js';
+import { sleep } from './util.js';
 
 export interface TestContext {
   wc: WebContainer;
@@ -59,13 +61,6 @@ export interface TestResult {
   /** 失败项列表（TASK16：自检后打印到终端，暗红显示） */
   failures: string[];
 }
-
-const AMBER = '\x1b[33m';
-const RED = '\x1b[31m';
-const GRAY = '\x1b[90m';
-const RESET = '\x1b[0m';
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 let pass = 0;
 let fail = 0;

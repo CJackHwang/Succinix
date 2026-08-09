@@ -6,6 +6,7 @@
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 import type { ProcInfo } from './host-procs.js';
+import { sleep } from './sleep.js';
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 export type { ProcInfo } from './host-procs.js';
@@ -27,8 +28,10 @@ export interface TerminalExecutorOptions {
 }
 
 export interface TerminalExecutor {
-  /** 注入 host 资产 + 拉起 host + 等待就绪。解析时引擎可用 */
-  boot(wc: WebContainer, opts?: TerminalExecutorOptions): Promise<void>;
+  /** 注入 host 资产 + 拉起 host + 等待就绪。解析时引擎可用。
+   *  opts 即 EngineBootHooks（在 TerminalExecutorOptions 之上额外支持预取的 hostSrc / lifoCoreSrc /
+   *  onInjected / onSpawned / onCommand 采集点）。 */
+  boot(wc: WebContainer, opts?: EngineBootHooks): Promise<void>;
   /** 执行一条命令（统一路由：node|npm|npx → 真 Node，其余 → Lifo；协议命令直接命中）。
    *  返回完整 ExecResult（含 protocol 字段如 processes/cwd/killed，见 docs/PROTOCOL.md）。
    *  超时不再抛异常：返回 { ok:false, timedOut:true }。 */
@@ -41,6 +44,12 @@ export interface TerminalExecutor {
   kill(pid: number): Promise<boolean>;
   /** host 存活探测 */
   ping(): Promise<boolean>;
+  /** 看门狗直接探活（P1-3）：绕过互斥队列 —— 长命令占着队列时也能及时确认 host 存活。
+   *  true=host 存活（pong）；false=超时；null=通道忙（有排队未启动请求 / 刚写入在途 cmd.json），本轮跳过（中性）。 */
+  pingDirect(timeoutMs?: number): Promise<boolean | null>;
+  /** 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
+   *  cmd.json），重新注入资产并等待就绪。返回后 host 可立即接受命令。 */
+  respawn(): Promise<void>;
   /** 释放资源（kill host 进程、清引用）。幂等 */
   dispose(): Promise<void>;
 }
@@ -59,8 +68,6 @@ export interface EngineBootHooks extends TerminalExecutorOptions {
   /** 命令执行采集点（引擎只产生条目，宿主决定过滤与落盘） */
   onCommand?: (entry: CommandLogEntry) => void;
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // M1：端口事件（server-ready / port）只对同一 wc 实例注册一次。R3.2 重试会再次调用
 // bootEngineHost（kill 旧 host 再 spawn），若每次都 wc.on(...) 会累积重复监听器；
@@ -135,10 +142,10 @@ class TerminalExecutorImpl implements TerminalExecutor {
   private hostProc: WebContainerProcess | null = null;
   private opts: EngineBootHooks = {};
 
-  async boot(wc: WebContainer, opts: TerminalExecutorOptions = {}): Promise<void> {
+  async boot(wc: WebContainer, opts: EngineBootHooks = {}): Promise<void> {
     this.wc = wc;
     this.opts = opts;
-    const hooks = opts as EngineBootHooks;
+    const hooks = opts;
     const hostSrc = hooks.hostSrc ?? (await fetch(opts.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
     const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(opts.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
     this.client = new TerminalClient(wc, { onCommand: hooks.onCommand });
@@ -179,6 +186,33 @@ class TerminalExecutorImpl implements TerminalExecutor {
     } catch {
       return false;
     }
+  }
+
+  async pingDirect(timeoutMs = 30000): Promise<boolean | null> {
+    const client = this.client;
+    if (!client) return false;
+    return client.pingDirect(timeoutMs);
+  }
+
+  // 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
+  // cmd.json），重新注入资产并等待就绪。引擎自包含 —— kill-before-spawn 就地实现，
+  // 不依赖系统层 host-restart.ts。
+  async respawn(): Promise<void> {
+    const wc = this.wc;
+    const client = this.client;
+    if (!wc || !client) throw new Error('TerminalExecutor not booted — call boot(wc) first');
+    const hooks = this.opts as EngineBootHooks;
+    // 资产源：boot 时预取的文本优先，否则按配置 URL 拉取（容器内 host.js 已存在则跳过写入）。
+    const hostSrc = hooks.hostSrc ?? (await fetch(hooks.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
+    const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(hooks.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
+    // kill 旧 host 必须在 spawn 新 host 之前（单 host 不变量）。旧句柄失效时 kill 是 no-op。
+    try {
+      this.hostProc?.kill();
+    } catch {
+      /* 旧句柄失效：忽略 */
+    }
+    this.hostProc = await bootEngineHost(wc, client, { ...hooks, hostSrc, lifoCoreSrc });
+    await waitForHostReady(client);
   }
 
   async dispose(): Promise<void> {

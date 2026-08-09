@@ -6,6 +6,7 @@
 // 尺寸保护：超过 ~50MB 跳过本次写（README 注明）。
 import type { FileSystemAPI } from '@webcontainer/api';
 import { log, LOG_FILE } from './log.js';
+import { ensureParentDir } from './util.js';
 
 // 快照元数据：版本号固定 1，恢复时校验用。
 export interface SnapshotMeta {
@@ -27,9 +28,13 @@ interface SnapshotRecord {
 
 // 保存结果：meta 为本次生效的元数据（成功写 IDB 或回落的上次值）；
 // skipped=true 表示本次因超过 50MB 上限被跳过（未写 IDB），供 snapshot now 输出明确失败。
+// reason（P0-1 / P4-13）：本次保存的原因 —— changed=内容/结构变化写盘；age=最大年龄强制写盘
+// （见 AUTO_SNAPSHOT_FORCE_INTERVAL_MS，兜底等长编辑）；force=force 调用（snapshot now /
+// pagehide flush）；dedup=内容未变跳过写；cleared=已清除标志挡掉 put；over-limit=超限跳过。
 export interface SaveResult {
   meta: SnapshotMeta;
   skipped: boolean;
+  reason: 'changed' | 'force' | 'age' | 'dedup' | 'cleared' | 'over-limit';
 }
 
 const DB_NAME = 'succinix-persist';
@@ -39,8 +44,34 @@ const KEY = 'current';
 // POC 上限：~50MB。超过则跳过本次写并 console.warn。
 const MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
 
+// P0-1：自动快照「最大年龄强制」间隔。去重签名是「目录结构 + 文件数/总字节」，对
+// 「内容变化但字节数不变」的等长编辑不可见；即使签名一致，超过该间隔也强制全量收集 + 写
+// IDB 一次，把等长编辑的丢失窗口收敛到「发生在最近 30s 内且 tab 恰好崩溃」。浏览器侧
+// force 路径（config/services/motd/workspace）仍即时落盘，此兜底只防 Lifo/shell 编辑。
+export const AUTO_SNAPSHOT_FORCE_INTERVAL_MS = 30000;
+
+// P0-1 决策提纯（可单测）：距上次真实写盘超过间隔 → 强制。lastFullSaveAt=0（未保存过）不强制。
+export function isAgeForced(lastFullSaveAt: number, now: number, intervalMs: number = AUTO_SNAPSHOT_FORCE_INTERVAL_MS): boolean {
+  return lastFullSaveAt > 0 && now - lastFullSaveAt >= intervalMs;
+}
+
 // 无快照/跳过时的空返回，避免调用方判空。
 const EMPTY_META: SnapshotMeta = { version: 1, savedAt: 0, fileCount: 0, totalBytes: 0 };
+
+// 写盘成功后强制落盘（H1 / P2-6 收敛）：快照去重签名是「目录结构 + 文件数/总字节」，
+// 对「内容变更但字节数不变」的等长编辑不可见。浏览器侧写入（env/settings/motd/服务定义/
+// workspace switch）必须写盘后强制保存一次，否则等长修改只落在容器 FS、不随快照持久。
+// tag 供 console.warn 前缀（config/services/motd 各打自己模块名，便于定位）。
+// 单次 saveSnapshot(fs, true) 已足够：persist 的 inflight 重入保护里，force 调用若遇并发
+// 自动快照会先等其完成再重跑一次全量保存（saveSnapshot 内部逻辑），无需调用方重复保存。
+export async function forcePersist(fs: FileSystemAPI, tag = 'persist'): Promise<void> {
+  try {
+    await saveSnapshot(fs, true);
+  } catch (e) {
+    // 文件已写盘成功，快照失败只记日志，不打断配置命令（与自动快照的降级一致）。
+    console.warn(`[${tag}] force snapshot after write failed:`, e);
+  }
+}
 
 // ─── 排除规则（快照遍历时跳过，避免 node_modules 巨量 & RPC 临时文件 & 重建缓存）───
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git']);
@@ -232,6 +263,8 @@ function idbReq<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBR
 let lastSignature = { fileCount: -1, totalBytes: -1, emptyDirsKey: '' };
 let lastSavedMeta: SnapshotMeta | null = null;
 let overLimitWarned = false;
+// P0-1：最近一次真实写盘时间戳（IDB put 时更新）。自动快照据此判定"最大年龄强制"。
+let lastFullSaveAt = 0;
 // 重入保护：并发调用复用同一个进行中的保存 Promise。
 let inflight: Promise<SaveResult> | null = null;
 // "已清除"脏标志：clearSnapshot 置位后，任何进行中/稍后开始的保存都跳过 put，防止把已删快照复活。
@@ -252,13 +285,15 @@ export function saveSnapshot(fs: FileSystemAPI, force = false): Promise<SaveResu
 }
 
 async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
-  const collected = await collectWithGate(fs, force);
+  // P0-1：超过最大年龄间隔（30s）即使签名一致也强制全量收集 + 写 IDB 一次，兜底等长编辑。
+  const ageForced = isAgeForced(lastFullSaveAt, Date.now());
+  const collected = await collectWithGate(fs, force || ageForced);
   if (collected.totalBytes > MAX_SNAPSHOT_BYTES) {
     if (!overLimitWarned) {
       console.warn(`[persist] snapshot skipped: ${collected.totalBytes} bytes exceeds ${MAX_SNAPSHOT_BYTES} limit`);
       overLimitWarned = true;
     }
-    return { meta: lastSavedMeta ?? EMPTY_META, skipped: true };
+    return { meta: lastSavedMeta ?? EMPTY_META, skipped: true, reason: 'over-limit' };
   }
   overLimitWarned = false;
 
@@ -269,22 +304,23 @@ async function doSave(fs: FileSystemAPI, force: boolean): Promise<SaveResult> {
   const sigTotalBytes = collected.sigTotalBytes;
   // N2：空目录参与去重签名（排序拼接，顺序无关）——裸 mkdir + 刷新的空目录变化必须写 IDB。
   const emptyDirsKey = collected.emptyDirs.slice().sort().join(' ');
-  // 内容未变则跳过写（自动快照去重）；force 供手动 snapshot now 强制保存。
-  if (!force && lastSavedMeta && lastSignature.fileCount === sigFileCount && lastSignature.totalBytes === sigTotalBytes && lastSignature.emptyDirsKey === emptyDirsKey) {
-    return { meta: lastSavedMeta, skipped: false };
+  // 内容未变则跳过写（自动快照去重）；force / ageForced 强制保存（ageForced 兜底等长编辑）。
+  if (!force && !ageForced && lastSavedMeta && lastSignature.fileCount === sigFileCount && lastSignature.totalBytes === sigTotalBytes && lastSignature.emptyDirsKey === emptyDirsKey) {
+    return { meta: lastSavedMeta, skipped: false, reason: 'dedup' };
   }
   // 已清除：禁止 put 回写复活已删快照，也不更新缓存（clearSnapshot 已重置）。
-  if (cleared) return { meta: lastSavedMeta ?? EMPTY_META, skipped: false };
+  if (cleared) return { meta: lastSavedMeta ?? EMPTY_META, skipped: false, reason: 'cleared' };
 
   const meta: SnapshotMeta = { version: 1, savedAt: Date.now(), fileCount, totalBytes, sigFileCount, sigTotalBytes };
   const record: SnapshotRecord = { meta, files: collected.files, emptyDirs: collected.emptyDirs };
   await idbReq('readwrite', (s) => s.put(record, KEY));
+  lastFullSaveAt = Date.now();
   lastSignature = { fileCount: sigFileCount, totalBytes: sigTotalBytes, emptyDirsKey };
   lastSavedMeta = meta;
   if (collected.skipped > 0) {
     console.warn(`[persist] snapshot saved: ${fileCount} files, ${totalBytes} bytes (skipped ${collected.skipped} binary/unreadable)`);
   }
-  return { meta, skipped: false };
+  return { meta, skipped: false, reason: force ? 'force' : ageForced ? 'age' : 'changed' };
 }
 
 // 恢复快照：有则逐文件写回容器 FS，返回元数据；无快照返回 null（全新系统）。
@@ -318,16 +354,6 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
   return record.meta;
 }
 
-async function ensureParentDir(fs: FileSystemAPI, path: string): Promise<void> {
-  const idx = path.lastIndexOf('/');
-  if (idx <= 0) return; // 根目录直接文件，无父目录
-  try {
-    await fs.mkdir(path.slice(0, idx), { recursive: true });
-  } catch {
-    /* 目录已存在等，恢复继续 */
-  }
-}
-
 // 清除快照（= 重置系统，下次启动全新）。
 // 防止复活：先置"已清除"脏标志，再等可能的 in-flight 保存结束，最后删除。
 // 标志挡掉清除期间新开始的保存，等待挡掉清除前已在途的 put——两步合起来保证没有回写复活。
@@ -347,6 +373,7 @@ export async function clearSnapshot(): Promise<void> {
     lastSignature = { fileCount: -1, totalBytes: -1, emptyDirsKey: '' };
     lastListingSig = null;
     lastCollected = null;
+    lastFullSaveAt = 0; // 清除后下次保存按正常路径（不年龄强制）
     overLimitWarned = false;
   } finally {
     cleared = false;

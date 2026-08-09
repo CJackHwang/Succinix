@@ -132,6 +132,12 @@ function printHelp(term: Terminal): void {
   term.writeln(`  other commands      Lifo sandbox: grep / cat / wc / echo / curl ...`);
   term.writeln(`  ps / kill <pid>    process table management`);
   term.writeln(`  cwd / setCwd / ping / exit  protocol commands`);
+  term.writeln('');
+  term.writeln('terminal keys');
+  term.writeln(`  Ctrl+C             interrupt the running command (node run) and discard queued commands`);
+  term.writeln(`  Up / Down arrows   command history (session memory)`);
+  term.writeln(`  Tab                complete built-in command names and file paths`);
+  term.writeln(`  Ctrl+L             clear the screen`);
 }
 
 function printPorts(term: Terminal, ports: Map<number, string>): void {

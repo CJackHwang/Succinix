@@ -34,6 +34,7 @@ import {
   MAX_OUTPUT_BYTES,
   withEaccesHint,
   parseKillPid,
+  shouldRemoveCmdFile,
   CD_PREFIX_RE,
 } from './host-route.js';
 
@@ -721,14 +722,16 @@ setInterval(async () => {
     // P0-2（正确性）：处理完（或失败）后删除 /cmd.json —— 防陈旧命令在 host 重启后被执行一次。
     // processedId 是 host 进程内变量，新 host 起步是 -1，跨进程无法去重；若残留未删的
     // /cmd.json，看门狗 kill + respawn 后新 host 会把旧请求当作新命令真实执行一次。
-    // 删除后新 host 读到的是干净通道；浏览器下一拍仍会覆盖写入，行为不变。
-    // 时序安全：host 在 50ms 轮询周期内读到并处理请求，浏览器侧串行链在结果返回后才写下一请求
-    // （见 client.ts enqueue/doExec），此处删除先于浏览器可能写下一请求，不会吞掉新命令。
+    // 但只删「内容仍是刚处理的那个请求」的文件：处理期间可能已有绕过互斥队列的直接写入
+    // （pingDirect / interruptDirect，见 client.ts）把 /cmd.json 覆盖成新请求（如看门狗在
+    // host 忙于长 Lifo/Python 命令时写 ping）。盲目删除会吞掉它 —— 看门狗等不到 pong 误判
+    // host 失联（连续 2 次即重启），Ctrl+C 中断丢失。保留待下一轮轮询处理（决策见 host-route.ts）。
     if (req) {
       try {
-        fs.unlinkSync(CMD_FILE);
+        const current = fs.readFileSync(CMD_FILE, 'utf8');
+        if (shouldRemoveCmdFile(req.id, current)) fs.unlinkSync(CMD_FILE);
       } catch {
-        /* 已删除 / 不存在：忽略 */
+        /* 文件已被删除 / 不可读：忽略 */
       }
     }
   }

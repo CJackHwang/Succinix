@@ -250,4 +250,36 @@ describe('persist 最大年龄强制（P0-1）', () => {
       vi.useRealTimers();
     }
   });
+
+  it('刷新恢复快照后年龄强制仍生效（回归：lastFullSaveAt 恢复时初始化）', async () => {
+    vi.useFakeTimers();
+    try {
+      // 模拟「上一次会话留下的快照」：直接种子进 IDB（绕过 saveSnapshot —— 否则本会话
+      // lastFullSaveAt 会被首次保存置为非零，掩盖「刷新后它为 0」的缺陷）。
+      idb.store.set('current', {
+        meta: { version: 1, savedAt: 1000, fileCount: 1, totalBytes: 4, sigFileCount: 1, sigTotalBytes: 4 },
+        files: [{ path: '/a.txt', content: 'AAAA' }],
+      });
+
+      // 模拟刷新：全新 FS 恢复快照。模块级 lastFullSaveAt 此刻仍为 0（beforeEach 已 clear）。
+      const dst = new FakeFS();
+      await loadSnapshot(dst as unknown as FileSystemAPI);
+      await dst.writeFile('/a.txt', 'BBBB'); // 恢复后等长编辑
+
+      // 未超间隔：仍 dedup（不写）。
+      const dedup = await saveSnapshot(dst as unknown as FileSystemAPI, false);
+      expect(dedup.reason).toBe('dedup');
+
+      // 越过最大年龄间隔 → 年龄强制抓取等长编辑。
+      // 修复前：lastFullSaveAt=0 恒不触发（reason=dedup），等长编辑丢失窗口无界；
+      // 修复后：loadSnapshot 把 lastFullSaveAt 归零到当前时间，30s 后触发 age 强制写。
+      vi.advanceTimersByTime(AUTO_SNAPSHOT_FORCE_INTERVAL_MS);
+      const age = await saveSnapshot(dst as unknown as FileSystemAPI, false);
+      expect(age.reason).toBe('age');
+      const rec = idb.store.get('current') as { files: Array<{ path: string; content: string }> };
+      expect(rec.files.find((f) => f.path === '/a.txt')?.content).toBe('BBBB'); // 等长编辑已入库
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

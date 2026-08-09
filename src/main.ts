@@ -441,8 +441,9 @@ async function interruptCommand(): Promise<void> {
 // 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前强制保存一次
 // （force=true 跳过内容缓存——等长编辑在关闭时也必须落盘，否则必丢）。
 // P4-13：空闲退避 —— saveSnapshot 返回 reason='changed'（真实内容/结构变化）时复位 2.5s；
-// 否则（dedup/age 等）连续空闲拉长到 5s/8s/15s。P0-1 的最大年龄强制（30s）在 persist
-// 内部兜底等长编辑，与退避解耦：即使用户等长编辑后空闲，也会在 30s 内被年龄强制写盘。
+// 否则（dedup/age 等）连续空闲拉长到 5s/10s/15s（首个间隔后每 2 tick 翻倍、上限 15s）。
+// P0-1 的最大年龄强制（30s）在 persist 内部兜底等长编辑，与退避解耦：即使用户等长编辑后
+// 空闲，也会在 30s 内被年龄强制写盘。
 const AUTO_SNAPSHOT_BASE_MS = 2500;
 const AUTO_SNAPSHOT_MAX_MS = 15000;
 

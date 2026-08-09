@@ -349,6 +349,11 @@ export async function loadSnapshot(fs: FileSystemAPI): Promise<SnapshotMeta | nu
   // 恢复写回了整树：目录列表签名缓存已过期，置空让下一次保存重新全量遍历（避免复用恢复前的结果）。
   lastListingSig = null;
   lastCollected = null;
+  // P0-1 修复：lastFullSaveAt 恢复到「现在」—— 否则刷新后它为 0，而空闲时（内容未变
+  // 一直 dedup）又永不更新，isAgeForced 恒为 false，最大年龄强制（30s 兜底等长 shell 编辑）
+  // 在整个会话里永不触发，等长编辑的丢失窗口变成无界。恢复时归零到当前时间，让 30s 窗口
+  // 从本次恢复起重新计时（恢复的这张快照即视为刚落盘）。
+  lastFullSaveAt = Date.now();
   // TASK12：快照事件采集点（INFO）——恢复成功后记录（写回先完成，日志行追加在旧日志尾部）。
   void log('INFO', `snapshot restored: ${record.meta.fileCount} files, ${record.meta.totalBytes} bytes`);
   return record.meta;

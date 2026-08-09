@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TODO-optimizations: full 19-item architecture/code-quality batch (`docs/TODO-optimizations.md`)** —
+  - **P0**: auto-snapshot adds a 30 s **maximum-age force** (`persist.isAgeForced` + `AUTO_SNAPSHOT_FORCE_INTERVAL_MS`) bounding the equal-length-edit loss window; the host now **deletes `/cmd.json`** after processing a request so a stale command is never executed by a freshly respawned host.
+  - **P1**: the `createTerminalExecutor()` facade gains `pingDirect()` + `respawn()` (single-host invariant) and `boot` accepts `EngineBootHooks`; the README documents the "two execution surfaces, one host" split. `host.ts` pure logic (route classification / path mapping / output cap / EACCES hint / pid parsing) extracted to `src/engine/host-route.ts` (unit-tested, in the coverage gate). Process-ownership `scope` is documented as **heuristic, not a security boundary**.
+  - **P2**: shared `src/theme.ts` (ANSI colors), `src/util.ts` (`sleep`/`ensureParentDir`), `src/engine/sleep.ts` (engine self-contained sleep), `forcePersist` consolidated in `persist.ts` (tag param); version injected at build time as `__SUCCINIX_VERSION__` (`src/version.ts`, single source = root `package.json`); the three host spawn sites merged via `attachOutputCollector` + `spawnTracked`; `dbStart` failure blocks consolidated into one `fail()`; `execute`/`scenarioRun` share `callHostRpc`.
+  - **P3**: `commands.ts` pure functions (21 cases) and `TerminalClient` (20 cases: serial queue / read-only retry / `pingDirect` channel logic / `interruptDirect`) now unit-tested; `client.ts` + `host-route.ts` added to the coverage gate (~94.5% lines). The facade has 14 cases (`tests/engine-facade.test.ts`). `commands.ts` stays out of the gate by scope decision (would drag the aggregate below 70%).
+  - **P4**: auto-snapshot idles with exponential backoff (2.5 s → 5/10/15 s, reset on real change); `SaveResult.reason` added. Log appendFile O(n) read-modify-write recorded as backlog.
+  - **P5**: **Ctrl+C interrupts a running command and clears the queue** (`interrupt` protocol command + `interruptDirect` bypassing the queue), **Up/Down command history** + **Tab completion** (built-ins + file paths), unknown escape sequences dropped instead of garbling the terminal.
+  - **P6**: CSP evaluation recorded as deferred (WebContainer internals need blob workers / wasm-unsafe-eval / npm-connect, not shipped unverified); `?test=1`/`?bench=1`/`?scenario=1` documented as developer-only test hooks.
+
 - **Process ownership annotation (process isolation for host projects)** — `ps()` responses now carry a `scope` field (`system` / `container` / `unknown`) plus an optional `containerId`, derived from the process launch cwd (`cd /workspace/c-<id>` prefix). Protocol-compatible extension: existing fields unchanged, new fields additive. Host projects (SunamAI) use it to filter processes per container and block cross-container kills.
 
 - **Boot screen simplified (no splash overlay, boot log streams into the terminal)** — removed the DOM splash overlay (ASCII-art title + system-info grid); boot logs (`[  OK  ]` lines) are written straight to xterm, the motd/prompt follow directly after the self-test without clearing the screen (scrollback shows the full boot log). Environment-error page stays DOM. `?test=1` / `?bench=1` / `?scenario=1` modes unaffected; `verify-deploy.mjs` reads `__succinixResult`.
@@ -42,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **P0-1 follow-up: the auto-snapshot 30 s age-force never re-armed after a snapshot restore** — `lastFullSaveAt` started at 0 on a fresh page and, with a restored snapshot that kept deduping (idle), never updated, so `isAgeForced` stayed false for the whole session and an equal-length shell edit after a refresh had an *unbounded* loss window. `loadSnapshot` now re-arms the clock to `Date.now()` (regression test seeds a snapshot into IndexedDB and asserts `reason=age` fires after the interval).
+- **P0-2 follow-up: the post-request `/cmd.json` delete could swallow a direct probe** — the `finally` deleted whatever was in the file; a watchdog `pingDirect` / Ctrl+C `interruptDirect` written (queue-bypassing) while the host was busy on a long Lifo/Python command was deleted instead of processed, so the watchdog could count a false failure (2 ⇒ spurious host restart). The delete now only fires when the file still holds the just-processed request id (`shouldRemoveCmdFile`, unit-tested); a newer out-of-band request is left for the next poll.
 - TASK24 复审（re-review fixes; self-test gate 67 → **71**）: four new self-test checks —
   `cwd persisted to /etc/succinix.cwd (browser view)` (proves the session cwd is written to the
   browser-visible path, i.e. survives a snapshot + refresh), `env merged into node child

@@ -11,6 +11,15 @@
 
 ### Changed
 
+- **TODO-optimizations 全量 19 项（`docs/TODO-optimizations.md` 架构审计批次）** ——
+  - **P0**：自动快照新增 **30s 最大年龄强制**（`persist.isAgeForced` + `AUTO_SNAPSHOT_FORCE_INTERVAL_MS`），把等长编辑的丢失窗口收敛到有界；host 处理完请求后**删除 `/cmd.json`**，防陈旧命令被重启后的新 host 执行。
+  - **P1**：`createTerminalExecutor()` 门面补全 `pingDirect()` + `respawn()`（单 host 不变量），`boot` 接受 `EngineBootHooks`；README 记录「两个执行面、同一 host」分工。host.ts 纯逻辑（路由判定 / 路径映射 / 输出截断 / EACCES 提示 / pid 解析）抽到 `src/engine/host-route.ts`（已单测 + 入覆盖门禁）。进程归属 `scope` 文档化标注为**启发式、非安全边界**。
+  - **P2**：抽 `src/theme.ts`（ANSI 色）、`src/util.ts`（sleep/ensureParentDir）、`src/engine/sleep.ts`（引擎自包含 sleep），`forcePersist` 收敛到 `persist.ts`（带 tag）；版本号构建期注入 `__SUCCINIX_VERSION__`（`src/version.ts`，单一来源 = 根 package.json）；host 三处 spawn 经 `attachOutputCollector` + `spawnTracked` 合并；`dbStart` 失败块收敛为单个 `fail()`；`execute`/`scenarioRun` 共享 `callHostRpc`。
+  - **P3**：`commands.ts` 纯函数（21 用例）与 `TerminalClient`（20 用例：串行队列 / 只读重试 / pingDirect 通道判定 / interruptDirect）补单测；`client.ts` + `host-route.ts` 入门禁（~94.5% lines）。门面 14 用例（`tests/engine-facade.test.ts`）。`commands.ts` 按范围决策不入聚合门禁（会把整体拉到 70% 以下）。
+  - **P4**：自动快照空闲指数退避（2.5s → 5/10/15s，仅真实变化复位）；`SaveResult.reason` 新增。日志 appendFile O(n) 读改写记为 backlog。
+  - **P5**：**Ctrl+C 中断当前命令并清空队列**（`interrupt` 协议命令 + 绕过队列的 `interruptDirect`）、**上下箭头命令历史** + **Tab 补全**（内置命令 + 文件路径）、未知转义序列丢弃不产生乱码。
+  - **P6**：CSP 评估记录为暂缓（WebContainer 内部依赖 blob worker / wasm-unsafe-eval / npm 连接，未验证不强上）；`?test=1`/`?bench=1`/`?scenario=1` 文档化标注为仅供开发者的测试钩子。
+
 - **进程归属标注（为宿主项目提供进程隔离）** —— `ps()` 响应新增 `scope` 字段（`system` / `container` / `unknown`）+ 可选 `containerId`，依据进程启动 cwd（`cd /workspace/c-<id>` 前缀）判定。协议兼容扩展：现有字段不变，新字段纯增量。宿主项目（SunamAI）据此按容器过滤进程并拦截跨容器 kill。
 
 - **启动界面精简（去掉覆盖层，boot 日志直接进终端）** —— 移除 DOM 覆盖层（ASCII 大标题 + 系统信息网格）；boot 日志（`[  OK  ]` 行）直接写入 xterm，motd + 提示符接在自检后（不清屏，滚动可回看完整 boot 日志）。环境错误页保留 DOM。`?test=1` / `?bench=1` / `?scenario=1` 模式不受影响；`verify-deploy.mjs` 改读 `__succinixResult`。
@@ -44,6 +53,8 @@
 
 ### Fixed
 
+- **P0-1 跟进：快照恢复后 30s 年龄强制不再重新武装** —— 新页面 `lastFullSaveAt` 为 0，恢复快照后空闲一直 dedup 又永不更新，`isAgeForced` 整个会话恒为 false，刷新后的等长 shell 编辑丢失窗口变成无界。`loadSnapshot` 现在把时钟归零到 `Date.now()`（回归测试直接向 IndexedDB 种子快照，断言间隔后 `reason=age` 触发）。
+- **P0-2 跟进：处理后删除 `/cmd.json` 可能吞掉直接探活** —— `finally` 盲目删除文件内容；看门狗 `pingDirect` / Ctrl+C `interruptDirect`（绕过队列）在 host 忙于长 Lifo/Python 命令时写入的请求被删而非处理，看门狗可能误计失败（连续 2 次即误重启 host）。现在只在文件仍持有刚处理请求 id 时删除（`shouldRemoveCmdFile`，已单测）；更新的带外请求留给下一轮轮询。
 - TASK24 复审（re-review fixes；自检门禁 67 → **71**）：四个新自检检查 ——
   `cwd persisted to /etc/succinix.cwd (browser view)`（证明会话 cwd 写入浏览器可见路径，
   即快照 + 刷新后仍存）、`env merged into node child (process.env)`（证明 `/etc/succinix.env`

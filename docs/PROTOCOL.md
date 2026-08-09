@@ -202,6 +202,11 @@ settling the result, so result files are bounded even for huge dumps.
   when the caller runs `cd /workspace/c-<id> && <cmd>`) → `container` + `containerId`;
   otherwise `unknown`. These are new fields — the existing `pid/cmd/status/...` contract
   is unchanged.
+  - ⚠️ **Not a security boundary.** `scope` is derived from the command string + launch
+    cwd and can be spoofed (any user process whose command looks like a system asset is
+    classified `system`). It is for **UI display and query filtering only** — do not use
+    it as a trust basis for permission / isolation / kill interception. For hard
+    semantics, switch to explicit declaration (the spawner passes `scope` at spawn time).
 - **`kill`** sends SIGTERM to a table entry; the entry flips to `exited` on the child's
   `close` event. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
   `close` never fires in that case.

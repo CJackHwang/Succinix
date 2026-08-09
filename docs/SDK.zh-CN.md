@@ -35,6 +35,22 @@ const r2 = await term.exec('grep -i foo file.txt');        // runtime: "lifo"
 await term.dispose();
 ```
 
+`TerminalExecutor` 门面是**完整的生态执行面**（P1-3）：
+
+| 方法 | 作用 |
+| --- | --- |
+| `boot(wc, opts?)` | 注入 host 资产、spawn host、等待它应答 `ping`。 |
+| `exec(cmd, opts?)` | 跑一条命令（统一路由）；超时返回 `{ ok:false, timedOut:true }` 而非抛异常。 |
+| `spawn(cmd, opts?)` | 后台长驻进程（node 系）；返回 `{ pid }`。 |
+| `listProcesses()` | 统一进程表快照（`ps`）。 |
+| `kill(pid)` | 对表条目发 SIGTERM；成功返回 `true`。 |
+| `ping()` | host 存活探针。 |
+| `pingDirect(timeoutMs?)` | 看门狗探活——**绕过串行化队列**，长命令占着队列时也能用。`true`=存活，`false`=超时，`null`=通道忙（本轮跳过，中性）。 |
+| `respawn()` | 重启 host：kill 旧 → 重注入资产 → spawn 新 → 等待就绪。保持单 host 不变量。 |
+| `dispose()` | 释放资源（kill host、清引用）。幂等。 |
+
+> **两个执行面、同一 host**（P1-3）。Succinix 应用自身的终端额外使用低层 `TerminalClient`（`bootEngineHost` 返回）走命令路径，因为其命令处理器依赖协议原始语义（`exec` 超时抛异常、`processes`/`killed`/`cwd` 字段、命令上下文里的 `client` 句柄）。两个执行面驱动的是**同一个** host、**同一条** `/cmd.json` 通道；刻意不是同一个对象。内嵌请用 `createTerminalExecutor()`。
+
 - **如何内嵌：** 作为库，同页、同 origin、同一 WebContainer。
 - **集成深度：** 深——engine 共享应用的容器文件系统，应用与沙箱看到同一份文件。这是本产品的
   核心差异化。

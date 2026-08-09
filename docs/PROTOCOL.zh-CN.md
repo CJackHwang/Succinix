@@ -34,7 +34,7 @@ Browser (TerminalClient)                Container (node host.js)
 {
   "protocol": 1,        // protocol version（协议版本，v1 加入；字段缺失视为 1）
   "id": 42,             // 唯一请求 id，按客户端严格递增
-  "cmd": "run",         // 取值：run | spawn | ps | kill | cwd | setCwd | ping | exit
+  "cmd": "run",         // 取值：run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
   "opts": {             // 命令特定选项（可选）
     "command": "...",   // 完整命令字符串（run / spawn）
     "pid": 1234,        // 目标进程 id（kill）
@@ -50,6 +50,7 @@ Browser (TerminalClient)                Container (node host.js)
 | `spawn`  | 启动后台长驻进程（node）                        | `command`、`timeout` |
 | `ps`     | 列出进程表                                     | —                    |
 | `kill`   | 终止真实子进程                                 | `pid`                |
+| `interrupt` | 终止当前前台 `run` 子进程（Ctrl+C）           | —                    |
 | `cwd`    | 返回会话工作目录                               | —                    |
 | `setCwd` | 显式设置会话工作目录                           | `cwd`                |
 | `ping`   | 存活探针                                       | —                    |
@@ -57,6 +58,13 @@ Browser (TerminalClient)                Container (node host.js)
 
 host 每 **50 ms** 轮询 `/cmd.json`。它跟踪上次处理的 `id`，对 `id` 不是数字或等于上次值的请求
 直接忽略（去重）。未知 `cmd` 值以 `{ "ok": false, "error": "unknown command: <cmd>" }` 应答。
+
+处理完一个请求后 host **删除 `/cmd.json`**（P0-2）。`processedId` 是进程内去重，新 spawn 的
+host 起步为 `-1`，因此看门狗 kill + respawn 后残留的陈旧 `/cmd.json` 会被新 host 当作新命令
+真实执行一次——删除把这个窗口关掉（浏览器下一拍仍会覆盖写入，行为不变）。
+删除是**选择性**的：只删「文件内容仍是刚处理的那个请求」的文件；若处理期间有绕过队列的
+直接写入（`pingDirect`/`interruptDirect`）把 `/cmd.json` 覆盖成新请求，则保留它待下一轮
+轮询处理（否则看门狗等不到 pong 会误判 host 失联）。
 
 ## 3. 响应格式（`/result-<id>.json`）
 
@@ -85,10 +93,20 @@ host 为每个请求恰好写一个结果文件，以请求 id 命名。浏览�
 | `spawn`  | `{ ok: true, pid, runtime: "node" }`（立即）；确认窗口内失败 `{ ok: false, exitCode, error, runtime }` |
 | `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
 | `kill`   | `{ ok, killed, message }`                                        |
+| `interrupt` | `{ ok, kind: "interrupted", pid, killed, message }` —— `pid` 为数字 = 已向当前前台 `run` 子进程发 SIGTERM；`null` = 无在途可中断 run |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
 | `setCwd` | `{ ok, kind: "cwd", cwd }`（新的会话 cwd）                 |
 | `ping`   | `{ ok, kind: "pong" }`                                           |
 | `exit`   | `{ ok, kind: "bye" }`                                            |
+
+### 中断（`interrupt`）
+
+`interrupt` 实现浏览器 **Ctrl+C**（P5-15）。host 跟踪最近一个前台 `run` 子进程（真实 Node
+子进程）的 pid；`interrupt` 向它发 SIGTERM。范围：只针对那个前台 `run`——**后台 `spawn` 服务
+绝不被打断**，纯 Lifo 命令（在沙箱内运行、不在进程表里）不可中断（沙箱无 abort API）。kill
+后子进程的 `close` 事件结算原 `run` 请求（其结果文件出现）并清除跟踪的 pid，浏览器在途等待
+随即解除。客户端经 `interruptDirect()` 发送——直接写 `/cmd.json`、绕过串行化队列（排队的
+`interrupt` 只会在它要停掉的命令结束后才执行，毫无意义）。
 
 ### 会话 cwd（`cwd` / `setCwd`）
 
@@ -163,6 +181,9 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
   路径）→ `system`；否则子进程 spawn cwd 落在容器根（`.../c-<id>`，即调用方执行
   `cd /workspace/c-<id> && <cmd>` 时的形态）→ `container` + `containerId`；其余 → `unknown`。
   均为新增字段，既有 `pid/cmd/status/...` 契约不变。
+  - ⚠️ **不是安全边界。** `scope` 由命令串 + spawn cwd 推导，可被伪装（任何用户进程只要命令
+    长得像系统资产就会被标为 `system`）。仅用于 **UI 展示与查询过滤**——不可作为权限 / 隔离 /
+    kill 拦截的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传 `scope`）。
 - **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。失败 spawn（如
   ENOENT）显式标记 `exited`，因为该情况下 `close` 永不触发。
 - **Lifo 侧进程仅可列出**——它们不在表中，`kill` 报 "not in process table" 消息而非假装终止。

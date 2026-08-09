@@ -117,3 +117,19 @@ export function parseKillPid(cmd: string, optsPid: unknown): number {
   const m = /^kill\s+(\d+)$/.exec(cmd);
   return m ? Number(m[1]) : NaN;
 }
+
+// ─── /cmd.json 处理后的删除决策（P0-2）───
+// 轮询循环处理完一个请求后应删除 /cmd.json，防陈旧命令在 host 重启（processedId 回到 -1）
+// 后被新 host 当作新命令真实执行。但**只删「内容仍是刚处理的那个请求」的文件**：
+// 若处理期间有绕过互斥队列的直接写入（pingDirect / interruptDirect）把 /cmd.json 覆盖成
+// 新请求（如看门狗在 host 忙于长 Lifo 命令时写 ping），盲目删除会吞掉该请求 —— 看门狗
+// 等不到 pong 误判 host 失联、Ctrl+C 中断丢失。保留它，下一轮轮询会读取并处理。
+export function shouldRemoveCmdFile(processedId: number, currentJson: string | null): boolean {
+  if (currentJson === null) return false; // 文件已被删除：无需再删
+  try {
+    const cur = JSON.parse(currentJson) as { id?: unknown };
+    return typeof cur.id === 'number' && cur.id === processedId;
+  } catch {
+    return false; // 内容损坏 / 不可读：不删（下轮重读；解析错误由读取路径兜底）
+  }
+}

@@ -37,6 +37,27 @@ const r2 = await term.exec('grep -i foo file.txt');        // runtime: "lifo"
 await term.dispose();
 ```
 
+The `TerminalExecutor` facade is the **complete ecosystem surface** (P1-3):
+
+| Method | Purpose |
+| --- | --- |
+| `boot(wc, opts?)` | Inject host assets, spawn the host, wait until it answers `ping`. |
+| `exec(cmd, opts?)` | Run one command (unified routing); a timeout returns `{ ok:false, timedOut:true }` instead of throwing. |
+| `spawn(cmd, opts?)` | Background long-running process (node family); returns `{ pid }`. |
+| `listProcesses()` | Snapshot of the unified process table (`ps`). |
+| `kill(pid)` | SIGTERM a table entry; returns `true` on success. |
+| `ping()` | Host liveness probe. |
+| `pingDirect(timeoutMs?)` | Watchdog probe that **bypasses the serialized queue** — usable while a long command occupies it. `true`=alive, `false`=timeout, `null`=channel busy (skip the round, neutral). |
+| `respawn()` | Restart the host: kill old → re-inject assets → spawn fresh → wait ready. Preserves the single-host invariant. |
+| `dispose()` | Release resources (kill host, clear refs). Idempotent. |
+
+> **Two execution surfaces, one host** (P1-3). The Succinix app's own terminal additionally
+> uses the lower-level `TerminalClient` (from `bootEngineHost`) for its command path, because
+> its command handlers rely on raw protocol semantics (`exec` throwing on timeout, the
+> `processes`/`killed`/`cwd` fields, a `client` handle in command contexts). Both surfaces
+> drive the **same** host and the **same** `/cmd.json` channel; they are deliberately not the
+> same object. Embedders should use `createTerminalExecutor()`.
+
 - **How it embeds:** as a library, same page, same origin, same WebContainer.
 - **Integration depth:** deep — the engine shares the app's container filesystem, so the
   app and the sandbox see the same files. This is the product's core differentiator.

@@ -669,10 +669,26 @@ busy 时连续输入的命令排进 `queue`，**没有任何方式丢弃它们**
 | P2-10 | 抽 `callHostRpc`（python 预注入 + client.terminal，phase 区分注入/RPC 失败）；execute / scenarioRun 变薄包装，日志文案与返回形状逐一保持。 |
 | P3-11 | commands 纯函数补 21 用例（workspace/uname/netstat/port 匹配/label/fmtUnit/分发冒烟），导出 processLabel/fmtUnit；client 补 20 用例（串行队列/只读重试/pingDirect/interruptDirect）并进入覆盖门禁。**commands.ts 未入门禁**：1409 行纳入会把聚合拉低到 70% 以下（vitest 无按文件分档阈值），纯函数已单测、处理器由 e2e/自检覆盖。 |
 | P3-12 | `tests/engine-facade.test.ts` 14 用例：boot 注入顺序、exec 超时收敛为 `{ok:false,timedOut:true}`、spawn/listProcesses/kill/ping/pingDirect/respawn/dispose 幂等、未 boot 抛错。 |
-| P4-13 | 自动快照改为递归 setTimeout 指数退避（2.5s → 5/8/15s，仅 `reason='changed'` 时复位）；与 P0-1 年龄强制解耦（年龄强制不打断退避）。`SaveResult` 增加 `reason` 字段。 |
-| P4-14 | backlog：WebContainer FileSystemAPI 无 appendFile（已在 log.ts 注释与 README 标注），暂不可做。 |
+| P4-13 | 自动快照改为递归 setTimeout 指数退避（2.5s → 5/10/15s，首个间隔后每 2 tick 翻倍、仅 `reason='changed'` 时复位）；与 P0-1 年龄强制解耦（年龄强制不打断退避）。`SaveResult` 增加 `reason` 字段。 |
+| P4-14 | backlog：WebContainer FileSystemAPI 无 appendFile（已在 log.ts 注释与 README Known Boundaries 标注），暂不可做。 |
 | P5-15 | host 增加 `interrupt` 协议命令（currentRunPid 跟踪前台 run，SIGTERM，后台 spawn/纯 Lifo 不碰）；client 增加 `interruptDirect()`（绕过队列直接写 cmd.json）；main Ctrl+C busy 时中断当前命令。PROTOCOL 文档补充。 |
 | P5-16 | 上下箭头历史（内存）+ Tab 补全（内置命令 + 文件路径 readdir，多候选列出 + 共同前缀）；未知转义序列丢弃不产生乱码。 |
 | P5-17 | Ctrl+C busy 时先清空队列（提示 discarded N）再发中断，runCommand finally 回到提示符。 |
 | P6-18 | 评估后按「不兼容不强行上」：README Known Boundaries 记录 CSP 评估结论（worker-src blob / wasm-unsafe-eval / connect-src 依赖 WebContainer 内部行为，需 ?test=1 验证后启用，暂缓）。 |
 | P6-19 | README Testing 小节标注 ?test/?bench/?scenario 是测试钩子，生产链接不得出现。 |
+
+# 附录：后续复审修复（2026-08-10，同批次提交后独立复查）
+
+> 复查 b5bda8b 批次时发现 2 个代码缺陷 + 若干文档缺口，已全部修复并补回归测试。基线重验：
+> `tsc` 0 错 · lint 0 error · vitest 全过（host-route 27 / persist 19 新增用例）· 覆盖门禁 ≥70% · 完整 e2e（verify-deploy + bench + 14 scenarios + lang-verify 32 项）全过。
+
+| 编号 | 发现的问题（原始批次偏差） | 修复 |
+| --- | --- | --- |
+| P0-1 | **年龄强制在快照恢复后失效**：`loadSnapshot` 未初始化 `lastFullSaveAt`（仍是 0），而空闲时内容未变一直 dedup 又永不更新 → `isAgeForced` 恒 false，**刷新后等长编辑的 30s 兜底永不触发，丢失窗口无界**。README 边界描述因此偏乐观。 | `loadSnapshot` 末尾 `lastFullSaveAt = Date.now()`（恢复的这张快照视为刚落盘，30s 窗口重新计时）。回归测试直接向 IndexedDB 种子快照模拟「刷新后恢复」，断言间隔后 `reason=age`。 |
+| P0-2 | **finally 盲目删 `/cmd.json` 吞掉带外请求**：处理期间看门狗 `pingDirect` / Ctrl+C `interruptDirect`（绕过队列）写入的新请求被一并删除 → 看门狗等不到 pong 误计失败（连续 2 次误重启 host）、中断丢失。原始注释的时序安全论证只覆盖了串行链，没覆盖带外直接写入。 | 删除前读回校验：仅当文件内容仍是刚处理请求的 id 才删（`host-route.shouldRemoveCmdFile` 纯函数 + 5 用例）；更新的带外请求保留待下轮轮询。 |
+| P1-5 | **README 进程管理小节缺 scope 启发式标注**（完成记录称"README 标注"，实际只改了 host-procs.ts + PROTOCOL.md 且 PROTOCOL 缺「非安全边界」）。 | README / PROTOCOL（中英）补「启发式、非安全边界、仅 UI 展示与查询过滤」。 |
+| P4-14 | **README 缺日志读改写 backlog 标注**（完成记录称"已在 README 标注"，实际 README 未提）。 | README Known Boundaries（中英）补 O(n) 读改写说明。 |
+| P5-15/16/17 | **新交互特性未入文档**：README 特性清单与 `help` 输出都没提 Ctrl+C 中断 / 历史 / Tab 补全。 | README（中英）特性清单 + `help` 输出补 terminal keys 段。 |
+| 文档同步 | **中文文档滞后**：`docs/README.zh-CN.md`、`docs/PROTOCOL.zh-CN.md`、`docs/SDK.zh-CN.md` 均未同步批次改动（提交只改了英文）。 | 中英双语文档全部对齐（含测试钩子 P6-19、CSP P6-18、两个执行面 P1-3、快照边界 P0-1）。 |
+| CHANGELOG | **批次未记入 CHANGELOG**（提交文件列表无 CHANGELOG）。 | `CHANGELOG.md` + `CHANGELOG.zh-CN.md` [Unreleased] 补 19 项批次 + 本附录 2 个修复。 |
+| 陈旧注释 | vitest.config「6 个文件」→ 8 个；main.ts 退避「5s/8s/15s」→ 实际 5s/10s/15s。 | 已修正。 |

@@ -14,6 +14,7 @@ import {
   MAX_OUTPUT_BYTES,
   withEaccesHint,
   parseKillPid,
+  shouldRemoveCmdFile,
   CD_PREFIX_RE,
 } from '../src/engine/host-route.js';
 
@@ -169,5 +170,26 @@ describe('CD_PREFIX_RE（cd 同步判定）', () => {
     expect(CD_PREFIX_RE.test('cd')).toBe(true);
     expect(CD_PREFIX_RE.test('cdx')).toBe(false);
     expect(CD_PREFIX_RE.test('echo cd')).toBe(false);
+  });
+});
+
+describe('shouldRemoveCmdFile（P0-2 /cmd.json 删除决策）', () => {
+  it('文件内容仍是刚处理的请求 → 删除', () => {
+    expect(shouldRemoveCmdFile(5, JSON.stringify({ id: 5, cmd: 'run' }))).toBe(true);
+  });
+
+  it('被更新的请求覆盖（id 不同，如 pingDirect/interruptDirect 直接写入）→ 保留待下轮处理', () => {
+    expect(shouldRemoveCmdFile(5, JSON.stringify({ id: 6, cmd: 'ping' }))).toBe(false);
+    expect(shouldRemoveCmdFile(5, JSON.stringify({ id: 6, cmd: 'interrupt' }))).toBe(false);
+  });
+
+  it('文件已不存在（null）→ 无需再删', () => {
+    expect(shouldRemoveCmdFile(5, null)).toBe(false);
+  });
+
+  it('内容损坏 / id 缺失 / 非数字 id → 不删（下轮重读，解析错误由读取路径兜底）', () => {
+    expect(shouldRemoveCmdFile(5, 'not json')).toBe(false);
+    expect(shouldRemoveCmdFile(5, JSON.stringify({ cmd: 'run' }))).toBe(false);
+    expect(shouldRemoveCmdFile(5, JSON.stringify({ id: '5', cmd: 'run' }))).toBe(false);
   });
 });

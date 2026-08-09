@@ -16,13 +16,14 @@
 ## 特性
 
 - **全屏终端体验** — 居中的 DOM 启动画面（boot splash）带系统自检与环境不适配优雅退出（显示专业错误页而非降级），随后进入交互式 Shell（`guest@succinix:~$`）。
+- **交互终端按键（REPL）** — **Ctrl+C** 中断当前运行命令并丢弃排队命令（`node`/`npm`/`npx` run 经 `interrupt` 协议被 kill；纯 Lifo 命令与后台服务不受影响）、**上下箭头**浏览命令历史（会话内存）、**Tab** 补全内置命令名与文件路径（多候选列出）、**Ctrl+L** 清屏。
 - **统一命令执行** — 单一终端入口：
   - `node`、`npm`、`npx` 及项目二进制运行在**真实 Node.js 进程**上（WebContainer）。
   - `python` / `python3` / `pip` / `pip3` 运行在**内置 Pyodide 运行时**（Python 3.14.2，Pyodide 314.0.4）——常驻 daemon 作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；`pip` 映射到 Pyodide 的 **micropip**（纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在）；交互式 REPL 不支持（WebContainer stdin 边界）。
   - 其余一切（`grep`、`sed`、`awk`、`cat`、`tar`、`curl`、管道、重定向……）运行在 **Lifo**——一个 TypeScript 实现的 Unix 用户态。
 - **会话工作目录（融合基石）** — Lifo 里的 `cd` 现在驱动 host 维护的**会话 cwd**（持久化到 `/etc/succinix.cwd`，刷新恢复），并应用到每个真实 Node/Python 子进程（`spawn cwd`）。`pwd` 显示会话 cwd，`node`/`python` 看到同一目录——不再有 `cd /ws/proj && npm install` 装到容器根的问题。`cd` 到不存在目录时会话 cwd 不变。`lang` 列出内置运行时与版本。（TASK24：`/workspace` 是 Lifo 挂载视图，真实容器 FS 没有该路径；node/python 子进程实际 spawn 在映射后的 host 真实目录，子进程里 `process.cwd()` 报真实路径如 `/home/<wc-id>/proj`，`pwd`/`cwd` 仍显示 Lifo 视角 `/workspace/...`。）
 - **共享文件系统** — 浏览器（`wc.fs`）与 Lifo 命令操作的是**同一份文件**。无需桥接代码：WebContainer 为进程虚拟化 `node:fs`，Lifo 通过 `NativeFsProvider` 消费它。
-- **进程管理** — 统一进程表上的 `ps` / `kill`（真实子进程 + 状态跟踪），含后台 `spawn`。
+- **进程管理** — 统一进程表上的 `ps` / `kill`（真实子进程 + 状态跟踪），含后台 `spawn`。每个 `ps` 条目带 `scope` 字段（`system` / `container` / `unknown`，`container` 时附 `containerId`）——**启发式判定**（命令串 + 进程启动 cwd，`cd /workspace/c-<id> && ...` 前缀），仅用于 **UI 展示与查询过滤，不是安全边界**：用户进程只要命令长得像系统进程（如 `node /usr/lib/succinix/fake.js`）就会被标为 `system`。不可作为权限 / 隔离 / kill 拦截的信任依据（见 [docs/PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)）。
 - **端口管理** — 通过 WebContainer `server-ready` 事件探测服务，`ports` 列出端口与预览 URL。
 - **数据库** — `db start` 在容器内启动真实 Postgres（tinbase，PGlite/WASM 引擎）；`db status` / `db stop` 管理它。
 - **持久化** — 工作区（文件、配置、env、settings、工作区）快照到 IndexedDB，boot 时恢复；刷新永不丢用户文件。`snapshot` 命令查看状态 / 手动保存 / 重置。快照以文本为主：二进制/不可读文件跳过（在保存日志中计数报告）；收集大小超过 ~50 MB 的快照跳过并告警而非写入（`snapshot now` 报告 `skipped (over 50MB limit)`）。tinbase 数据库存储（`.tinbase`，PGlite/WASM）整体排除——它是二进制的，纯文本的部分恢复会损坏它；因此 tinbase 数据在会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新（刷新重建全新 store）。
@@ -98,7 +99,8 @@ Succinix 有分层测试体系，本地与 CI（GitHub Actions）一致。测试
 
 - **Lint** — `npm run lint`（`eslint.config.js` flat config）。`typescript-eslint` recommended + 项目规则：禁 `any`（error）、无遗留 `console.log`（warn；`console.warn`/`error` 按降级日志约定允许，host 侧文件豁免）、无未用变量/导入。门禁：**0 error**。
 - **Typecheck** — `npm run typecheck`（`tsc -p tsconfig.json --noEmit`）。门禁：**0 error**。
-- **单测** — `npm run test`（Vitest，node 环境）覆盖纯逻辑模块 `src/log.ts`、`src/persist.ts`、`src/services.ts`、`src/pkg.ts`、`src/motd.ts`、`src/config.ts`（内存 mock，见 `tests/`）。`npm run test:coverage` 追加 v8 覆盖率门禁：核心文件 **≥70%** statements/branches/functions/lines。
+- **单测** — `npm run test`（Vitest，node 环境）覆盖纯逻辑模块 `src/log.ts`、`src/persist.ts`、`src/services.ts`、`src/pkg.ts`、`src/motd.ts`、`src/config.ts`、`src/engine/host-route.ts`、`src/engine/client.ts`（内存 mock，见 `tests/`）；`commands.ts` 纯函数（workspace/uname/netstat/端口匹配/label）也已单测。`npm run test:coverage` 追加 v8 覆盖率门禁：入禁文件 **≥70%** statements/branches/functions/lines。
+- **测试模式 URL 是开发者钩子（P6-19）** — `?test=1`、`?bench=1`、`?scenario=1` **仅供测试**：它们会把内部句柄挂到 `window`（`__succinixResult` / `__succinixBench` / `__succinixScenario`，其中最后一个可驱动真实命令），**绝不可出现在生产链接中**。正常访问不带任何 query 参数，不暴露任何内部对象。
 - **e2e** — `npm run test:e2e` 构建一次，然后在 headless Chrome 里对 `vite preview` 依次跑 CDP 脚本：
   1. `scripts/verify-deploy.mjs` — 部署就绪门禁 + `?test=1` 自检（门禁 **≥71 passed, 0 failed**）；
   2. `scripts/bench.mjs` — 性能基准（JSON 输出）；
@@ -250,8 +252,10 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 - **首次 `python` 命令慢**：Pyodide 运行时（~13 MB JS + wasm + stdlib）首用懒注入容器，且常驻 daemon 首次 `loadPyodide` 需一次性初始化，首个 `python` 命令需数秒；后续命令复用实例、快。它是系统资产、不依赖用户 `npm install`，不会被用户操作装坏。
 - **看门狗探针可能被排队命令吞掉**：host 存活看门狗向单槽 `/cmd.json` 通道写直接 `ping` 探针；若用户命令在 ~120 ms host 轮询窗口内入队会覆盖探针，该探针超时、看门狗跳过该轮（中性，不算失败）。这只是在罕见重叠时把存活检测推迟一个 30s 周期；不会误杀健康 host。
 - **单命令输出上限 1 MB**：为约束容器内存与结果文件大小，每条命令 `stdout`/`stderr` 最多保留最后 ~1 MB（大输出截断到尾部）。正常使用（`seq 1 5000`、中等文件 `cat`、`npm install` 日志）远低于上限。
+- **快照去重对等长内容编辑盲（有界窗口）**：自动快照按目录结构 + 总字节去重，因此「内容变但大小不变」的编辑（如 `sed -i 's/foo/bar/'` 且 `foo`/`bar` 等长、或 `vi` 原地覆盖）不被结构门控察觉。浏览器侧写入（`env`/`settings`/`motd`/`workspace switch`/服务文件）会立即强制保存，安全。经 shell（Lifo/node）的编辑由自动快照的 **30s 最大年龄强制**兜底：即使签名不变，每隔 ~30s 也会强制全量保存一次，等长编辑只要发生在崩溃前 30s 以上就能保留。残余丢失窗口：等长 shell 编辑发生在最近 ~30s 内且 tab 恰好崩溃且无 `pagehide`/`beforeunload`（OOM 杀、OS 回收）。
 - **声明式自启（非守护进程）**：`service enable` 只记录服务供 boot 重启。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。
 - **`log -f`（tail -f）未实现**：交互式流式输出延后（POC；WebContainer 中交互 stdin 不可靠）。用 `log` / `log -n <count>`。`log clear` 清空 `/var/log/succinix.log` 因此自身不记录进日志。
+- **日志追加是读改写（backlog）**：WebContainer `FileSystemAPI` 无 `appendFile`，每次 `log` 写入 = 读整个 `/var/log/succinix.log` + 拼一行 + 写回——每条 O(文件大小)。在 ~200 KB 自动截断上限内 POC 可接受；backlog 项（P4-14）是上游提供 appendFile 时切真追加、或改分片文件。这是日志系统在高命令量时最先扛不住的部位。
 - **外部入站网络**：服务经虚拟预览 URL 可达，公网不可达。
 - **服务按命令串认领进程**：`service stop`（与 `db stop`）按渲染命令匹配进程表定位服务，而非 PID 血缘。手动启动的同命令进程可能被匹配并终止。`service start` 同理，找到同命令进程即报 "already running"。
 - **内置 tinbase 服务需一次安装步骤**：预置 `service` 定义（`tinbase`）跑 `npx tinbase start --port ${PORT} --engine wasm`，要求容器内已装 tinbase。先跑一次 `db start` 完成容器内安装，再 `service start tinbase`。
@@ -260,6 +264,7 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 - **单用户、无权限位**：Succinix 是单用户浏览器沙箱（`guest` 是唯一用户）；无多用户登录/隔离，权限位管理（`chmod` 语义）不模拟——模拟模式无真实价值。
 - **仅 Chromium**：WebContainers 要求 Chromium 系浏览器（Chrome/Edge）。Firefox、Safari 与移动浏览器不支持；环境检查错误页说明要求而非降级。
 - **部署宿主必须能发自定义响应头**：WebContainer 的跨源隔离要求 `vercel.json` 里配置的 COOP/COEP 头。不能设置自定义响应头的托管（如某些对象存储/CDN 静态托管）无法运行 Succinix。Vercel 免费版经 `vercel.json` 支持自定义头。
+- **无 Content-Security-Policy 响应头（已评估、暂缓）**：当前不发送 CSP。WebContainer 内部需要 `worker-src blob:`（worker 引导）、带 `wasm-unsafe-eval` 的 `script-src`（Lifo/Pyodide）、以及指向 npm registry / Pyodide CDN 的 `connect-src`；严格 CSP 有破坏运行时的风险。已评估并有意暂缓而非未验证强上（P6-18）——启用前需经 `?test=1` + `verify-deploy` 一轮验证。
 
 ## 项目结构
 
@@ -317,14 +322,18 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 
 | 符号 | 作用 |
 | ---- | ---- |
-| `createTerminalExecutor()` | 返回干净的 `TerminalExecutor` 门面供生态使用方——`boot(wc, opts)` 拉起 host，然后 `exec` / `spawn` / `ps` / `kill` / `ping` / `dispose`。 |
+| `createTerminalExecutor()` | 返回干净的 `TerminalExecutor` 门面供生态使用方——`boot(wc, opts)` 拉起 host，然后 `exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` / `dispose`。 |
 | `bootEngineHost(wc, client, hooks)` | 底层 boot 助手：缺失时注入 `host.js`、spawn host 守护进程、异步写入 `lifo-core.js`，并把 `server-ready` / `port` 事件接到 `onServerReady` / `onServerClosed`。 |
 | `exec(command, opts)` | 经统一路由跑一条命令（`node|npm|npx` → 真实 Node 子进程，其余 → Lifo）。返回完整 `ExecResult`；RPC 等待超时返回 `{ ok: false, timedOut: true }` 而非抛异常。 |
 | `spawn(command, opts)` | 启动后台长驻进程（node 系）并立即返回 pid；输出流入进程表。 |
 | `listProcesses()`（`ps`） | 统一进程表快照——`{ pid, cmd, status, startTime, exitCode?, outputTail? }`。 |
 | `kill(pid)` | 对表中真实子进程发 SIGTERM；成功返回 `true`。 |
 | `ping()` | host 存活探针——host 应答 `pong` 时 resolve `true`。 |
+| `pingDirect(timeoutMs?)` | 看门狗直接探活——**绕过串行化请求队列**，长命令占着队列时也能确认 host 存活。`true`=存活，`false`=超时，`null`=通道忙（本轮跳过，中性）。 |
+| `respawn()` | 重启 host：kill 旧 host → 重新注入资产 → spawn 新 host → 等待就绪。保持单 host 不变量（绝不让两个 host 同时轮询 `/cmd.json`）。 |
 | `dispose()` | 释放资源（kill host 进程、清引用）。幂等。 |
+
+> **两个执行面、同一 host**（P1-3）。`createTerminalExecutor()` 是**生态面**：上述干净完整 API（含看门狗 `pingDirect()` 与 `respawn()`），外部消费者所需的一切。Succinix 应用自身的终端额外使用低层 `TerminalClient`（`bootEngineHost` 返回）走命令路径，因为命令处理器（`commands.ts`/`services.ts`/`pkg.ts`）依赖协议原始语义——超时抛异常、`processes`/`killed`/`cwd` 字段、以及传入命令上下文的 `client` 句柄。两个执行面驱动的是**同一个** host、**同一条** `/cmd.json` 文件 RPC 通道；它们刻意不是同一个对象。若要内嵌引擎，请用 `createTerminalExecutor()`。
 
 ### 协议与 SDK 文档
 

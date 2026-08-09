@@ -32,10 +32,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ─── R2：boot 步骤计数（实时进度 N/M）───
 // boot 日志每行带步骤计数（marker 后、消息前，如 `[  OK  ] 3/8 Started WebContainer runtime`）。
-// 只有 ok()/note() 参与计数；ui.log 的 info/fail/WARN 行、restartHost 的运行期日志、?test=1
-// 自检的 verdict/boundary 均不计数。总步数在 WebContainer.boot 成功后确定
-// （BOOT_BASE_STEPS + autostart 服务数）；异常分支多出的 note 行会让计数溢出总步数 ——
-// 仅在失败场景，正常 boot 精确递增到 M/M。
+// 只有 ok()/note()/failStep() 参与计数；noteOnly() 降级说明行、ui.log 的 info/WARN 行、
+// restartHost 的运行期日志、?test=1 自检的 verdict/boundary 均不计数。总步数在
+// WebContainer.boot 成功后确定（BOOT_BASE_STEPS + autostart 服务数），正常 boot 精确递增到 M/M。
 let bootStep = 0;
 let bootTotal = 0;
 
@@ -62,6 +61,23 @@ function ok(ui: BootUI, msg: string): void {
 // 灰色 [ .... ] 标记，用于中间过程的过渡说明
 function note(ui: BootUI, msg: string): void {
   bootStep++;
+  ui.log(`[ .... ] ${progressPrefix()}${msg}`, 'note');
+  void log('BOOT', msg);
+}
+
+// [ FAIL ] 计步变体（M2）：autostart 单个服务失败行计入步骤 —— initBootSteps 已把
+// autostart 服务数算进总步数，失败的服务同样是 boot 步骤；不计数会让末行停在 (M-1)/M。
+// 与 restartHost 的运行期 WARN 不计数区分：autostart 是 boot 步骤，计入。
+function failStep(ui: BootUI, msg: string): void {
+  bootStep++;
+  ui.log(`[ FAIL ] ${progressPrefix()}${msg}`, 'fail');
+  void log('BOOT', msg);
+}
+
+// 降级提示（L1/L2）：失败降级分支的额外说明行[ .... ] **不参与**步骤计数。总步数按
+// 正常路径确定（BOOT_BASE_STEPS + autostart 服务数），这些分支多出的说明行若计数会
+// 溢出总步数（>M/M）。降级是用户可感知信息，行保留、只不计步。
+function noteOnly(ui: BootUI, msg: string): void {
   ui.log(`[ .... ] ${progressPrefix()}${msg}`, 'note');
   void log('BOOT', msg);
 }
@@ -185,11 +201,66 @@ const MAX_HOST_READY_ATTEMPTS = 3;
 //  8 TerminalExecutor ready
 const BOOT_BASE_STEPS = 8;
 
+// ─── R3 通用重试决策（M3：可测纯逻辑，见 tests/boot-retry.test.ts）───
+// 按 attempts 上限循环调用 fn(attempt)（attempt 从 1 起）。失败且未达上限 → onRetry
+// （打 WARN 文案）+ beforeRetry（R3.2 respawn 换源用）+ backoffMs 退避；成功立即返回
+// 不再尝试；达上限抛最后一次错误。attempts 上限 / 退避间隔 / 失败判定集中于此。
+export interface RetryHooks {
+  /** 每次失败（未达上限）回调：attempt = 本次失败序号（1-based），供打 "attempt N/MAX" 文案 */
+  onRetry?: (attempt: number, error: unknown) => void;
+  /** 重试前换源（R3.2：kill 旧 host + spawn 新 host，防双 host 竞态）；默认无 */
+  beforeRetry?: () => Promise<void> | void;
+  /** 两次尝试间退避 ms（R3.1 用 1000；测试传 0 加速） */
+  backoffMs?: number;
+}
+export async function withRetry<T>(
+  fn: (attempt: number) => Promise<T>,
+  maxAttempts: number,
+  hooks: RetryHooks = {}
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastError = e;
+      if (attempt < maxAttempts) {
+        hooks.onRetry?.(attempt, e);
+        await hooks.beforeRetry?.();
+        if (hooks.backoffMs) await sleep(hooks.backoffMs);
+      }
+    }
+  }
+  throw lastError;
+}
+
+// R3.1：WebContainer.boot() 失败自动重试（最多 3 次，1s 退避），封装成可测函数。
+// 返回 { wc, error }：成功时 wc 为实例、error 为 null；3 次全败 wc 为 null、error 为
+// 最后一次失败原因（供 ui.fail 展示）。
+export async function bootWebContainerWithRetry(
+  ui: BootUI,
+  opts: { backoffMs?: number } = {}
+): Promise<{ wc: WebContainer | null; error: unknown }> {
+  let bootError: unknown = null;
+  let wc: WebContainer | null = null;
+  try {
+    wc = await withRetry(() => WebContainer.boot(), MAX_BOOT_ATTEMPTS, {
+      backoffMs: opts.backoffMs ?? 1000,
+      onRetry: (attempt) => {
+        ui.log(`[ WARN ] WebContainer boot failed (attempt ${attempt}/${MAX_BOOT_ATTEMPTS}), retrying...`);
+      },
+    });
+  } catch (e) {
+    bootError = e;
+  }
+  return { wc, error: bootError };
+}
+
 // R3.2：waitForHostReady 失败自动重试。每次重试先 kill 旧 hostProc 再重新 spawn
 // （respawnWithKillFirst 模式，防双 host 同时轮询 cmd.json）。重试只补 spawn：
 // onInjected/onSpawned 置空避免 boot 步骤重复累计；onServerReady/onServerClosed 已在
-// 首次注册到 wc，无需重复注册。3 次全败抛出，走 main.ts catch → 错误页路径。
-async function waitForHostReadyWithRetry(
+// 首次注册到 wc（engine 侧 WeakSet 防重复注册，M1）。3 次全败抛出，走 main.ts catch → 错误页路径。
+export async function waitForHostReadyWithRetry(
   ui: BootUI,
   wc: WebContainer,
   client: TerminalClient,
@@ -197,30 +268,34 @@ async function waitForHostReadyWithRetry(
   hostHooks: EngineBootHooks
 ): Promise<WebContainerProcess> {
   let current = hostProc;
-  for (let attempt = 1; attempt <= MAX_HOST_READY_ATTEMPTS; attempt++) {
-    try {
+  return withRetry(
+    async () => {
       await waitForHostReady(client);
       return current;
-    } catch (e) {
-      if (attempt >= MAX_HOST_READY_ATTEMPTS) throw e;
-      ui.log(`[ WARN ] ${progressPrefix()}TerminalExecutor not ready (attempt ${attempt}/${MAX_HOST_READY_ATTEMPTS}), respawning host...`);
-      current = await respawnWithKillFirst(
-        () => {
-          try {
-            current?.kill();
-          } catch {
-            /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
-          }
-        },
-        () =>
-          bootEngineHost(wc, client, {
-            hostSrc: hostHooks.hostSrc,
-            lifoCoreSrc: hostHooks.lifoCoreSrc,
-          })
-      );
+    },
+    MAX_HOST_READY_ATTEMPTS,
+    {
+      onRetry: (attempt) => {
+        ui.log(`[ WARN ] ${progressPrefix()}TerminalExecutor not ready (attempt ${attempt}/${MAX_HOST_READY_ATTEMPTS}), respawning host...`);
+      },
+      beforeRetry: async () => {
+        current = await respawnWithKillFirst(
+          () => {
+            try {
+              current?.kill();
+            } catch {
+              /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
+            }
+          },
+          () =>
+            bootEngineHost(wc, client, {
+              hostSrc: hostHooks.hostSrc,
+              lifoCoreSrc: hostHooks.lifoCoreSrc,
+            })
+        );
+      },
     }
-  }
-  return current;
+  );
 }
 
 // ─── 主启动流程 ───
@@ -247,20 +322,7 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
 
   // R3.1：WebContainer.boot() 失败自动重试（最多 3 次，1s 退避）。计数尚未开始
   // （总步数需 wc 读 autostart），故重试 WARN 不带 N/M 前缀（progressPrefix 为空）。
-  let wc: WebContainer | null = null;
-  let bootError: unknown = null;
-  for (let attempt = 1; attempt <= MAX_BOOT_ATTEMPTS; attempt++) {
-    try {
-      wc = await WebContainer.boot();
-      break;
-    } catch (e) {
-      bootError = e;
-      if (attempt < MAX_BOOT_ATTEMPTS) {
-        ui.log(`[ WARN ] WebContainer boot failed (attempt ${attempt}/${MAX_BOOT_ATTEMPTS}), retrying...`);
-        await sleep(1000);
-      }
-    }
-  }
+  const { wc, error: bootError } = await bootWebContainerWithRetry(ui);
   if (!wc) {
     ui.fail([`WebContainer runtime failed to start: ${String(bootError)}`]);
     return null;
@@ -287,7 +349,7 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
       ok(ui, 'Initialized fresh workspace');
     }
   } catch (e) {
-    note(ui, `Persistent restore failed (${String(e).slice(0, 80)}); continuing with current filesystem`);
+    noteOnly(ui, `Persistent restore failed (${String(e).slice(0, 80)}); continuing with current filesystem`);
     ok(ui, 'Initialized fresh workspace');
   }
   bootPhase('restored');
@@ -329,7 +391,7 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
     if (isValidWorkspaceName(wsRaw)) defaultWorkspace = wsRaw;
     envCount = (await readEnvFile(wc.fs)).size;
   } catch (e) {
-    note(ui, `Config load failed (${String(e).slice(0, 80)}); using defaults`);
+    noteOnly(ui, `Config load failed (${String(e).slice(0, 80)}); using defaults`);
   }
 
   // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
@@ -341,14 +403,14 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
   try {
     await ensureServicesFiles(wc.fs);
   } catch (e) {
-    note(ui, `Service files init failed (${String(e).slice(0, 80)})`);
+    noteOnly(ui, `Service files init failed (${String(e).slice(0, 80)})`);
   }
 
   // 登录横幅（TASK15）：确保 /etc/succinix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
   try {
     await ensureMotd(wc.fs);
   } catch (e) {
-    note(ui, `Motd init failed (${String(e).slice(0, 80)})`);
+    noteOnly(ui, `Motd init failed (${String(e).slice(0, 80)})`);
   }
 
   // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
@@ -375,13 +437,10 @@ export async function bootSuccinix(ui: BootUI): Promise<SuccinixServices | null>
     for (const name of autostart) {
       const r = await startService({ wc, client, ports }, name);
       if (r.ok) ok(ui, `Started service '${name}' (autostart)`);
-      else {
-        ui.log(`[ FAIL ] service '${name}' failed to start`, 'fail');
-        void log('BOOT', `service '${name}' failed to start`);
-      }
+      else failStep(ui, `service '${name}' failed to start`);
     }
   } catch (e) {
-    note(ui, `Autostart skipped (${String(e).slice(0, 80)})`);
+    noteOnly(ui, `Autostart skipped (${String(e).slice(0, 80)})`);
   }
 
   void log('BOOT', 'boot complete');

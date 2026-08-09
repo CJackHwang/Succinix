@@ -62,6 +62,12 @@ export interface EngineBootHooks extends TerminalExecutorOptions {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// M1：端口事件（server-ready / port）只对同一 wc 实例注册一次。R3.2 重试会再次调用
+// bootEngineHost（kill 旧 host 再 spawn），若每次都 wc.on(...) 会累积重复监听器；
+// 重试传的 hooks 不含 onServerReady/onServerClosed（空安全调用），重复注册的监听器
+// 是 no-op 且永不注销。WeakSet 按实例去重：正常多实例 boot 各自注册，重试同实例跳过。
+const wcListenersBound = new WeakSet<WebContainer>();
+
 // 注入 host.js（缺失时从构建产物拉取）→ spawn `node host.js` → 异步写 lifo-core.js → 登记端口回调。
 // 不等就绪：就绪由 waitForHostReady 负责（boot.ts 在配置/服务初始化之后调用，保持 boot 日志顺序）。
 // 返回 host 进程句柄（前端 host 重启路径 kill 用）。
@@ -96,10 +102,14 @@ export async function bootEngineHost(
     void wc.fs.writeFile('/lifo-core.js', hooks.lifoCoreSrc).catch(() => {});
   }
   // 端口事件：宿主经 onServerReady/onServerClosed 更新自己的预览注册表。
-  wc.on('server-ready', (port, url) => hooks.onServerReady?.(port, url));
-  wc.on('port', (port, type) => {
-    if (type === 'close') hooks.onServerClosed?.(port);
-  });
+  // 只对当前 wc 注册一次（M1：R3.2 重试 bootEngineHost 复用同一 wc，不再叠加监听器）。
+  if (!wcListenersBound.has(wc)) {
+    wcListenersBound.add(wc);
+    wc.on('server-ready', (port, url) => hooks.onServerReady?.(port, url));
+    wc.on('port', (port, type) => {
+      if (type === 'close') hooks.onServerClosed?.(port);
+    });
+  }
   return hostProc;
 }
 

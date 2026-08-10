@@ -643,7 +643,8 @@ function dispatchSpawn(req: CommandRequest): void {
     }
   });
   confirmTimer = setTimeout(() => {
-    if (!settled) settle({ ok: true, pid, runtime: 'node' });
+    // M4：spawn 成功响应带启动 cwd（additive；实例归属 / 服务视图按 cwd 前缀判定）。
+    if (!settled) settle({ ok: true, pid, runtime: 'node', cwd: realCwd });
   }, SPAWN_CONFIRM_MS);
 }
 

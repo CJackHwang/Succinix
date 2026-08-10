@@ -10,6 +10,7 @@ import { log } from './log.js';
 import { getPersist } from './persist.js';
 import { sleep, ensureParentDir } from './util.js';
 import { DEFAULT_INSTANCE_ID, statePath } from './instance/paths.js';
+import { instancePorts } from './instance/ports.js';
 
 export const SERVICES_FILE = statePath(DEFAULT_INSTANCE_ID, 'etc/succinix.services');
 export const AUTOSTART_FILE = statePath(DEFAULT_INSTANCE_ID, 'etc/succinix.autostart');
@@ -30,10 +31,19 @@ export const DEFAULT_SERVICES_TEXT =
 const DEFAULT_PORT = 3001;
 const PORT_WAIT_MS = 30000;
 
-// M1 模式：本次会话启动过的服务实际端口记录在案（startService 记录，stop 清除）。
+// M1 模式 / M4：本次会话启动过的服务实际端口按实例记录在案（startService 记录，stop 清除）。
 // 解决 preview-port 改动后静态 def.port 失真：服务启动时监听的是当时的端口，
 // 就绪等待 / 状态 / 列表 / URL 展示都用记录值；会话内未启动过的服务回落动态解析。
-const activePorts = new Map<string, number>();
+const activePortsByInstance = new Map<string, Map<string, number>>();
+
+function activePortsFor(instanceId: string): Map<string, number> {
+  let m = activePortsByInstance.get(instanceId);
+  if (!m) {
+    m = new Map();
+    activePortsByInstance.set(instanceId, m);
+  }
+  return m;
+}
 
 export interface ServiceDef {
   name: string;
@@ -259,21 +269,37 @@ function commandSignature(s: string): string {
   return s.replace(/["']/g, '').replace(/\s+/g, ' ').trim();
 }
 
-// 匹配用命令渲染：会话内启动记录值优先（M1 残余修复，TASK18）。
+// 匹配用命令渲染：会话内启动记录值优先（M1 残余修复，TASK18 / M4 按实例）。
 // 运行中改 preview-port 后，正在运行的服务实际命令行仍是启动时的端口（如 --port 3001）；
 // 若用当前 preview-port 渲染 needle（--port 3002），findServiceProcess 会匹配不到进程，
 // status 误判 stopped。有记录时用记录值渲染 needle；无记录回落动态渲染。
 async function renderCommandForMatch(ctx: ServiceContext, def: ServiceDef): Promise<string> {
-  const recorded = activePorts.get(def.name);
+  const recorded = activePortsFor(ctx.instanceId ?? DEFAULT_INSTANCE_ID).get(def.name);
   if (recorded !== undefined && def.command.includes('${PORT}')) {
     return def.command.replace(/\$\{PORT\}/g, String(recorded));
   }
   return renderCommand(ctx.wc.fs, def, ctx.instanceId);
 }
 
-// 进程表里匹配该服务（渲染后命令）且 running 的进程。
+// M4：服务进程归属判定（导出供单测）。默认实例 = 排除其他实例状态根（.succinix-*）下的
+// 进程（组织性隔离），其余照旧（unknown/system 均参与匹配，现状行为）；非默认实例 =
+// 只匹配自己状态根（.succinix-<id>）/ CISOL 同 id / system 进程。
+export function processBelongsToInstance(
+  proc: { scope?: unknown; containerId?: unknown },
+  instanceId: string
+): boolean {
+  const scope = String(proc.scope ?? '');
+  const containerId = proc.containerId !== undefined ? String(proc.containerId) : undefined;
+  if (instanceId === DEFAULT_INSTANCE_ID) {
+    return !(containerId !== undefined && containerId.startsWith('.succinix-'));
+  }
+  return scope === 'system' || containerId === `.succinix-${instanceId}` || containerId === instanceId;
+}
+
+// 进程表里匹配该服务（渲染后命令）且 running、且归属本实例的进程。
 async function findServiceProcess(ctx: ServiceContext, def: ServiceDef): Promise<{ pid: number; cmd: string } | undefined> {
   const needle = commandSignature(await renderCommandForMatch(ctx, def));
+  const instanceId = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
   let procs: Array<Record<string, unknown>> = [];
   try {
     const ps = await ctx.client.terminal('ps');
@@ -282,9 +308,14 @@ async function findServiceProcess(ctx: ServiceContext, def: ServiceDef): Promise
     return undefined; // 进程表不可达：按无匹配处理
   }
   const found = procs.find(
-    (p) => p.status === 'running' && commandSignature(String(p.cmd ?? '')).includes(needle)
+    (p) => p.status === 'running' && processBelongsToInstance(p, instanceId) && commandSignature(String(p.cmd ?? '')).includes(needle)
   );
   return found ? { pid: Number(found.pid), cmd: String(found.cmd) } : undefined;
+}
+
+// M4：实例端口视图（服务就绪判定 / URL 展示按实例收窄；默认实例 = 页面级全部）。
+function portsView(ctx: ServiceContext): Map<number, string> {
+  return instancePorts.portsFor(ctx.instanceId ?? DEFAULT_INSTANCE_ID, ctx.ports);
 }
 
 // 有效端口解析：会话内启动记录值优先（M1：preview-port 改动后服务仍监听启动时端口）；
@@ -293,7 +324,7 @@ async function findServiceProcess(ctx: ServiceContext, def: ServiceDef): Promise
 // 新实例监听的是"当前" preview-port，忽略可能残留的旧记录（服务崩溃后 record 未清场景）。
 async function resolveEffectivePort(ctx: ServiceContext, def: ServiceDef, preferRecorded = true): Promise<number | null> {
   if (preferRecorded) {
-    const recorded = activePorts.get(def.name);
+    const recorded = activePortsFor(ctx.instanceId ?? DEFAULT_INSTANCE_ID).get(def.name);
     if (recorded !== undefined) return recorded;
   }
   return def.command.includes('${PORT}') ? await resolvePreviewPort(ctx.wc.fs, ctx.instanceId) : def.port;
@@ -305,15 +336,16 @@ async function resolveEffectivePort(ctx: ServiceContext, def: ServiceDef, prefer
 export async function getServiceState(ctx: ServiceContext, def: ServiceDef): Promise<ServiceState> {
   const effectivePort = await resolveEffectivePort(ctx, def);
   const proc = await findServiceProcess(ctx, def);
+  const view = portsView(ctx);
   if (proc) {
-    const portOk = effectivePort === null || ctx.ports.has(effectivePort);
+    const portOk = effectivePort === null || view.has(effectivePort);
     if (portOk) {
       return {
         def,
         state: 'running',
         pid: proc.pid,
         effectivePort,
-        url: effectivePort !== null ? ctx.ports.get(effectivePort) : undefined,
+        url: effectivePort !== null ? view.get(effectivePort) : undefined,
       };
     }
   }
@@ -365,14 +397,17 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
     return { ok: true, message: `service '${name}' started (pid=${pid})`, pid };
   }
 
-  // 记录实际端口（M1）：preview-port 改动后服务监听的是启动时端口，就绪等待与后续
-  // status/列表/URL 都用记录值，避免静态 def.port 误报。
-  activePorts.set(name, effectivePort);
+  // 记录实际端口（M1 / M4 按实例）：preview-port 改动后服务监听的是启动时端口，就绪等待
+  // 与后续 status/列表/URL 都用记录值，避免静态 def.port 误报。
+  activePortsFor(ctx.instanceId ?? DEFAULT_INSTANCE_ID).set(name, effectivePort);
+  // M4：登记实例期望端口（server-ready 到达时归到该实例的 ports 视图）。
+  if (effectivePort !== null) instancePorts.expect(ctx.instanceId ?? DEFAULT_INSTANCE_ID, effectivePort);
 
   // 等端口就绪：进程还在且端口未就绪 → 继续等；进程提前退出 → 立即失败。
+  const view = portsView(ctx);
   const deadline = Date.now() + PORT_WAIT_MS;
   while (Date.now() < deadline) {
-    if (ctx.ports.has(effectivePort)) {
+    if (view.has(effectivePort)) {
       void log('INFO', `service start: ${name} pid=${pid} port=${effectivePort}`);
       return { ok: true, message: `service '${name}' started (pid=${pid}, port ${effectivePort})`, pid };
     }
@@ -426,7 +461,10 @@ export async function stopService(ctx: ServiceContext, name: string): Promise<Se
       await sleep(100);
     }
     void log('INFO', `service stop: ${name} pid=${proc.pid}`);
-    activePorts.delete(name); // M1：stop 后清除记录端口，状态回落动态解析
+    const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
+    const recorded = activePortsFor(inst).get(name);
+    if (recorded !== undefined) instancePorts.release(inst, recorded); // M4：释放实例期望端口
+    activePortsFor(inst).delete(name); // M1：stop 后清除记录端口，状态回落动态解析
     return { ok: true, message: `service '${name}' stopped (pid=${proc.pid})`, pid: proc.pid };
   } catch (e) {
     void log('WARN', `service stop failed: ${name} (${String(e)})`);

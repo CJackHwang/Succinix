@@ -20,3 +20,9 @@ export function statePath(instanceId: string, name: string): string {
   const clean = name.replace(/^\/+/, '');
   return root ? `${root}/${clean}` : `/${clean}`;
 }
+
+/** tinbase 数据目录（M4）：实例 = <stateRoot>/tinbase；缺省实例 = /workspace/.tinbase（现状）。 */
+export function tinbaseDataDir(instanceId: string): string {
+  const root = instanceStateRoot(instanceId);
+  return root ? `${root}/tinbase` : '/workspace/.tinbase';
+}

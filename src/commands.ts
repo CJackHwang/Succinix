@@ -57,6 +57,8 @@ import {
   type PkgContext,
 } from './pkg.js';
 import { readMotd, writeMotd, resetMotd } from './motd.js';
+import { DEFAULT_INSTANCE_ID, instanceStateRoot, tinbaseDataDir } from './instance/paths.js';
+import { instancePorts } from './instance/ports.js';
 import { AMBER, RED, GRAY, RESET } from './theme.js';
 import { sleep } from './util.js';
 import { SUCCINIX_VERSION } from './version.js';
@@ -75,6 +77,16 @@ export interface CommandContext {
   instanceId?: string;
   /** 实例持久化上下文（M2/M5，additive）：snapshot 命令按实例存取；缺省 = 模块级默认实例 */
   persist?: PersistContext;
+  /** 实例级重置回调（M4/M5，additive）：多实例模式 reboot = 清该实例状态并重 boot，不刷新宿主页面；
+   *  缺省 = 整页刷新（demo 单页单实例路径，Tab 即实例，刷新 = 实例级重置） */
+  onInstanceReset?: () => void | Promise<void>;
+  /** 实例停止回调（M4/M5，additive）：多实例模式 shutdown = 停当前实例，不动其他实例 */
+  onInstanceStop?: () => void | Promise<void>;
+}
+
+// M4：reboot 目标判定 —— 非默认实例 = 实例级重置；缺省/默认实例 = 整页刷新（现状）。
+export function rebootMode(instanceId: string | undefined): 'instance' | 'page' {
+  return instanceId !== undefined && instanceId !== DEFAULT_INSTANCE_ID ? 'instance' : 'page';
 }
 
 const VERSION = `Succinix ${SUCCINIX_VERSION} (browser-native Linux)`;
@@ -87,10 +99,14 @@ const DB_PKG = 'tinbase';
 const PYTHON_BUNDLED_VERSION = '3.14.2 (Pyodide 314.0.4)';
 const TS_RUNTIME_NOTE = 'via node --experimental-strip-types (Node 22)';
 
-// M1 修复：db start 启动时解析的端口记录在案；db status/stop 用记录值而非每次现读 settings，
-// 避免运行中改 preview-port 后 status/stop 操作到错误的端口。本次会话未启动过 db 时为 null，
-// status/stop 回落现读 settings（此时没有在跑实例，读最新设置是合理的）。
-let dbActivePort: number | null = null;
+// M1 修复 / M4：db start 启动时解析的端口按实例记录在案；db status/stop 用记录值而非每次现读
+// settings，避免运行中改 preview-port 后 status/stop 操作到错误的端口。未启动过 db 时为
+// 无记录，status/stop 回落现读 settings（此时没有在跑实例，读最新设置是合理的）。
+const dbActivePortByInstance = new Map<string, number>();
+
+function dbActivePortFor(instanceId: string): number | null {
+  return dbActivePortByInstance.get(instanceId) ?? null;
+}
 
 // 内存单位：二进制换算，1 KB = 1024 B。
 const MIB = 1024 * 1024;
@@ -157,27 +173,40 @@ function printHelp(term: Terminal): void {
   term.writeln(`  Ctrl+L             clear the screen`);
 }
 
-function printPorts(term: Terminal, ports: Map<number, string>): void {
-  if (ports.size === 0) {
+function printPorts(term: Terminal, ports: Map<number, string>, instanceId?: string): void {
+  // M4：按实例视图收窄（期望端口 ∩ 页面级就绪；缺省实例 = 页面级全部，现状不变）。
+  const view = instancePorts.portsFor(instanceId ?? DEFAULT_INSTANCE_ID, ports);
+  if (view.size === 0) {
     term.writeln('(no service ports ready yet)');
     return;
   }
   term.writeln('PORT  URL');
-  for (const [port, url] of ports) {
+  for (const [port, url] of view) {
     term.writeln(`${port}  ${url}`);
   }
 }
 
-// 在进程表里找匹配 cmd 且正在运行的进程。
-async function findRunningProc(ctx: CommandContext, needle: string): Promise<Record<string, unknown> | undefined> {
-  const ps = await ctx.client.terminal('ps');
-  const procs = Array.isArray(ps.processes) ? ps.processes : [];
-  return procs.find((p) => String(p.cmd ?? '').includes(needle) && p.status === 'running');
+// M4：进程归属过滤（db 的进程匹配与 service 一致）。
+function procBelongsToCtxInstance(proc: Record<string, unknown>, instanceId?: string): boolean {
+  const scope = String(proc.scope ?? '');
+  const containerId = proc.containerId !== undefined ? String(proc.containerId) : undefined;
+  if (instanceId === undefined || instanceId === DEFAULT_INSTANCE_ID) {
+    return !(containerId !== undefined && containerId.startsWith('.succinix-'));
+  }
+  return scope === 'system' || containerId === `.succinix-${instanceId}` || containerId === instanceId;
 }
 
-// db 端口：读 settings preview-port，缺省 3001；值被手改非法时回落默认。
-async function resolveDbPort(fs: FileSystemAPI): Promise<number> {
-  const raw = await getSetting(fs, 'preview-port');
+async function findRunningProcForInstance(ctx: CommandContext, needle: string): Promise<Record<string, unknown> | undefined> {
+  const ps = await ctx.client.terminal('ps');
+  const procs = Array.isArray(ps.processes) ? ps.processes : [];
+  return procs.find(
+    (p) => String(p.cmd ?? '').includes(needle) && p.status === 'running' && procBelongsToCtxInstance(p, ctx.instanceId)
+  );
+}
+
+// db 端口：读 settings preview-port（M4 按实例 settings），缺省 3001；值被手改非法时回落默认。
+async function resolveDbPort(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID): Promise<number> {
+  const raw = await getSetting(fs, 'preview-port', instanceId);
   const n = Number(raw);
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : DB_PORT_DEFAULT;
 }
@@ -185,8 +214,10 @@ async function resolveDbPort(fs: FileSystemAPI): Promise<number> {
 // db start：容器内按需安装 tinbase，然后 spawn 后台启动，等待端口就绪。
 async function dbStart(ctx: CommandContext): Promise<void> {
   const { client, term, wc } = ctx;
-  const port = await resolveDbPort(wc.fs);
-  dbActivePort = port; // 记录本次启动端口（M1：status/stop 用记录值）
+  const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
+  const port = await resolveDbPort(wc.fs, inst);
+  dbActivePortByInstance.set(inst, port); // 记录本次启动端口（M1：status/stop 用记录值）
+  const view = instancePorts.portsFor(inst, ctx.ports);
   term.writeln('Checking whether tinbase is installed in the container...');
 
   // P2-9：dbStart 四路失败输出收敛 —— "failed to start (engine wasm): <why>" 骨架只留一处。
@@ -225,34 +256,46 @@ async function dbStart(ctx: CommandContext): Promise<void> {
 
   // 2. 已在运行则直接报告：端口就绪 + 进程表有 tinbase running 进程，交叉验证防占端口误报
   //    （端口被其他进程占用时不再误报 "tinbase is already running"）。
-  if (ctx.ports.has(port)) {
+  if (view.has(port)) {
     let running: Record<string, unknown> | undefined;
     try {
-      running = await findRunningProc(ctx, DB_PKG);
+      running = await findRunningProcForInstance(ctx, DB_PKG);
     } catch {
       running = undefined; // 进程表不可达：按无 tinbase 进程处理
     }
     if (running) {
-      term.writeln(`tinbase is already running: ${ctx.ports.get(port)}`);
+      term.writeln(`tinbase is already running: ${view.get(port)}`);
       return;
     }
     term.writeln(`${AMBER}Port ${port} is in the ready list but no tinbase process is running; another process may own it.${RESET}`);
     term.writeln('Attempting to start tinbase anyway (it will fail fast if the port is truly taken)...');
   }
 
+  // 2b. 同页端口冲突拒绝（M4）：端口已被其他实例期望 → 明确拒绝并提示，不抢占。
+  const conflict = instancePorts.hasConflict(inst, port);
+  if (conflict !== null) {
+    term.writeln(`${RED}tinbase: failed to start (engine wasm): port ${port} is already used by instance '${conflict}'${RESET}`);
+    return;
+  }
+
   // 3. spawn 后台启动（端口取 settings preview-port，缺省 3001）
   //    --engine wasm: WebContainer 无原生二进制，必须 PGlite/WASM 引擎；
   //    去 --memory：data-dir 落容器 FS，随快照持久化（TASK5）。
-  term.writeln(`Starting npx tinbase start --port ${port} --engine wasm (background process)...`);
+  //    M4：非默认实例显式 --data-dir <stateRoot>/tinbase，实例间数据隔离
+  //    （缺省实例不传 flag = 现状 /workspace/.tinbase，行为全等）。
+  const dataDir = instanceStateRoot(inst) ? tinbaseDataDir(inst) : null;
+  const startCmd = `npx tinbase start --port ${port} --engine wasm${dataDir ? ` --data-dir ${dataDir}` : ''}`;
+  term.writeln(`Starting ${startCmd} (background process)...`);
   let pid: number | undefined;
   try {
-    const r = await client.spawn(`npx tinbase start --port ${port} --engine wasm`, undefined, 8000);
+    const r = await client.spawn(startCmd, undefined, 8000);
     if (!r.ok || !r.pid) {
       fail(r.error || r.stderr || 'spawn returned failure');
       fail('check container compatibility.');
       return;
     }
     pid = r.pid;
+    instancePorts.expect(inst, port); // M4：登记实例期望端口（server-ready 归到该实例视图）
     term.writeln(`started in background (pid=${pid}); waiting for port ${port} to be ready...`);
   } catch (e) {
     fail(String(e));
@@ -265,7 +308,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   //    立即看到原因而非等满 30s 端口超时）。
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const url = ctx.ports.get(port);
+    const url = instancePorts.portsFor(inst, ctx.ports).get(port);
     if (url) {
       term.writeln(`${AMBER}Database ready: ${url}${RESET}`);
       term.writeln(`Open ${url} in the browser, or curl ${url} through Lifo.`);
@@ -294,9 +337,11 @@ async function dbStart(ctx: CommandContext): Promise<void> {
 }
 
 async function dbStatus(ctx: CommandContext): Promise<void> {
-  const { client, ports, term, wc } = ctx;
-  const port = dbActivePort ?? (await resolveDbPort(wc.fs));
-  const url = ports.get(port);
+  const { client, term, wc } = ctx;
+  const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
+  const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst));
+  const view = instancePorts.portsFor(inst, ctx.ports);
+  const url = view.get(port);
   term.writeln(url ? `Port ${port}: in ready list -> ${url}` : `Port ${port}: not in ready list (not running)`);
 
   let procs: Array<Record<string, unknown>> = [];
@@ -307,7 +352,7 @@ async function dbStatus(ctx: CommandContext): Promise<void> {
     term.writeln(`${RED}failed to query process table: ${String(e)}${RESET}`);
     return;
   }
-  const tinbase = procs.filter((p) => String(p.cmd ?? '').includes(DB_PKG));
+  const tinbase = procs.filter((p) => String(p.cmd ?? '').includes(DB_PKG) && procBelongsToCtxInstance(p, ctx.instanceId));
   if (tinbase.length === 0) {
     term.writeln('process table: no tinbase process');
   } else {
@@ -319,9 +364,10 @@ async function dbStatus(ctx: CommandContext): Promise<void> {
 
 async function dbStop(ctx: CommandContext): Promise<void> {
   const { term, wc } = ctx;
+  const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
   let proc: Record<string, unknown> | undefined;
   try {
-    proc = await findRunningProc(ctx, DB_PKG);
+    proc = await findRunningProcForInstance(ctx, DB_PKG);
   } catch (e) {
     term.writeln(`${RED}failed to query process table: ${String(e)}${RESET}`);
     return;
@@ -335,8 +381,10 @@ async function dbStop(ctx: CommandContext): Promise<void> {
   if (k.ok && k.killed) {
     term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
     // 用记录端口清理注册表（运行中改 settings 不影响 stop 的正确端口）
-    ctx.ports.delete(dbActivePort ?? (await resolveDbPort(wc.fs)));
-    dbActivePort = null;
+    const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst));
+    instancePorts.release(inst, port); // M4：释放实例期望端口
+    if (inst === DEFAULT_INSTANCE_ID) ctx.ports.delete(port); // 默认实例清理页面级注册表（现状）
+    dbActivePortByInstance.delete(inst);
   } else {
     term.writeln(`${RED}failed to stop: ${k.message ?? 'unknown reason'}${RESET}`);
   }
@@ -467,13 +515,28 @@ async function topCmd(ctx: CommandContext): Promise<void> {
 
 // reboot：重启系统 = 重建容器释放内存。最简单可靠的方式是 location.reload()——
 // 浏览器释放旧容器全部内存，重新 boot；持久化在 IndexedDB（浏览器侧），reload 保留。
-function rebootCmd(term: Terminal): void {
+function rebootCmd(ctx: CommandContext): void {
+  const { term } = ctx;
+  // M4：多实例模式 reboot = 实例级重置（清该实例状态 + 重 boot，不刷新宿主页面）。
+  // 同页宿主注入 onInstanceReset（M5 的 SuccinixInstance.restart）；demo 单页单实例路径
+  // 缺省回落整页刷新（该 Tab 即该实例，刷新 = 实例级重置）。
+  if (rebootMode(ctx.instanceId) === 'instance') {
+    term.writeln(`Rebooting instance '${ctx.instanceId}'...`);
+    void (ctx.onInstanceReset ? ctx.onInstanceReset() : location.reload());
+    return;
+  }
   term.writeln('Rebooting Succinix...');
   setTimeout(() => location.reload(), 300);
 }
 
-// shutdown：POC 不真关 tab，输出提示即可。
-function shutdownCmd(term: Terminal): void {
+// shutdown：POC 不真关 tab，输出提示即可。多实例模式 = 停当前实例（不动其他实例）。
+function shutdownCmd(ctx: CommandContext): void {
+  const { term } = ctx;
+  if (rebootMode(ctx.instanceId) === 'instance') {
+    term.writeln(`Stopping instance '${ctx.instanceId}' (other instances keep running). You can close this tab.`);
+    void ctx.onInstanceStop?.();
+    return;
+  }
   term.writeln('Powering off. You can close this tab.');
 }
 
@@ -1341,7 +1404,7 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
       for (const line of detectSystemInfo()) term.writeln(line);
       return true;
     case 'ports':
-      printPorts(term, ctx.ports);
+      printPorts(term, ctx.ports, ctx.instanceId);
       return true;
     case 'version':
       term.writeln(VERSION);
@@ -1378,10 +1441,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
       await topCmd(ctx);
       return true;
     case 'reboot':
-      rebootCmd(term);
+      rebootCmd(ctx);
       return true;
     case 'shutdown':
-      shutdownCmd(term);
+      shutdownCmd(ctx);
       return true;
     case 'cache': {
       await cacheCmd(ctx, rest);

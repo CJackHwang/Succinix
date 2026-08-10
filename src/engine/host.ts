@@ -42,6 +42,7 @@ import {
   instanceStateRootFor,
   instanceStateFile,
   filterProcessesForInstance,
+  canKillProcess,
   CurrentRunRegistry,
 } from './host-route.js';
 
@@ -704,6 +705,18 @@ function dispatchKill(req: CommandRequest): void {
   const pid = parsePid(req);
   if (!Number.isInteger(pid) || pid <= 0) {
     writeResult(req.id, { ok: false, killed: false, message: `invalid pid: ${req.opts?.pid ?? req.cmd}` }, inst);
+    return;
+  }
+  // U1：kill 越权拒绝（host 侧收口）—— 非默认实例只能 kill 自己归属的进程（M5 显式
+  // instanceId 登记 + `.succinix-<id>` / `c-<id>` cwd 启发式）；system 进程与归属不明
+  // 的进程拒绝。默认实例 = 现状全等（可 kill 全表）。组织性隔离，非安全边界。
+  const target = listProcesses().find((p) => p.pid === pid);
+  if (!canKillProcess(target, inst)) {
+    writeResult(req.id, {
+      ok: false,
+      killed: false,
+      message: `permission denied: process ${pid} is not owned by instance '${inst}'`,
+    }, inst);
     return;
   }
   const r = killProcess(pid);

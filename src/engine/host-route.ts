@@ -122,11 +122,12 @@ export function sessionCwdToBrowserPath(cwd: string): string {
   return '/';
 }
 
-// 提示符目录标签（cd 后提示符随目录更新）：~ = /workspace（工作区根，即提示符的 `~` 所指，
-// 也是浏览器根的 Lifo 视图）。/workspace → `~`，/workspace/proj → `~/proj`；其余（如初始的
-// host 真实路径 /home/<wc-id>，它正是工作区根的真实路径视图；以及 REPL 内不可达的其他路径）
-// 一律回落 `~` —— REPL 里 sessionCwd 只可能是工作区根或其下（cd 同步仅对 /workspace 下生效）。
-export function sessionCwdPromptLabel(cwd: string): string {
+// 提示符目录标签（cd 后提示符随目录更新）：home 参数（缺省 /workspace = guest 现状）优先
+// —— cwd === home → `~`，home 下 → `~/...`。其余沿用工作区根语义：/workspace → `~`，
+// /workspace/proj → `~/proj`；其他路径（如初始的 host 真实路径 /home/<wc-id>）回落 `~`。
+export function sessionCwdPromptLabel(cwd: string, home: string = WORKSPACE_MOUNT): string {
+  if (cwd === home) return '~';
+  if (cwd.startsWith(home + '/')) return '~' + cwd.slice(home.length);
   if (cwd === WORKSPACE_MOUNT || cwd.startsWith(WORKSPACE_MOUNT + '/')) {
     return '~' + cwd.slice(WORKSPACE_MOUNT.length);
   }
@@ -236,6 +237,19 @@ export function filterProcessesForInstance(
     // 两处 id 段都已含前缀（instanceIdFromPath 返回整段），直接整段比较。
     return p.containerId === `.succinix-${instanceId}` || p.containerId === instanceId;
   });
+}
+
+/**
+ * kill 越权拒绝（U1，host 侧收口）：非默认实例的请求只能 kill 自己归属的进程
+ * （归属 = M5 显式 instanceId 登记 + `.succinix-<id>` / `c-<id>` cwd 启发式，见 host-procs）；
+ * system 进程（共享 host 运行时）与归属不明的进程一律拒绝。默认实例 = 现状全等（可 kill 全表）。
+ * 纯函数供协议级单测；组织性隔离，非安全边界（进程表启发式可被伪装，见 host-procs 声明）。
+ */
+export function canKillProcess(proc: { scope?: string; containerId?: string } | undefined, instanceId: string): boolean {
+  if (instanceId === DEFAULT_INSTANCE_ID) return true;
+  if (!proc) return false;
+  if (proc.scope === 'system') return false;
+  return proc.containerId === `.succinix-${instanceId}` || proc.containerId === instanceId;
 }
 
 /**

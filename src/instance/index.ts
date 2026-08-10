@@ -26,7 +26,7 @@ import {
 } from '../terminal/index.js';
 import { createPersist, getPersist, type PersistContext, type SnapshotMeta } from '../persist.js';
 import { listServiceStates, startService, stopService, type ServiceContext } from '../services.js';
-import { DEFAULT_INSTANCE_ID, instanceStateRoot } from './paths.js';
+import { DEFAULT_INSTANCE_ID, instanceStateRoot, browserPathToSessionCwd } from './paths.js';
 
 // 工厂缺省 boot 步骤文案（引擎级；应用级步骤由宿主负责，见 SDK.md）。
 export const DEFAULT_INSTANCE_BOOT_STEPS = [
@@ -44,6 +44,10 @@ export interface SuccinixInstanceOptions {
    *  仅影响浏览器侧状态文件布局；host 侧进程归属/状态解析以内置前缀为准，宿主使用
    *  自定义前缀时应保持 instanceId 命名与内置前缀对齐（如 instanceId 'users/alice'）。 */
   statePrefix?: string;
+  /** 用户 home（U1，浏览器 wc.fs 视角，如 /workspace/users/alice；宿主可覆盖根）。
+   *  设置后会话初始 cwd 与提示符 home 指向 home 的 Lifo 视图（/workspace + home 路径）；
+   *  目录本身由宿主经 ensureUserHome / runApplicationBootSteps(userHome) 初始化。 */
+  home?: string;
   /** 快照存储覆盖（缺省 = 每实例键 instance:<id>，同库不同 key；默认实例 = current） */
   persistence?: { dbName?: string; storeKey?: string };
   /** 终端输出（宿主渲染层；xterm 适配器约 10 行） */
@@ -157,6 +161,11 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
 
   // 会话：instanceId 经 client 注入 rpc/命令 ctx（M3 路由）；快照/服务绑定 per-instance 视图。
   // 首提示符由宿主在合适时机调用 instance.terminal.boot()（独立应用在 motd 之后，见 main.ts）。
+  // U1：home（浏览器视角）→ 会话 cwd / 提示符 home（Lifo 视图）。home 选项优先于
+  // opts.terminal.cwd（宿主显式注入的用户语义应主导会话起点）。
+  const sessionOpts: TerminalSessionOptions = opts.home
+    ? { ...opts.terminal, cwd: browserPathToSessionCwd(opts.home), home: browserPathToSessionCwd(opts.home) }
+    : (opts.terminal ?? {});
   let session: SuccinixTerminalSession;
   const makeSession = (): SuccinixTerminalSession => {
     const rpc: TerminalRpc = {
@@ -169,7 +178,7 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       interruptDirect: (timeoutMs) => executor.interruptDirect(timeoutMs),
       readdir: (dir) => opts.wc.fs.readdir(dir, { withFileTypes: true }),
     };
-    return new SuccinixTerminalSession(rpc, opts.output, opts.terminal);
+    return new SuccinixTerminalSession(rpc, opts.output, sessionOpts);
   };
   session = makeSession();
 

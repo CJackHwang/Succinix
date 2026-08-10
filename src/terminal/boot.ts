@@ -13,7 +13,8 @@ import { ensureServicesFiles, readAutostart, startService } from '../services.js
 import { initLogger, log } from '../log.js';
 import { ensureMotd } from '../motd.js';
 import { respawnWithKillFirst } from '../host-restart.js';
-import { sleep } from '../util.js';
+import { sleep, ensureParentDir } from '../util.js';
+import { DEFAULT_INSTANCE_ID, statePath, userHomePath, browserPathToSessionCwd } from '../instance/paths.js';
 
 // ─── 选项 / 结果契约 ───
 
@@ -301,6 +302,10 @@ export interface AppBootStepsContext {
   instanceId?: string;
   /** 状态根前缀覆盖（M5，additive）：缺省 = DM-12 内置前缀 */
   statePrefix?: string;
+  /** 用户 home（U1，浏览器 wc.fs 视角，如 /workspace/users/alice）：非空 = 多用户模式 ——
+   *  首次启动创建 home（mkdir + .succinix 状态种子）并把会话 cwd 种子写入实例状态文件
+   *  （Lifo 视图 /workspace + home 路径，host 首启恢复为会话 cwd）。缺省 = 现状（guest 无 home） */
+  userHome?: string;
   /** 跳过探活与 'TerminalExecutor ready' 步（demo：工厂已 waitForHostReady） */
   skipHostReady?: boolean;
   /** 探活重试参数（默认路径传；R3.2 kill-before-spawn，返回最终 host 句柄） */
@@ -335,6 +340,29 @@ export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootSt
   // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
   // 全新系统则用配置的默认工作区名初始化。
   await initWorkspace(boot, wc.fs, defaultWorkspace);
+
+  // 多用户 home（U1）：首次启动创建 /workspace/users/<id>（mkdir + .succinix 状态种子）；
+  // 会话 cwd 状态文件缺失时种子为 home 的 Lifo 视图（host 按实例恢复，刷新后仍在 home）。
+  if (ctx.userHome) {
+    const userId = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
+    try {
+      await ensureUserHome(wc.fs, userId, ctx.userHome);
+    } catch (e) {
+      boot.noteOnly(`User home init failed (${String(e).slice(0, 80)})`);
+    }
+    const cwdFile = statePath(userId, 'etc/succinix.cwd', ctx.statePrefix);
+    try {
+      await wc.fs.readFile(cwdFile, 'utf8');
+    } catch {
+      try {
+        await ensureParentDir(wc.fs, cwdFile);
+        await wc.fs.writeFile(cwdFile, browserPathToSessionCwd(ctx.userHome));
+      } catch (e) {
+        boot.noteOnly(`Session cwd seed failed (${String(e).slice(0, 80)})`);
+      }
+    }
+    boot.ok('Initialized user home');
+  }
   boot.ok(`Loaded ${envCount} environment variables`);
 
   // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
@@ -384,6 +412,18 @@ export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootSt
 
   void log('BOOT', 'boot complete');
   return hostProc;
+}
+
+// ─── 用户 home 初始化（U1）───
+// 首次启动创建 home 目录（浏览器视角绝对路径，宿主可覆盖根）+ .succinix 状态种子
+// （随快照持久，供宿主/自检确认 home 已初始化）。幂等：目录/种子已存在则跳过写入。
+export async function ensureUserHome(fs: FileSystemAPI, userId: string, homePath: string = userHomePath(userId)): Promise<void> {
+  await fs.mkdir(homePath, { recursive: true });
+  try {
+    await fs.readFile(`${homePath}/.succinix`, 'utf8');
+  } catch {
+    await fs.writeFile(`${homePath}/.succinix`, userId);
+  }
 }
 
 // ─── 工厂：createTerminalBoot ───

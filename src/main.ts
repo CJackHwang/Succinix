@@ -303,11 +303,12 @@ async function main(): Promise<void> {
   const ui = createBootUI(term);
   const logger = makeSessionLogger();
   const params = new URLSearchParams(location.search);
-  // M5 demo：?instance=<id> 走实例工厂（引擎级 boot + 应用级 bootsteps + 聚合对象）。
-  // 缺省路径（无 ?instance / ?instance=default）= 现状行为全等。
-  const instanceParam = params.get('instance');
-  if (instanceParam && instanceParam !== 'default') {
-    await mainDemoInstance(ui, logger, instanceParam);
+  // M5/U1 demo：?instance=<id> / ?user=<id> 走实例工厂（引擎级 boot + 应用级 bootsteps +
+  // 聚合对象；?user 附带每用户 home 语义，见 bootSuccinix）。两者等价（同一字段），
+  // 缺省路径（无参数 / default）= 现状行为全等。
+  const demoId = params.get('user') ?? params.get('instance');
+  if (demoId && demoId !== 'default') {
+    await mainDemoInstance(ui, logger, demoId);
     return;
   }
   try {
@@ -439,10 +440,13 @@ async function mainDemoInstance(
 ): Promise<void> {
   let ctx: CommandContext;
   const getCtx = () => ctx;
+  // U1：?user=<id> 模式（userId 与 instanceId 等价）—— 提示符显示用户身份，guest 缺省不变。
+  const userParam = new URLSearchParams(location.search).get('user');
   try {
     const services = await bootSuccinix(ui, {
       output,
       terminal: {
+        promptPrefix: userParam ? `${userParam}@succinix:` : undefined,
         localHandlers: makeLocalHandlers(getCtx),
         beforeRpc: async (cmd) => {
           // python/pip 命令（含链中段）首用前懒注入运行时资产（注入幂等，~13MB 仅一次）。
@@ -467,6 +471,7 @@ async function mainDemoInstance(
       term,
       fit: () => fitAddon.fit(),
       instanceId,
+      userId: userParam ?? undefined,
       persist: instance.persist,
       onInstanceReset: () => instance.restart(),
       onInstanceStop: () => void instance.dispose(),

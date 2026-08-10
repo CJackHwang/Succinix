@@ -63,6 +63,9 @@ export interface TerminalSessionOptions {
   interrupt?: boolean;
   /** 提示符前缀（缺省 'guest@succinix:'） */
   promptPrefix?: string;
+  /** 用户 home（Lifo 视图，缺省 /workspace = guest 现状）：cwd === home → 提示符 `~`，
+   *  home 下 → `~/...`。多用户模式由宿主注入（createSuccinixInstance 的 home 选项派生） */
+  home?: string;
   /** 命令日志采集（对齐 engine onCommand；缺省不写日志，由应用层注入落盘） */
   onCommand?: (entry: CommandLogEntry) => void;
   /** RPC 前挂钩（应用层预注入，如 python 资产懒加载）；抛错则命令中止并如实显示 */
@@ -140,7 +143,7 @@ export class SuccinixTerminalSession {
   }
 
   getPrompt(): string {
-    return `${this.options.promptPrefix}${sessionCwdPromptLabel(this.cwd)}$ `;
+    return `${this.options.promptPrefix}${sessionCwdPromptLabel(this.cwd, this.options.home)}$ `;
   }
 
   getCwd(): string {

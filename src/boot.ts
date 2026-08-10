@@ -22,7 +22,7 @@ import {
 } from './terminal/boot.js';
 import type { TerminalOutput, TerminalSessionOptions } from './terminal/index.js';
 import { createSuccinixInstance, DEFAULT_INSTANCE_BOOT_STEPS, type SuccinixInstance } from './instance/index.js';
-import { DEFAULT_INSTANCE_ID } from './instance/paths.js';
+import { DEFAULT_INSTANCE_ID, userHomePath } from './instance/paths.js';
 import { log } from './log.js';
 
 export { checkEnvironment, detectSystemInfo, initWorkspace, withRetry, bootWebContainerWithRetry, waitForHostReadyWithRetry };
@@ -57,11 +57,14 @@ export interface BootSuccinixOptions {
 export async function bootSuccinix(ui: BootUI, opts: BootSuccinixOptions = {}): Promise<SuccinixServices | null> {
   const params = new URLSearchParams(location.search);
   const testMode = params.get('test') === '1';
+  const userId = params.get('user');
   const instanceId = params.get('instance');
-  // M5 demo：非缺省实例走实例工厂（引擎级 boot）+ 应用级 bootsteps（共享实现）。
-  // 缺省路径（无 ?instance / ?instance=default）= 现状行为全等。
-  if (instanceId && instanceId !== DEFAULT_INSTANCE_ID) {
-    return bootDemoInstance(ui, instanceId, { testMode, ...opts });
+  // U1：?user=<id> 是多用户 demo 参数（userId 与 instanceId 等价，内部同一字段）；
+  // ?instance=<id> 保持 M5 别名兼容（实例模式，无 per-user home）。
+  // 缺省路径（无参数 / ?user=default / ?instance=default）= 现状行为全等。
+  const id = userId ?? instanceId;
+  if (id && id !== DEFAULT_INSTANCE_ID) {
+    return bootDemoInstance(ui, id, { testMode, userMode: userId !== null && userId !== '', ...opts });
   }
   const boot = createTerminalBoot(ui, {
     steps: [...DEFAULT_BOOT_STEPS],
@@ -78,7 +81,7 @@ export async function bootSuccinix(ui: BootUI, opts: BootSuccinixOptions = {}): 
 async function bootDemoInstance(
   ui: BootUI,
   instanceId: string,
-  opts: { testMode?: boolean; output?: TerminalOutput; terminal?: TerminalSessionOptions }
+  opts: { testMode?: boolean; userMode?: boolean; output?: TerminalOutput; terminal?: TerminalSessionOptions }
 ): Promise<SuccinixServices | null> {
   // 任何 WebContainer 操作之前：环境检测（与 createTerminalBoot 同款错误页，无降级）。
   const failures = checkEnvironment();
@@ -106,6 +109,8 @@ async function bootDemoInstance(
     instanceId,
     output: opts.output,
     terminal: opts.terminal,
+    // U1：?user=<id> 模式 —— 会话 cwd/提示符 home 指向每用户 home（Lifo 视图）。
+    home: opts.userMode ? userHomePath(instanceId) : undefined,
     executor: { onCommand: makeClientLogger() },
     bootUI: ui,
     bootSteps: [...DEFAULT_INSTANCE_BOOT_STEPS],
@@ -135,6 +140,7 @@ async function bootDemoInstance(
     client: instance.client,
     ports: instance.ports,
     instanceId,
+    userHome: opts.userMode ? userHomePath(instanceId) : undefined,
     skipHostReady: true,
   });
 

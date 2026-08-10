@@ -29,3 +29,21 @@ export function tinbaseDataDir(instanceId: string, prefix?: string): string {
   const root = instanceStateRoot(instanceId, prefix);
   return root ? `${root}/tinbase` : '/workspace/.tinbase';
 }
+
+// ─── 用户 home（U1）───
+// 每用户 home 约定：浏览器视角 /workspace/users/<id>（宿主可覆盖根）。终端会话 cwd 用
+// Lifo 视图（browserPathToSessionCwd）—— 浏览器 `/x` == cwd/x == Lifo `/workspace/x`，
+// 因此 home 的会话视图是 /workspace/workspace/users/<id>，提示符显示为 `~`（session home 选项）。
+export const USER_HOME_ROOT = '/workspace/users';
+
+/** 用户 home（浏览器 wc.fs 视角）；缺省根 /workspace/users，宿主可覆盖。 */
+export function userHomePath(userId: string, root: string = USER_HOME_ROOT): string {
+  const clean = userId.replace(/^\/+|\/+$/g, '');
+  return `${root}/${clean}`;
+}
+
+/** 浏览器视角绝对路径 → 会话 cwd（Lifo 视图）：/workspace/users/a → /workspace/workspace/users/a。 */
+export function browserPathToSessionCwd(p: string): string {
+  const abs = p.startsWith('/') ? p : `/${p}`;
+  return `/workspace${abs}`;
+}

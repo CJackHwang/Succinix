@@ -14,6 +14,7 @@ import {
   lifoCwdToSessionCwd,
   sessionCwdToBrowserPath,
   sessionCwdPromptLabel,
+  canKillProcess,
   capOutput,
   MAX_OUTPUT_BYTES,
   withEaccesHint,
@@ -148,6 +149,23 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(sessionCwdPromptLabel('/workspacex')).toBe('~'); // 前缀误判防护
   });
 
+  it('sessionCwdPromptLabel：多用户 home 参数优先（U1，cwd === home → ~）', () => {
+    const home = '/workspace/workspace/users/a'; // 浏览器 /workspace/users/a 的 Lifo 视图
+    expect(sessionCwdPromptLabel(home, home)).toBe('~');
+    expect(sessionCwdPromptLabel(`${home}/proj`, home)).toBe('~/proj');
+    expect(sessionCwdPromptLabel(`${home}/a/b`, home)).toBe('~/a/b');
+    // 不在 home 下：回落工作区根语义（/workspace 下仍按 ~ 前缀，其余 ~）。
+    expect(sessionCwdPromptLabel('/workspace', home)).toBe('~');
+    expect(sessionCwdPromptLabel('/workspace/proj', home)).toBe('~/proj');
+    expect(sessionCwdPromptLabel('/home/wc-123', home)).toBe('~');
+    expect(sessionCwdPromptLabel('/workspacex', home)).toBe('~'); // 前缀误判防护
+  });
+
+  it('sessionCwdPromptLabel：缺省 home = /workspace（guest 现状全等）', () => {
+    expect(sessionCwdPromptLabel('/workspace')).toBe('~');
+    expect(sessionCwdPromptLabel('/workspace/x')).toBe('~/x');
+  });
+
   it('lifoCwdToSessionCwd：cd 后 Lifo cwd → 会话 cwd（cd / 映射回工作区根）', () => {
     // /workspace 下原样同步
     expect(lifoCwdToSessionCwd('/workspace')).toBe('/workspace');
@@ -177,6 +195,38 @@ describe('capOutput（输出截断）', () => {
   it('自定义上限（测试/小缓冲场景）', () => {
     expect(capOutput('abcdef', 4)).toBe('cdef');
     expect(capOutput('abc', 4)).toBe('abc');
+  });
+});
+
+describe('canKillProcess（U1 kill 越权拒绝，host 侧收口）', () => {
+  const procs = [
+    { scope: 'system', containerId: undefined },
+    { scope: 'container', containerId: '.succinix-a' },
+    { scope: 'container', containerId: '.succinix-b' },
+    { scope: 'container', containerId: 'a' }, // CISOL 兼容命名空间（c-<id> 段即 id）
+    { scope: 'unknown', containerId: undefined },
+  ] as Array<{ scope?: string; containerId?: string }>;
+
+  it('default instance may kill anything (current behavior unchanged)', () => {
+    for (const p of procs) expect(canKillProcess(p, 'default')).toBe(true);
+    expect(canKillProcess(undefined, 'default')).toBe(true);
+  });
+
+  it('instance/user may kill only its own processes (state-root .succinix-<id> and legacy c-<id>)', () => {
+    expect(canKillProcess(procs[1], 'a')).toBe(true); // .succinix-a
+    expect(canKillProcess(procs[3], 'a')).toBe(true); // cwd c-a 段（id == a）
+    expect(canKillProcess(procs[2], 'a')).toBe(false); // .succinix-b → 跨用户拒绝
+  });
+
+  it('system processes and unattributed processes are never killable by non-default instances', () => {
+    expect(canKillProcess(procs[0], 'a')).toBe(false); // system
+    expect(canKillProcess(procs[4], 'a')).toBe(false); // unknown
+    expect(canKillProcess(undefined, 'a')).toBe(false); // 进程不存在
+  });
+
+  it('same rule applies to user ids (userId == instanceId)', () => {
+    expect(canKillProcess({ scope: 'container', containerId: '.succinix-b' }, 'b')).toBe(true);
+    expect(canKillProcess({ scope: 'container', containerId: '.succinix-a' }, 'b')).toBe(false);
   });
 });
 

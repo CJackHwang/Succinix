@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// M5 阶段验证点 1 —— 双 tab 实例 demo 实测（?instance=c-1 / ?instance=c-2）。
+// M5 阶段验证点 1 + U1 阶段验证点 2 —— 双 tab 实例 demo（?instance=c-1 / ?instance=c-2）
+// + 双用户 demo（?user=a / ?user=b，U1：每用户 home / 会话 cwd / 快照按用户隔离）。
 // 零新依赖（复用 verify-deploy/scenarios 的 CDP 模式）：vite preview + headless Chrome
 // 双 tab，各自独立 WebContainer。
 //
@@ -7,8 +8,8 @@
 // （双 tab 共享同一 origin 的 IndexedDB，快照键 instance:<id> 必须互不串扰）/
 // service start 只影响自己 / reboot 只重置自己（另一 tab 不受影响）。
 //
-// 盲区如实标注（MASTER-PLAN M3）：双 tab 各自独立 host —— host 侧按实例路由
-// （ps 过滤 / kill 越权）不在此覆盖，以 M3 协议级单测为证：
+// 盲区如实标注（MASTER-PLAN M3/U1）：双 tab 各自独立 host —— host 侧按实例路由
+// （ps 过滤 / kill 越权，含跨用户 kill 拒绝）不在此覆盖，以协议级单测为证：
 // 跨容器已 e2e、同页路由仅单测。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -341,6 +342,88 @@ async function main() {
     check(checks, 'c-2 unaffected by c-1 reboot (still responsive)', bEcho.ok === true && String(bEcho.output).includes('b-alive'));
     check(checks, 'c-1 state root cleared by reboot (env reset)', !String(aEnvAfter.output).includes('C1_MARK'));
     check(checks, 'c-2 env untouched by c-1 reboot', String(bEnvAfter.output).includes('C2_MARK') && !String(bEnvAfter.output).includes('C1_MARK'));
+
+    // ─── U1：双用户 demo（?user=a / ?user=b）───
+    // 与实例 demo 同一机制（userId == instanceId）；差异点：每用户 home
+    // （/workspace/users/<id>，.succinix 种子）、会话 cwd = home（Lifo 视图，pwd 断言）、
+    // 身份展示（whoami / 提示符前缀）。快照按用户键隔离 + 刷新后 cwd 仍在 home。
+    const userUrls = {
+      a: `${BASE}/?user=a&scenario=1`,
+      b: `${BASE}/?user=b&scenario=1`,
+    };
+    const userTargetIds = {};
+    for (const id of Object.keys(userUrls)) {
+      const t = await browserCdp.send('Target.createTarget', { url: userUrls[id] });
+      userTargetIds[id] = t.targetId;
+    }
+    const userTabs = {};
+    for (const id of Object.keys(userUrls)) {
+      let wsUrl = '';
+      for (let i = 0; i < 30 && !wsUrl; i++) {
+        const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
+        const target = list.find((x) => x.type === 'page' && x.id === userTargetIds[id]);
+        if (target?.webSocketDebuggerUrl) wsUrl = target.webSocketDebuggerUrl;
+        if (!wsUrl) await sleep(200);
+      }
+      if (!wsUrl) throw new Error(`user tab ${id}: CDP target not found`);
+      const cdp = new CDP(wsUrl);
+      await cdp.open();
+      await cdp.send('Page.enable');
+      await cdp.send('Runtime.enable');
+      userTabs[id] = makeTab(cdp, id);
+    }
+    const UA = userTabs['a'];
+    const UB = userTabs['b'];
+
+    // U1：双用户各自完整 boot（?user= demo 路径），句柄就绪。
+    await UA.waitForScenario();
+    await UB.waitForScenario();
+    check(checks, 'dual-tab ?user= demo boots independently (a + b)', true);
+
+    // U2：每用户 home 初始化（/workspace/users/<id> + .succinix 种子内容 = 用户 id）。
+    const aHomeMarker = await UA.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/a/.succinix','utf8').then((t) => t.trim()).catch(() => 'MISSING')`);
+    const bHomeMarker = await UB.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/b/.succinix','utf8').then((t) => t.trim()).catch(() => 'MISSING')`);
+    const aHomeLs = await UA.eval(`window.__succinixScenario.wc.fs.readdir('/workspace/users/a').then((x) => Array.isArray(x)).catch(() => false)`);
+    check(checks, 'per-user home seeded under /workspace/users (a + b dirs exist)', aHomeLs === true);
+    check(checks, 'per-user .succinix marker content equals user id (a + b)', aHomeMarker === 'a' && bHomeMarker === 'b');
+
+    // U3：会话 cwd = home（Lifo 视图 /workspace/workspace/users/<id>）；身份展示。
+    const aPwd = await UA.run('pwd');
+    const bPwd = await UB.run('pwd');
+    const aWho = await UA.run('whoami');
+    const bWho = await UB.run('whoami');
+    check(checks, 'session cwd starts at user home (pwd = /workspace/workspace/users/<id>)', String(aPwd.output).trim() === '/workspace/workspace/users/a' && String(bPwd.output).trim() === '/workspace/workspace/users/b', `${String(aPwd.output).trim()} | ${String(bPwd.output).trim()}`);
+    check(checks, 'whoami shows user id in ?user= mode (a + b)', String(aWho.output).trim() === 'a' && String(bWho.output).trim() === 'b', `${String(aWho.output).trim()} | ${String(bWho.output).trim()}`);
+
+    // U4：env 状态按用户独立（状态根 /workspace/.succinix-<id>）。
+    await UA.run('env UA_MARK=from-a');
+    await UB.run('env UB_MARK=from-b');
+    const aEnv = await UA.run('env');
+    const bEnv = await UB.run('env');
+    check(checks, 'env isolated per user (UA_MARK in a only, UB_MARK in b only)', String(aEnv.output).includes('UA_MARK') && !String(aEnv.output).includes('UB_MARK') && String(bEnv.output).includes('UB_MARK') && !String(bEnv.output).includes('UA_MARK'));
+    const uaMotd = await UA.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/.succinix-a/etc/succinix.motd').then(() => true).catch(() => false)`);
+    const ubMotd = await UB.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/.succinix-b/etc/succinix.motd').then(() => true).catch(() => false)`);
+    check(checks, 'per-user state roots (a + b motd present)', uaMotd === true && ubMotd === true);
+
+    // U5：快照按用户键隔离 + 刷新后 cwd 仍在 home（用户 home 内标记文件各自恢复）。
+    await UA.eval(`window.__succinixScenario.wc.fs.writeFile('/workspace/users/a/a-marker.txt','a').then(() => true).catch(() => false)`);
+    await UB.eval(`window.__succinixScenario.wc.fs.writeFile('/workspace/users/b/b-marker.txt','b').then(() => true).catch(() => false)`);
+    const uaSnap = await UA.eval('window.__succinixScenario.saveSnapshot(true).then(() => true).catch(() => false)');
+    const ubSnap = await UB.eval('window.__succinixScenario.saveSnapshot(true).then(() => true).catch(() => false)');
+    check(checks, 'per-user snapshots saved (both tabs, shared origin IndexedDB)', uaSnap === true && ubSnap === true);
+    await UA.reloadAndWait();
+    await UB.reloadAndWait();
+    const uaHasA = await UA.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/a/a-marker.txt').then(() => true).catch(() => false)`);
+    const uaHasB = await UA.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/b/b-marker.txt').then(() => true).catch(() => false)`);
+    const ubHasB = await UB.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/b/b-marker.txt').then(() => true).catch(() => false)`);
+    const ubHasA = await UB.eval(`window.__succinixScenario.wc.fs.readFile('/workspace/users/a/a-marker.txt').then(() => true).catch(() => false)`);
+    check(checks, 'snapshot isolation per user (a restores only own home marker)', uaHasA === true && uaHasB === false);
+    check(checks, 'snapshot isolation per user (b restores only own home marker)', ubHasB === true && ubHasA === false);
+    const uaPwdAfter = await UA.run('pwd');
+    const ubPwdAfter = await UB.run('pwd');
+    check(checks, 'session cwd persists in user home after refresh (a + b)', String(uaPwdAfter.output).trim() === '/workspace/workspace/users/a' && String(ubPwdAfter.output).trim() === '/workspace/workspace/users/b');
+
+    for (const id of Object.keys(userTabs)) userTabs[id].cdp.close();
 
     browserCdp.close();
     for (const id of Object.keys(tabs)) tabs[id].cdp.close();

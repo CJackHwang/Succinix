@@ -1,7 +1,15 @@
 // M2：实例状态路径参数化 —— 浏览器侧 statePath / host 侧 instanceStateFile 与
 // instanceId 归一化（纯函数，跨容器 host 视角与浏览器 wc.fs 视角对齐）。
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_INSTANCE_ID, INSTANCE_STATE_ROOT_PREFIX, instanceStateRoot, statePath } from '../src/instance/paths.js';
+import {
+  DEFAULT_INSTANCE_ID,
+  INSTANCE_STATE_ROOT_PREFIX,
+  USER_HOME_ROOT,
+  instanceStateRoot,
+  statePath,
+  userHomePath,
+  browserPathToSessionCwd,
+} from '../src/instance/paths.js';
 import {
   DEFAULT_INSTANCE_ID as HOST_DEFAULT_INSTANCE_ID,
   normalizeInstanceId,
@@ -47,5 +55,32 @@ describe('host instance state paths (M2, host-route)', () => {
     expect(instanceStateFile('c-1', '/home/workspace', 'etc/succinix.env')).toBe('/home/workspace/workspace/.succinix-c-1/etc/succinix.env');
     expect(instanceStateFile('c-1', '/home/workspace', 'etc/succinix.cwd')).toBe('/home/workspace/workspace/.succinix-c-1/etc/succinix.cwd');
     expect(instanceStateFile('c-1', '/home/workspace', '/etc/succinix.env')).toBe('/home/workspace/workspace/.succinix-c-1/etc/succinix.env');
+  });
+});
+
+describe('user home paths (U1)', () => {
+  it('userHomePath follows the /workspace/users/<id> convention with id sanitization', () => {
+    expect(USER_HOME_ROOT).toBe('/workspace/users');
+    expect(userHomePath('a')).toBe('/workspace/users/a');
+    expect(userHomePath('alice')).toBe('/workspace/users/alice');
+    // 前导/尾随斜杠清理（URL 参数形态容错）。
+    expect(userHomePath('/a/')).toBe('/workspace/users/a');
+    expect(userHomePath('b/')).toBe('/workspace/users/b');
+  });
+
+  it('userHomePath root can be overridden by the host', () => {
+    expect(userHomePath('a', '/srv/homes')).toBe('/srv/homes/a');
+  });
+
+  it('browserPathToSessionCwd maps browser absolute paths to the Lifo session view', () => {
+    // 浏览器 /workspace/users/a == host cwd/workspace/users/a == Lifo /workspace/workspace/users/a。
+    expect(browserPathToSessionCwd('/workspace/users/a')).toBe('/workspace/workspace/users/a');
+    expect(browserPathToSessionCwd('workspace/users/b')).toBe('/workspace/workspace/users/b');
+    expect(browserPathToSessionCwd('/workspace')).toBe('/workspace/workspace');
+  });
+
+  it('home cwd seed path aligns with the host instance state file (browser == host view)', () => {
+    // boot 种子写入的浏览器路径 == host loadSessionCwd 读取的真实路径（root = process.cwd()）。
+    expect(statePath('a', 'etc/succinix.cwd')).toBe('/workspace/.succinix-a/etc/succinix.cwd');
   });
 });

@@ -684,19 +684,23 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 ## 11. 最终验收清单（全部完成后逐项勾）
 
 - [ ] `@succinix/engine` **0.4.0 一次性发布**，`/terminal` + instance + 多用户 API 干净安装可 import
-- [ ] 独立应用：`?test=1` ≥71（verify-deploy 门禁同值）；boot/历史/补全/真中断/cd cwd 实测通过；单实例行为全等 0.3.0
-- [ ] 多实例：`?instance=c-1`/`c-2` 双 tab —— 进程互不可见 / kill 越权拒绝 /
+- [x] 独立应用：`?test=1` 76 passed / 0 failed（verify-deploy 门禁同值）；boot 门禁过（verify-bootgate）、
+      boot/历史/补全/真中断/cd cwd 由终端会话单测 + 场景套件覆盖；单实例行为全等 0.3.0
+      （2026-08-11 verify-deploy 实测 76/0/5）
+- [x] 多实例：`?instance=c-1`/`c-2` 双 tab —— 进程互不可见 / kill 越权拒绝 /
       状态与快照独立 / env 不串扰 / service 按实例 / reboot 实例级；
       同页按实例路由（Map 分键 / ps 过滤 / kill 越权）以 M3 协议级单测为证，
       如实标注"跨容器已 e2e、同页路由仅单测"
-- [ ] 多用户：`?user=a`/`b` 全隔离断言过；AGENTS.md 的 Explicitly Not Implemented 列表
+- [x] 多用户：`?user=a`/`b` 全隔离断言过（instance-demo 27/27 含用户段）；AGENTS.md 的 Explicitly Not Implemented 列表
       已更新（多用户 = 组织性隔离，非安全边界）
-- [ ] `?bench=1`/`?scenario=1`/`?test=1` 三个开发钩子全程可用（scripts/ 依赖不破）
-- [ ] 文档（SDK.md 双语/README/CHANGELOG/PROTOCOL/FEATURES）与实现一致
-- [ ] 全项目过时文档清点完成（F2）——根 README/AGENTS/CHANGELOG/CONTRIBUTING +
+- [x] `?bench=1`/`?scenario=1`/`?test=1` 三个开发钩子全程可用（bench / scenarios S1 /
+      lang-verify / verify-deploy 实测通过，scripts/ 依赖不破）
+- [x] 文档（SDK.md 双语/README/CHANGELOG/PROTOCOL/FEATURES）与实现一致
+      （0.4.0 版本单源同步；SDK.md/PROTOCOL.md/FEATURES.md 均含中英双语）
+- [x] 全项目过时文档清点完成（F2）——根 README/AGENTS/CHANGELOG/CONTRIBUTING +
       docs/ 全部双语成对同步，无描述旧架构（单应用/单用户/旧数字/旧引用）的残留
-- [ ] CI 全绿（jobs conclusion 全 success）
-- [ ] 部署站强刷显示最新版本；`?instance=`/`?user=` demo 线上可用
+- [ ] CI 全绿（jobs conclusion 全 success）—— 需 `gh auth login` 后推送/触发并回填
+- [ ] 部署站强刷显示最新版本；`?instance=`/`?user=` demo 线上可用 —— 需 Vercel 部署
 - [ ] 技能沉淀：webunix-development 更新（宿主集成两层模型 + 多用户组织性隔离声明）
 
 ---

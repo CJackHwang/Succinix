@@ -46,6 +46,27 @@ function activePortsFor(instanceId: string): Map<string, number> {
   return m;
 }
 
+/** D3：实例 restart 清服务活动端口记录（本会话启动记录表）。 */
+export function clearActivePorts(instanceId: string): void {
+  activePortsByInstance.delete(instanceId);
+}
+
+// ─── db 活动端口（M1：db start 记录 / status/stop 读取；从 commands.ts 迁入，D3 需按实例清理）───
+const dbActivePortByInstance = new Map<string, number>();
+
+export function dbActivePortFor(instanceId: string): number | null {
+  return dbActivePortByInstance.get(instanceId) ?? null;
+}
+
+export function setDbActivePort(instanceId: string, port: number): void {
+  dbActivePortByInstance.set(instanceId, port);
+}
+
+/** D3：实例 restart 清 db 活动端口记录。 */
+export function clearDbActivePorts(instanceId: string): void {
+  dbActivePortByInstance.delete(instanceId);
+}
+
 export interface ServiceDef {
   name: string;
   /** 原始命令模板（可含 ${PORT} 占位符，启动时替换为 preview-port） */

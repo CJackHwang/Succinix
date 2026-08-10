@@ -43,6 +43,7 @@ import {
   instanceStateFile,
   filterProcessesForInstance,
   canKillProcess,
+  processesOwnedByInstance,
   CurrentRunRegistry,
 } from './host-route.js';
 
@@ -390,6 +391,9 @@ async function handleCommand(req: CommandRequest): Promise<void> {
     case 'kill':
       dispatchKill(req);
       return;
+    case 'reset-instance':
+      dispatchResetInstance(req);
+      return;
     case 'interrupt':
       dispatchInterrupt(req);
       return;
@@ -721,6 +725,21 @@ function dispatchKill(req: CommandRequest): void {
   }
   const r = killProcess(pid);
   writeResult(req.id, { ok: r.killed, killed: r.killed, message: r.message }, inst);
+}
+
+// D3：实例级重置（reset-instance 协议命令）—— 停掉该实例仍运行的进程（按实例归属，
+// 与 ps 过滤/kill 授权同启发式）、清 host 侧实例缓存（会话 cwd / 当前 interrupt run）。
+// 默认实例 = 整页刷新语义（浏览器侧 location.reload），host 侧只清缓存不批量 kill。
+function dispatchResetInstance(req: CommandRequest): void {
+  const inst = instanceOf(req);
+  const killed: number[] = [];
+  for (const p of processesOwnedByInstance(listProcesses(), inst)) {
+    const r = killProcess(p.pid);
+    if (r.killed) killed.push(p.pid);
+  }
+  sessionCwdByInstance.delete(inst);
+  currentRunByInstance.clear(inst);
+  writeResult(req.id, { ok: true, kind: 'reset-instance', killed }, inst);
 }
 
 // interrupt（P5-15）：浏览器 Ctrl+C —— 终止当前前台 run 的 node 子进程。

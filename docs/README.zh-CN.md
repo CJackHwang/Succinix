@@ -154,7 +154,7 @@ vercel --prod
 npm run build
 node scripts/verify-deploy.mjs
 # 启动 vite preview，断言 /、/host.js 与 JS bundle 的 COOP/COEP，
-# 再在 headless Chrome 里跑 ?test=1 —— PASSED 要求 >=57 passed 且 0 failed
+# 再在 headless Chrome 里跑 ?test=1 —— PASSED 要求 >=71 passed 且 0 failed
 ```
 
 **数据分域。** IndexedDB 按 **origin** 隔离。更换部署域名 = 启动全新系统：工作区、文件与数据库数据**不**跨域迁移。同域刷新安全（快照恢复）；只有换域会重置系统。这也适用于 Vercel preview 部署：每个 preview 有独立 URL（不同 origin），每个 preview 环境有各自分域的 IndexedDB——preview 部署之间数据也不互通。

@@ -1,22 +1,11 @@
-// 启动渲染器（呈现层）：boot 日志全程写入 xterm 终端，环境错误页仍为 DOM。
-// 职责：将自检日志（[  OK  ] / [ FAIL ] / [SKIP] / [ .... ]）按现有 MARKER 映射着色后
-// 写入终端；systemInfo 为 no-op（去掉系统信息网格）；fail() 显示 DOM 错误页并停留。
-// 与业务逻辑分离（boot.ts 只调用这里的渲染接口，不直接碰 DOM / xterm）。
+// 启动渲染器（呈现层，D1）：boot 日志全程写入 xterm 终端，环境错误页仍为 DOM。
+// BootUI 接口已下沉到 terminal SDK（src/terminal/ui.ts）—— 本文件只保留 DOM/xterm
+// 实现（createBootUI），并向后兼容 re-export 接口类型（既有测试/调用方可继续从本模块导入）。
 import type { Terminal } from '@xterm/xterm';
 import { AMBER, RED, GRAY, RESET } from './theme.js';
 
-export type LogKind = 'ok' | 'note' | 'skip' | 'fail' | 'info';
-
-export interface BootUI {
-  /** 追加一行自检日志到 xterm 终端（marker 按 kind 着色，其余暖白默认色） */
-  log(text: string, kind?: LogKind): void;
-  /** 系统信息网格已移除：no-op（boot.ts 的调用保留，不产生输出） */
-  systemInfo(lines: string[]): void;
-  /** boot（及可选自检）完成：移除（隐藏的）错误页 DOM 并立即返回；终端全程可见，无淡出 */
-  complete(): Promise<void>;
-  /** 环境不适配：显示专业英文错误页并停留（不做任何降级 / 兜底） */
-  fail(reasons: string[], opts?: { header?: string; footer?: string }): void;
-}
+export type { BootUI, LogKind } from './terminal/ui.js';
+import type { BootUI, LogKind } from './terminal/ui.js';
 
 // 覆盖层日志行前置状态标记（与终端保持一致：纯 ASCII、暗橙 / 暗红 / 暗灰）
 const MARKERS = ['[  OK  ]', '[ FAIL ]', '[SKIP]', '[ .... ]', '[preview]'] as const;

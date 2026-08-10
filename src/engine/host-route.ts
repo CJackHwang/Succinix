@@ -253,6 +253,24 @@ export function canKillProcess(proc: { scope?: string; containerId?: string } | 
 }
 
 /**
+ * 实例归属进程收集（D3，reset-instance 用）：非默认实例 = 该实例状态根
+ * （.succinix-<id> / c-<id> 命名空间）下的非 system 进程；默认实例返回空数组
+ * （默认实例重置 = 整页刷新语义，浏览器侧 location.reload，host 不批量 kill）。
+ * 与 filterProcessesForInstance 同启发式；组织性隔离，非安全边界。
+ */
+export function processesOwnedByInstance(
+  procs: Array<{ scope?: string; containerId?: string; pid: number }>,
+  instanceId: string
+): Array<{ pid: number }> {
+  if (instanceId === DEFAULT_INSTANCE_ID) return [];
+  return procs.filter(
+    (p) =>
+      p.scope !== 'system' &&
+      (p.containerId === `.succinix-${instanceId}` || p.containerId === instanceId)
+  );
+}
+
+/**
  * 当前前台 run 的按实例注册表（M3）：interrupt 只杀请求实例的当前 run。
  * 缺省 default 键 = 现状单值语义全等。spawnChild 登记 / settle 清除 / interrupt 查询。
  */
@@ -270,5 +288,10 @@ export class CurrentRunRegistry {
 
   get(instanceId: string): number | null {
     return this.runs.get(instanceId) ?? null;
+  }
+
+  /** 清空某实例的当前 run（D3，reset-instance：重启后旧 interrupt 目标不再残留）。 */
+  clear(instanceId: string): void {
+    this.runs.delete(instanceId);
   }
 }

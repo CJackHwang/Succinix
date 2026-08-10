@@ -4,7 +4,8 @@
 // 环境检测 / 重试 / 工作区初始化 / 步骤计数等纯逻辑已迁移到 terminal 层；本文件只保留
 // 独立应用的步骤文案、命令日志采集与既有导出面（向后兼容，避免 main/tests/commands 改动）。
 import type { BootUI } from './boot-ui.js';
-import type { CommandLogEntry } from './engine/index.js';
+import type { CommandLogEntry, TerminalClient } from './engine/index.js';
+import type { WebContainer } from '@webcontainer/api';
 import {
   createTerminalBoot,
   DEFAULT_BOOT_STEPS,
@@ -14,15 +15,16 @@ import {
   RetryHooks,
   withRetry,
   bootWebContainerWithRetry,
-  waitForHostReadyWithRetry,
-  runApplicationBootSteps,
   type TerminalBoot,
   type TerminalBootResult,
   type TerminalBootOptions,
 } from './terminal/boot.js';
+import { runApplicationBootSteps, waitForHostReadyWithRetry } from './boot-steps.js';
+import { loadSnapshot } from './persist.js';
 import type { TerminalOutput, TerminalSessionOptions } from './terminal/index.js';
 import { createSuccinixInstance, DEFAULT_INSTANCE_BOOT_STEPS, type SuccinixInstance } from './instance/index.js';
 import { DEFAULT_INSTANCE_ID, userHomePath } from './instance/paths.js';
+import { readAutostart } from './services.js';
 import { log } from './log.js';
 
 export { checkEnvironment, detectSystemInfo, initWorkspace, withRetry, bootWebContainerWithRetry, waitForHostReadyWithRetry };
@@ -70,6 +72,26 @@ export async function bootSuccinix(ui: BootUI, opts: BootSuccinixOptions = {}): 
     steps: [...DEFAULT_BOOT_STEPS],
     testMode,
     onCommand: makeClientLogger(),
+    logLine: (text) => void log('BOOT', text),
+    dynamicStepCount: async (wc) => {
+      try {
+        return (await readAutostart(wc.fs)).length;
+      } catch {
+        return 0;
+      }
+    },
+    restore: async (wc) => {
+      const m = await loadSnapshot(wc.fs);
+      return m ? { fileCount: m.fileCount, totalBytes: m.totalBytes } : null;
+    },
+    appSteps: (b, ctx) =>
+      runApplicationBootSteps(b, {
+        wc: ctx.wc,
+        client: ctx.client,
+        ports: ctx.ports,
+        // SDK 的 appSteps 调用恒带 hostProc/hostHooks（引擎级 boot 产物）；此处仅缺省路径使用。
+        hostReadyRetry: { ui, hostProc: ctx.hostProc!, hostHooks: ctx.hostHooks!, deadlineMs: ctx.hostReadyDeadlineMs },
+      }),
   });
   return boot.boot();
 }
@@ -102,23 +124,8 @@ async function bootDemoInstance(
     ui.fail(['Instance mode requires a terminal output adapter (main.ts passes the xterm shim).']);
     return null;
   }
-
-  // 引擎级 boot（host 注入 + spawn + 就绪 + 按实例快照键恢复）在工厂内完成。
-  const instance = await createSuccinixInstance({
-    wc,
-    instanceId,
-    output: opts.output,
-    terminal: opts.terminal,
-    // U1：?user=<id> 模式 —— 会话 cwd/提示符 home 指向每用户 home（Lifo 视图）。
-    home: opts.userMode ? userHomePath(instanceId) : undefined,
-    executor: { onCommand: makeClientLogger() },
-    bootUI: ui,
-    bootSteps: [...DEFAULT_INSTANCE_BOOT_STEPS],
-  });
-
-  // 应用级 bootsteps —— 与 createTerminalBoot 共用同一实现（防两套 boot 逻辑漂移）；
-  // 状态文件按实例解析（env/settings/services/autostart/motd 独立，互不串扰）。
-  const appBoot: TerminalBoot = {
+  // 应用级 bootsteps 的进度 reporter（D3：初始 boot 与 restart 复用同一工厂）。
+  const makeDemoBoot = (): TerminalBoot => ({
     testMode: opts.testMode ?? false,
     ok: (msg) => {
       ui.log(`[  OK  ] ${msg ?? 'ok'}`, 'ok');
@@ -134,15 +141,34 @@ async function bootDemoInstance(
     },
     noteOnly: (msg) => ui.log(`[ .... ] ${msg}`, 'note'),
     boot: async () => null,
-  };
-  await runApplicationBootSteps(appBoot, {
+  });
+  const appStepsCtx = (wc: WebContainer, client: TerminalClient, ports: Map<number, string>) => ({
     wc,
-    client: instance.client,
-    ports: instance.ports,
+    client,
+    ports,
     instanceId,
     userHome: opts.userMode ? userHomePath(instanceId) : undefined,
     skipHostReady: true,
   });
+
+  // 引擎级 boot（host 注入 + spawn + 就绪 + 按实例快照键恢复）在工厂内完成。
+  const instance = await createSuccinixInstance({
+    wc,
+    instanceId,
+    output: opts.output,
+    terminal: opts.terminal,
+    // U1：?user=<id> 模式 —— 会话 cwd/提示符 home 指向每用户 home（Lifo 视图）。
+    home: opts.userMode ? userHomePath(instanceId) : undefined,
+    executor: { onCommand: makeClientLogger() },
+    bootUI: ui,
+    bootSteps: [...DEFAULT_INSTANCE_BOOT_STEPS],
+    // D3：restart 后重跑应用级 bootsteps（与初始 boot 同一实现，防逻辑分叉）。
+    onRestart: ({ wc, client, ports }) => runApplicationBootSteps(makeDemoBoot(), appStepsCtx(wc, client, ports)),
+  });
+
+  // 应用级 bootsteps —— 与 createTerminalBoot 共用同一实现（防两套 boot 逻辑漂移）；
+  // 状态文件按实例解析（env/settings/services/autostart/motd 独立，互不串扰）。
+  await runApplicationBootSteps(makeDemoBoot(), appStepsCtx(wc, instance.client, instance.ports));
 
   return {
     wc,

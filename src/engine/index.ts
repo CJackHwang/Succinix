@@ -7,11 +7,13 @@ import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 import type { ProcInfo } from './host-procs.js';
 import { DEFAULT_INSTANCE_ID, instanceStateFile } from './host-route.js';
+import { pagePorts } from './ports.js';
 import { sleep } from './sleep.js';
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 export type { ProcInfo } from './host-procs.js';
 export { ensurePythonRuntime, PYTHON_RUNTIME_DIR } from './python-assets.js';
+export { pagePorts, type PortEventHooks } from './ports.js';
 
 // ─── 公开选项 / 接口（TASK21 契约）───
 
@@ -78,12 +80,6 @@ export interface EngineBootHooks extends TerminalExecutorOptions {
   instanceId?: string;
 }
 
-// M1：端口事件（server-ready / port）只对同一 wc 实例注册一次。R3.2 重试会再次调用
-// bootEngineHost（kill 旧 host 再 spawn），若每次都 wc.on(...) 会累积重复监听器；
-// 重试传的 hooks 不含 onServerReady/onServerClosed（空安全调用），重复注册的监听器
-// 是 no-op 且永不注销。WeakSet 按实例去重：正常多实例 boot 各自注册，重试同实例跳过。
-const wcListenersBound = new WeakSet<WebContainer>();
-
 // 注入 host.js（缺失时从构建产物拉取）→ spawn `node host.js` → 异步写 lifo-core.js → 登记端口回调。
 // 不等就绪：就绪由 waitForHostReady 负责（boot.ts 在配置/服务初始化之后调用，保持 boot 日志顺序）。
 // 返回 host 进程句柄（前端 host 重启路径 kill 用）。
@@ -121,14 +117,12 @@ export async function bootEngineHost(
   if (hooks.lifoCoreSrc) {
     void wc.fs.writeFile('/lifo-core.js', hooks.lifoCoreSrc).catch(() => {});
   }
-  // 端口事件：宿主经 onServerReady/onServerClosed 更新自己的预览注册表。
-  // 只对当前 wc 注册一次（M1：R3.2 重试 bootEngineHost 复用同一 wc，不再叠加监听器）。
-  if (!wcListenersBound.has(wc)) {
-    wcListenersBound.add(wc);
-    wc.on('server-ready', (port, url) => hooks.onServerReady?.(port, url));
-    wc.on('port', (port, type) => {
-      if (type === 'close') hooks.onServerClosed?.(port);
-    });
+  // 端口事件（D2）：页面级分发 —— bind 只对当前 wc 执行一次（R3.2 重试复用同一 wc，
+  // 不再叠加监听器；重试传的 hooks 不含端口回调，也不会覆盖首次订阅）。
+  // 携带端口回调的调用按实例订阅/覆盖钩子；同页多个实例各自订阅，事件按期望归属分发。
+  pagePorts.bind(wc);
+  if (hooks.onServerReady || hooks.onServerClosed) {
+    pagePorts.subscribe(hooks.instanceId ?? DEFAULT_INSTANCE_ID, hooks);
   }
   return hostProc;
 }

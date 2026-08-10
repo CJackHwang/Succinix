@@ -126,6 +126,13 @@ export class TerminalClient {
     return res;
   }
 
+  // D3：实例级重置协议命令（reset-instance）—— host 侧按实例 kill 归属进程 +
+  // 清会话 cwd / currentRun 缓存。走常规互斥队列（与在途请求串行，不覆盖 cmd.json）；
+  // 非幂等不重试，host 不可达时抛错，由调用方决定是否继续浏览器侧清理。
+  async resetInstance(timeoutMs = 30000): Promise<ExecResult> {
+    return this.exec('reset-instance', undefined, timeoutMs);
+  }
+
   // spawn：后台长驻进程（仅 node 系）。host 立即返回 { ok, pid }，输出持续收集进进程表。
   async spawn(command: string, opts?: Record<string, unknown>, timeoutMs = 5000): Promise<ExecResult> {
     const res = await this.exec('spawn', { command, ...opts }, timeoutMs);

@@ -22,12 +22,22 @@ export class InstancePortRegistry {
     this.expected.get(instanceId)?.delete(port);
   }
 
+  /** 释放某实例全部期望（D3，restart：实例视图与端口归属一起清空）。 */
+  releaseAll(instanceId: string): void {
+    this.expected.delete(instanceId);
+  }
+
   /** 端口是否已被**其他**实例期望（同页端口冲突检测；自身实例不算冲突）。 */
   hasConflict(instanceId: string, port: number): string | null {
     for (const [id, set] of this.expected) {
       if (id !== instanceId && set.has(port)) return id;
     }
     return null;
+  }
+
+  /** 本实例是否期望该端口（D2：server-ready 事件按期望归属实例视图）。 */
+  expects(instanceId: string, port: number): boolean {
+    return this.expected.get(instanceId)?.has(port) ?? false;
   }
 
   /** 实例端口视图 = 期望集合 ∩ 页面级就绪端口；默认实例 = 页面级全部（现状行为全等）。 */
@@ -44,6 +54,11 @@ export class InstancePortRegistry {
   /** 测试辅助：实例期望端口集合快照。 */
   expectedFor(instanceId: string): number[] {
     return [...(this.expected.get(instanceId) ?? [])].sort((a, b) => a - b);
+  }
+
+  /** 测试辅助：清空全部期望（单测隔离）。 */
+  clear(): void {
+    this.expected.clear();
   }
 }
 

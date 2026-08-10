@@ -9,10 +9,11 @@
 // 看门狗是 per-host（页面级一个），工厂不内置看门狗；端口事件经 M4 的实例期望端口
 // 注册表归属（instancePorts）。双 tab 各容器天然隔离，与单实例行为全等。
 import type { WebContainer } from '@webcontainer/api';
-import type { BootUI } from '../boot-ui.js';
+import type { BootUI } from '../terminal/ui.js';
 import {
   TerminalClient,
   createTerminalExecutor,
+  pagePorts,
   waitForHostReady,
   type EngineBootHooks,
   type TerminalExecutor,
@@ -24,9 +25,17 @@ import {
   type TerminalRpc,
   type TerminalBootOptions,
 } from '../terminal/index.js';
-import { createPersist, getPersist, type PersistContext, type SnapshotMeta } from '../persist.js';
-import { listServiceStates, startService, stopService, type ServiceContext } from '../services.js';
+import { createPersist, getPersist, type PersistContext, type PersistOptions, type SnapshotMeta } from '../persist.js';
+import {
+  listServiceStates,
+  startService,
+  stopService,
+  clearActivePorts,
+  clearDbActivePorts,
+  type ServiceContext,
+} from '../services.js';
 import { DEFAULT_INSTANCE_ID, instanceStateRoot, browserPathToSessionCwd } from './paths.js';
+import { instancePorts } from './ports.js';
 
 // 工厂缺省 boot 步骤文案（引擎级；应用级步骤由宿主负责，见 SDK.md）。
 export const DEFAULT_INSTANCE_BOOT_STEPS = [
@@ -65,6 +74,19 @@ export interface SuccinixInstanceOptions {
   bootUI?: BootUI;
   /** boot 步骤文案（缺省 = DEFAULT_INSTANCE_BOOT_STEPS；应用级 bootsteps 归宿主） */
   bootSteps?: TerminalBootOptions['steps'];
+  /** restart 后重跑应用级 bootsteps 的钩子（D3）：工厂只负责引擎级重置
+   *  （停进程/清状态/重建会话），workspace/env/services/motd/autostart 由宿主恢复。
+   *  缺省 = 仅重建会话。ctx.terminal 是已重建的新会话，宿主可自行 boot() 解锁输入。 */
+  onRestart?: (ctx: SuccinixRestartContext) => Promise<unknown>;
+}
+
+/** restart 钩子上下文（D3）：引擎级产物 + 重建后的新会话。 */
+export interface SuccinixRestartContext {
+  wc: WebContainer;
+  client: TerminalClient;
+  ports: Map<number, string>;
+  /** 已重建的新会话（宿主决定何时 terminal.boot() 解锁输入；工厂在钩子后统一 boot） */
+  terminal: SuccinixTerminalSession;
 }
 
 export interface SuccinixInstance {
@@ -108,28 +130,50 @@ function makeBootReporter(
   };
 }
 
+// D4：非默认实例的快照 scope —— 遍历根收到 /workspace（状态根 / 用户 home / 工作区都在
+// 其下，不再收录 /etc、/var/log 等共享系统目录），并按实例归属排除其他实例的
+// `.succinix-*` 状态根与其他用户的 home（同页多实例快照内容隔离，非安全边界）。
+function instancePersistScope(instanceId: string, opts: SuccinixInstanceOptions): PersistOptions | undefined {
+  if (instanceId === DEFAULT_INSTANCE_ID) return undefined;
+  return {
+    scopeRoot: '/workspace',
+    instanceScope: {
+      stateRoot: instanceStateRoot(instanceId, opts.statePrefix),
+      home: opts.home,
+    },
+  };
+}
+
 export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<SuccinixInstance> {
   const instanceId = opts.instanceId && opts.instanceId.trim() ? opts.instanceId : DEFAULT_INSTANCE_ID;
   const boot = makeBootReporter(opts.bootUI, opts.bootSteps ?? DEFAULT_INSTANCE_BOOT_STEPS);
 
   // 快照按实例键（M1）：宿主可自定义 dbName/storeKey；缺省 = 每实例键 instance:<id>。
-  const persist = opts.persistence ? createPersist(opts.persistence) : getPersist(instanceId);
+  // D4：缺省实例 = 整棵 FS 快照（现状全等）；非默认实例 = /workspace scope +
+  // 按实例归属排除其他实例的状态根 / 用户 home / tinbase（同页多实例内容隔离）。
+  const persist = opts.persistence ? createPersist(opts.persistence) : getPersist(instanceId, instancePersistScope(instanceId, opts));
 
   // 端口视图（M4）：server-ready 按实例期望端口归属；工厂维护本实例 port → url 表
   // （services ctx / 宿主预览用），宿主回调透传（如打印 [preview] 行）。
   const ports = new Map<number, string>();
+  // D2：事件按实例期望归属 —— 同页所有实例共享 wc 的 server-ready 事件（页面级分发），
+  // 无法归属的端口只进页面级 registry（pagePorts.readyPorts()），不进任何实例视图。
+  const isExpected = (port: number): boolean => instancePorts.expects(instanceId, port);
   const executorHooks: EngineBootHooks = {
     ...opts.executor,
     instanceId,
     onServerReady: (port, url) => {
+      if (!isExpected(port)) return;
       ports.set(port, url);
       opts.executor?.onServerReady?.(port, url);
     },
     onServerClosed: (port) => {
+      if (!isExpected(port)) return;
       ports.delete(port);
       opts.executor?.onServerClosed?.(port);
     },
   };
+  let unsubscribePorts: (() => void) | null = null;
 
   // 引擎级 boot：注入 host + spawn + 就绪。
   // rpc 传入 = 同页共享通道（宿主已 boot 的 host，工厂不拉第二个 host —— 单 host 不变量）；
@@ -139,11 +183,27 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
   if (opts.rpc) {
     client = opts.rpc;
     executor = createTerminalExecutor({ wc: opts.wc, client });
+    // D2：同页共享 RPC 路径 —— 页面 host 已 bind wc 事件（单 host 不变量），工厂不重复
+    // 拉起 host，这里直接订阅本实例的端口钩子（按期望归属过滤，与自建路径同款语义）。
+    unsubscribePorts = pagePorts.subscribe(instanceId, {
+      onServerReady: (port, url) => {
+        if (!isExpected(port)) return;
+        ports.set(port, url);
+        opts.executor?.onServerReady?.(port, url);
+      },
+      onServerClosed: (port) => {
+        if (!isExpected(port)) return;
+        ports.delete(port);
+        opts.executor?.onServerClosed?.(port);
+      },
+    });
     await waitForHostReady(client, 30);
   } else {
     client = new TerminalClient(opts.wc, { onCommand: opts.executor?.onCommand, instanceId });
     executor = createTerminalExecutor({ wc: opts.wc, client });
     await executor.boot(opts.wc, executorHooks);
+    // bootEngineHost 内部已按 instanceId 订阅（hooks 带端口回调时）；dispose 时退订。
+    unsubscribePorts = () => pagePorts.unsubscribe(instanceId);
   }
 
   // 按实例快照键恢复（M1 load；缺省 default 键 = 现状全等）。
@@ -211,7 +271,21 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
         if (typeof location !== 'undefined') location.reload();
         return;
       }
-      // 实例级重置（M4）：清快照 + 清状态根 + 重建会话；不动共享 host（单 host 不变量）。
+      // 实例级重置（M4 / D3）：停进程 → 清端口期望/活动端口记录 → 清 host 缓存 →
+      // 清快照 + 清状态根 → 重建会话 → 重跑应用级 bootsteps（宿主注入）。不动共享 host
+      // 进程本体（单 host 不变量），只清该实例的归属进程与缓存。
+      // 1. host 侧收口：kill 本实例归属进程 + 清 sessionCwd/currentRun 缓存。
+      try {
+        await client.resetInstance();
+      } catch {
+        /* host 不可达：浏览器侧继续清理，进程残留由下一次 boot 快照/宿主兜底 */
+      }
+      // 2. 清端口期望 / 活动端口记录 / 实例端口视图（旧 URL 不再可用）。
+      instancePorts.releaseAll(instanceId);
+      clearActivePorts(instanceId);
+      clearDbActivePorts(instanceId);
+      ports.clear();
+      // 3. 清快照 + 状态根（M4 现状）。
       await persist.clear();
       const root = instanceStateRoot(instanceId, opts.statePrefix);
       try {
@@ -219,13 +293,18 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       } catch {
         /* 状态根不存在 / 删除失败：忽略，新会话按全新系统走 */
       }
+      // 4. 重建会话。
       session.dispose();
       session = makeSession();
+      // 5. 重跑应用级 bootsteps（宿主注入；缺省仅重建会话）。
+      await opts.onRestart?.({ wc: opts.wc, client, ports, terminal: session });
       await session.boot();
     },
     dispose: async () => {
       if (disposed) return;
       disposed = true;
+      unsubscribePorts?.();
+      unsubscribePorts = null;
       session.dispose();
       // rpc 共享路径：executor 未持有 hostProc，dispose 只清引用不动共享 host；
       // 自建路径：executor.dispose kill 自建 host（单实例页面的 host 由实例拥有）。

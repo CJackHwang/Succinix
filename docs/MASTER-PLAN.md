@@ -684,7 +684,7 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 ## 11. 最终验收清单（全部完成后逐项勾）
 
 - [ ] `@succinix/engine` **0.4.0 一次性发布**，`/terminal` + instance + 多用户 API 干净安装可 import
-- [ ] 独立应用：`?test=1` ≥76；boot/历史/补全/真中断/cd cwd 实测通过；单实例行为全等 0.3.0
+- [ ] 独立应用：`?test=1` ≥71（verify-deploy 门禁同值）；boot/历史/补全/真中断/cd cwd 实测通过；单实例行为全等 0.3.0
 - [ ] 多实例：`?instance=c-1`/`c-2` 双 tab —— 进程互不可见 / kill 越权拒绝 /
       状态与快照独立 / env 不串扰 / service 按实例 / reboot 实例级；
       同页按实例路由（Map 分键 / ps 过滤 / kill 越权）以 M3 协议级单测为证，

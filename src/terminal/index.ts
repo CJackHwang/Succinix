@@ -14,9 +14,10 @@ export {
   BOOT_BASE_STEPS,
   MAX_BOOT_ATTEMPTS,
   MAX_HOST_READY_ATTEMPTS,
+  bootPhase,
   type TerminalBoot,
   type TerminalBootOptions,
   type TerminalBootResult,
-  type AppBootStepsContext,
-  runApplicationBootSteps,
+  type TerminalBootAppContext,
 } from './boot.js';
+export type { BootUI, LogKind } from './ui.js';

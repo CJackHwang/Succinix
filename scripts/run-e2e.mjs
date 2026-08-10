@@ -16,6 +16,7 @@ const STEPS = [
   { name: 'bench (performance)', args: ['scripts/bench.mjs', '--skip-build'] },
   { name: 'scenarios (14 real-workflow scenarios)', args: ['scripts/scenarios.mjs', '--skip-build'] },
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },
+  { name: 'instance-demo (multi-instance + multi-user, 27 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
 ];
 
 let exitCode = 0;

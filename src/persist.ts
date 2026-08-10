@@ -67,6 +67,15 @@ export interface PersistOptions {
   dbName?: string;
   /** store 内记录 key（缺省 current = 单实例现状） */
   storeKey?: string;
+  /** 快照遍历根（D4，缺省 '/' = 整棵 FS，单实例现状全等）。实例化时传实例 scope
+   *  （如 /workspace —— 状态根 / 用户 home / 工作区都在其下），避免收录无关系统目录。 */
+  scopeRoot?: string;
+  /** 实例归属（D4，同页多实例）：快照只收录本实例的状态根与用户 home，
+   *  跳过其他实例的 `.succinix-*` 状态根（含其 tinbase）与其他用户的 home。
+   *  自定义布局（非内置前缀）的宿主可用 excludePrefixes 补充排除。 */
+  instanceScope?: { stateRoot?: string; home?: string };
+  /** 额外排除前缀（路径或子树，快照遍历剪枝用；宿主自定义布局的逃生舱）。 */
+  excludePrefixes?: string[];
 }
 
 export interface PersistContext {
@@ -96,9 +105,35 @@ export function isExcludedPath(path: string): boolean {
   for (let i = 0; i < segments.length; i++) {
     if (EXCLUDED_DIRS.has(segments[i])) return true;
     if (segments[i] === '.tinbase') return true;
+    // D5：实例状态根下的 tinbase 二进制 DB 目录（.succinix-<id>/tinbase）排除；
+    // 默认实例的 /workspace/.tinbase 已由上方 `.tinbase` 段规则覆盖。
+    if (segments[i].startsWith('.succinix-') && segments[i + 1] === 'tinbase') return true;
   }
   const base = segments[segments.length - 1] ?? '';
   return EXCLUDED_FILES.has(base) || RESULT_FILE_RE.test(path);
+}
+
+// D4：同页快照按实例归属隔离 —— 自己的状态根 / home 保留，其他实例的根排除。
+function excludedByInstanceScope(
+  path: string,
+  scope: NonNullable<PersistOptions['instanceScope']>,
+  extraPrefixes: string[]
+): boolean {
+  if (extraPrefixes.some((p) => path === p || path.startsWith(p + '/'))) return true;
+  const segments = path.split('/').filter(Boolean);
+  const inOwnRoot = scope.stateRoot
+    ? path === scope.stateRoot || path.startsWith(`${scope.stateRoot}/`)
+    : false;
+  for (let i = 0; i < segments.length; i++) {
+    // 其他实例的状态根整棵排除（自己的保留，其 tinbase 由 isExcludedPath 排除）。
+    if (segments[i].startsWith('.succinix-') && !inOwnRoot) return true;
+    // 其他用户的 home 排除（自己的保留；无 home 的实例不拥有任何 users/*，整棵排除）。
+    if (segments[i] === 'users' && segments[i + 1] !== undefined) {
+      const own = scope.home;
+      if (!own || !(path === own || path.startsWith(`${own}/`))) return true;
+    }
+  }
+  return false;
 }
 
 // 日志文件：参与遍历（随快照持久），但不参与签名计算。
@@ -112,6 +147,11 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
   const dbName = opts.dbName ?? 'succinix-persist';
   const storeKey = opts.storeKey ?? 'current';
   const storeName = 'snapshots';
+  const scopeRoot = opts.scopeRoot ?? '/';
+  const extraPrefixes = opts.excludePrefixes ?? [];
+  const instanceScope = opts.instanceScope;
+  const shouldSkip = (path: string): boolean =>
+    isExcludedPath(path) || (instanceScope ? excludedByInstanceScope(path, instanceScope, extraPrefixes) : extraPrefixes.some((p) => path === p || path.startsWith(p + '/')));
 
   // ─── 遍历：递归 readdir + readFile，排除规则命中即剪枝 ───
   interface Collected {
@@ -143,7 +183,7 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
       entries.map(async (ent): Promise<Collected> => {
         const name = String(ent.name);
         const path = dir === '/' ? `/${name}` : `${dir}/${name}`;
-        if (isExcludedPath(path)) return EMPTY_COLLECT;
+        if (shouldSkip(path)) return EMPTY_COLLECT;
         if (ent.isDirectory()) return collectDir(fs, path);
         if (!ent.isFile()) return EMPTY_COLLECT; // symlink/未知类型不收集，避免死循环
         let content: string;
@@ -200,7 +240,7 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
     for (const ent of entries) {
       const name = String(ent.name);
       const path = dir === '/' ? `/${name}` : `${dir}/${name}`;
-      if (isExcludedPath(path)) continue;
+      if (shouldSkip(path)) continue;
       list.push({ name, path, isDir: ent.isDirectory() });
     }
     list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -215,14 +255,14 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
   async function collectWithGate(fs: FileSystemAPI, force: boolean): Promise<Collected> {
     let sig: string | null;
     try {
-      sig = await computeListingSignature(fs, '/');
+      sig = await computeListingSignature(fs, scopeRoot);
     } catch {
       sig = null; // 签名计算异常：按"不可用"处理，本次与下次都走全量遍历兜底
     }
     if (!force && lastListingSig !== null && lastCollected && sig !== null && sig === lastListingSig) {
       return lastCollected;
     }
-    const collected = await collectDir(fs, '/');
+    const collected = await collectDir(fs, scopeRoot);
     lastListingSig = sig;
     lastCollected = collected;
     return collected;
@@ -423,11 +463,15 @@ export function instancePersistKey(instanceId: string): string {
 
 const persistContexts = new Map<string, PersistContext>();
 
-/** 取实例持久化上下文（惰性创建并缓存；缺省 = 模块级默认实例，行为全等现状）。 */
-export function getPersist(instanceId = 'default'): PersistContext {
+/** 取实例持久化上下文（惰性创建并缓存；缺省 = 模块级默认实例，行为全等现状）。
+ *  scope（D4）：实例化时传 { scopeRoot, instanceScope }，同页快照按实例归属隔离；
+ *  首次调用即缓存该 scope，后续 getPersist(instanceId) 复用同一上下文。 */
+export function getPersist(instanceId = 'default', scope?: PersistOptions): PersistContext {
   let ctx = persistContexts.get(instanceId);
   if (!ctx) {
-    ctx = createPersist(instanceId === 'default' ? {} : { storeKey: instancePersistKey(instanceId) });
+    ctx = createPersist(
+      instanceId === 'default' ? { ...scope } : { storeKey: instancePersistKey(instanceId), ...scope }
+    );
     persistContexts.set(instanceId, ctx);
   }
   return ctx;

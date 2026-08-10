@@ -15,7 +15,7 @@ vi.mock('../src/engine/index.js', async (importOriginal) => {
   return { ...actual, waitForHostReady: engineApi.waitForHostReady, bootEngineHost: engineApi.bootEngineHost };
 });
 
-import { ensureUserHome } from '../src/terminal/boot.js';
+import { ensureUserHome } from '../src/boot-steps.js';
 import { userHomePath } from '../src/instance/paths.js';
 import { FakeFS } from './helpers/fakes.js';
 

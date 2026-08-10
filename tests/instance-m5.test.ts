@@ -204,14 +204,17 @@ describe('createSuccinixInstance 聚合组装（M5）', () => {
     expect(persistMock.createPersist).toHaveBeenCalledWith({ storeKey: 'custom' });
     persistMock.createPersist.mockClear();
     await createSuccinixInstance({ wc, instanceId: 'u-2', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
-    expect(persistMock.getPersist).toHaveBeenCalledWith('u-2');
+    expect(persistMock.getPersist).toHaveBeenCalledWith(
+      'u-2',
+      expect.objectContaining({ scopeRoot: '/workspace', instanceScope: expect.objectContaining({ stateRoot: '/workspace/.succinix-u-2' }) })
+    );
   });
 
   it('默认实例等价：instanceId=default / 空串 → getPersist(default)，restart 不重置状态', async () => {
     const { wc, rmCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
     const inst = await createSuccinixInstance({ wc, instanceId: 'default', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     expect(inst.instanceId).toBe('default');
-    expect(persistMock.getPersist).toHaveBeenCalledWith('default');
+    expect(persistMock.getPersist).toHaveBeenCalledWith('default', undefined);
     await inst.restart(); // 默认实例 = 整页语义（node 无 location → no-op，不清状态）
     expect(persistMock.ctx.clear).not.toHaveBeenCalled();
     // RPC 轮询会清理 /result-*.json（启动 ping 的残留），但不得触碰任何状态根。
@@ -255,8 +258,14 @@ describe('createSuccinixInstance 聚合组装（M5）', () => {
     ]);
     expect(a.instanceId).toBe('a');
     expect(b.instanceId).toBe('b');
-    expect(persistMock.getPersist).toHaveBeenCalledWith('a');
-    expect(persistMock.getPersist).toHaveBeenCalledWith('b');
+    expect(persistMock.getPersist).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ scopeRoot: '/workspace', instanceScope: expect.objectContaining({ stateRoot: '/workspace/.succinix-a' }) })
+    );
+    expect(persistMock.getPersist).toHaveBeenCalledWith(
+      'b',
+      expect.objectContaining({ scopeRoot: '/workspace', instanceScope: expect.objectContaining({ stateRoot: '/workspace/.succinix-b' }) })
+    );
     const [sa, sb] = await Promise.all([a.snapshot.save(), b.snapshot.save()]);
     expect(sa).toBeTruthy();
     expect(sb).toBeTruthy();

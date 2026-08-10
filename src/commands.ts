@@ -43,6 +43,9 @@ import {
   stopService,
   enableAutostart,
   disableAutostart,
+  dbActivePortFor,
+  setDbActivePort,
+  clearDbActivePorts,
   type ServiceContext,
 } from './services.js';
 import { readLog, readBootLog, clearLog, log } from './log.js';
@@ -103,15 +106,6 @@ const DB_PKG = 'tinbase';
 // node 版本实时查询（node --version）；typescript 走 node 22 的 strip-types。
 const PYTHON_BUNDLED_VERSION = '3.14.2 (Pyodide 314.0.4)';
 const TS_RUNTIME_NOTE = 'via node --experimental-strip-types (Node 22)';
-
-// M1 修复 / M4：db start 启动时解析的端口按实例记录在案；db status/stop 用记录值而非每次现读
-// settings，避免运行中改 preview-port 后 status/stop 操作到错误的端口。未启动过 db 时为
-// 无记录，status/stop 回落现读 settings（此时没有在跑实例，读最新设置是合理的）。
-const dbActivePortByInstance = new Map<string, number>();
-
-function dbActivePortFor(instanceId: string): number | null {
-  return dbActivePortByInstance.get(instanceId) ?? null;
-}
 
 // 内存单位：二进制换算，1 KB = 1024 B。
 const MIB = 1024 * 1024;
@@ -221,7 +215,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   const { client, term, wc } = ctx;
   const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
   const port = await resolveDbPort(wc.fs, inst, ctx.statePrefix);
-  dbActivePortByInstance.set(inst, port); // 记录本次启动端口（M1：status/stop 用记录值）
+  setDbActivePort(inst, port); // 记录本次启动端口（M1：status/stop 用记录值；D3 按实例清理）
   const view = instancePorts.portsFor(inst, ctx.ports);
   term.writeln('Checking whether tinbase is installed in the container...');
 
@@ -288,7 +282,10 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   //    去 --memory：data-dir 落容器 FS，随快照持久化（TASK5）。
   //    M4：非默认实例显式 --data-dir <stateRoot>/tinbase，实例间数据隔离
   //    （缺省实例不传 flag = 现状 /workspace/.tinbase，行为全等）。
-  const dataDir = instanceStateRoot(inst) ? tinbaseDataDir(inst) : null;
+  // D6：data-dir 与状态文件同口径 —— 自定义 statePrefix 下数据库目录落在
+  // <prefix><id>/tinbase（缺省前缀 = 现状 /workspace/.succinix-<id>/tinbase 全等）。
+  const stateRoot = instanceStateRoot(inst, ctx.statePrefix);
+  const dataDir = stateRoot ? tinbaseDataDir(inst, ctx.statePrefix) : null;
   // M5：data-dir 是浏览器视角绝对路径（wc.fs /workspace/.succinix-<id>/tinbase），
   // host 侧按浏览器视角映射到 process.cwd() 下（mapDataDirArgs）；spawn 前先由浏览器
   // 建好目录，避免状态根刚被 reboot 清空后父目录缺失（tinbase 只建叶子目录）。
@@ -399,7 +396,7 @@ async function dbStop(ctx: CommandContext): Promise<void> {
     const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst, ctx.statePrefix));
     instancePorts.release(inst, port); // M4：释放实例期望端口
     if (inst === DEFAULT_INSTANCE_ID) ctx.ports.delete(port); // 默认实例清理页面级注册表（现状）
-    dbActivePortByInstance.delete(inst);
+    clearDbActivePorts(inst);
   } else {
     term.writeln(`${RED}failed to stop: ${k.message ?? 'unknown reason'}${RESET}`);
   }

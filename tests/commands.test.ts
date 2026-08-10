@@ -1,10 +1,12 @@
 // commands.ts 纯函数单测（P3-11）：表格构建 / 端口匹配 / uname / workspace / 分发 smoke。
 // commands.ts 是最大的文件（1400+ 行），命令处理器大多需要真实容器，这里覆盖已导出的纯逻辑
 // + 用 capture shim 冒烟若干无副作用的浏览器侧命令。uname 运行时版本在 vitest 回落空串。
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { Terminal } from '@xterm/xterm';
 import { FakeFS, FakeClient } from './helpers/fakes.js';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
+import { instancePorts } from '../src/instance/ports.js';
+import { clearDbActivePorts } from '../src/services.js';
 import {
   fmtUnit,
   buildWorkspaceList,
@@ -23,6 +25,11 @@ import {
   tryHandleLocalCommand,
   type CommandContext,
 } from '../src/commands.js';
+
+beforeEach(() => {
+  instancePorts.clear();
+  clearDbActivePorts('c-1');
+});
 
 function captureTerm(): Terminal & { lines: string[] } {
   const lines: string[] = [];
@@ -148,6 +155,36 @@ describe('processLabel', () => {
   it('其余命令取首词', () => {
     expect(processLabel('python app.py')).toBe('python');
     expect(processLabel('npm run build')).toBe('npm');
+  });
+});
+
+describe('db start statePrefix (D6)', () => {
+  it('custom statePrefix flows into tinbase --data-dir', async () => {
+    const client = new FakeClient();
+    client.whenTerminal('test -d /workspace/node_modules/tinbase', { ok: true }); // 已安装，跳过 npm install
+    const ctx = ctxOf({
+      client: client as unknown as CommandContext['client'],
+      instanceId: 'c-1',
+      statePrefix: '/var/succinix/',
+      ports: new Map([[3001, 'http://localhost:3001']]), // 预置就绪端口：spawn 后立即命中，不等 30s
+    });
+    const handled = await tryHandleLocalCommand(ctx, 'db start');
+    expect(handled).toBe(true);
+    expect(client.spawnCalls.length).toBe(1);
+    expect(client.spawnCalls[0].command).toContain('--engine wasm');
+    expect(client.spawnCalls[0].command).toContain('--data-dir /var/succinix/c-1/tinbase');
+  });
+
+  it('default instance keeps legacy data dir (no --data-dir flag)', async () => {
+    const client = new FakeClient();
+    client.whenTerminal('test -d /workspace/node_modules/tinbase', { ok: true });
+    const ctx = ctxOf({
+      client: client as unknown as CommandContext['client'],
+      ports: new Map([[3001, 'http://localhost:3001']]),
+    });
+    const handled = await tryHandleLocalCommand(ctx, 'db start');
+    expect(handled).toBe(true);
+    expect(client.spawnCalls[0].command).not.toContain('--data-dir');
   });
 });
 

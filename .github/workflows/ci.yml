@@ -63,3 +63,6 @@ jobs:
 
       - name: Run language verification (TASK25)
         run: node scripts/lang-verify.mjs --skip-build
+
+      - name: Run instance/multi-user demo (27 checks, R3)
+        run: node scripts/instance-demo.mjs --skip-build

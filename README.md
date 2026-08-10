@@ -154,7 +154,7 @@ vercel --prod
 npm run build
 node scripts/verify-deploy.mjs
 # starts vite preview, asserts COOP/COEP on /, /host.js and the JS bundle,
-# then runs ?test=1 in headless Chrome — PASSED requires >=57 passed and 0 failed
+# then runs ?test=1 in headless Chrome — PASSED requires >=71 passed and 0 failed
 ```
 
 **Data scoping.** IndexedDB is isolated **per origin**. Changing the deployment domain = starting a fresh system: workspaces, files and database data do **not** migrate between domains. Refresh on the same domain is safe (the snapshot restores); only a domain change resets the system. This also applies to Vercel preview deployments: each preview gets its own unique URL (a distinct origin), so every preview environment has its own separately-scoped IndexedDB — data does not carry over between preview deployments either.

@@ -371,5 +371,5 @@ aligned with it (e.g. `instanceId: 'users/alice'` maps host-side to
 
 ## Version strategy (TASK-S1/S2 decision)
 
-- **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0`, continuity with WebUnix history).
-- **`@succinix/engine`** ships independently on its own line (`0.1.0` → `0.1.3` at the 0.3.0 release) — decoupled first release; the package is a new artifact with its own version lifecycle.
+- **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0` → `0.4.0`, continuity with WebUnix history). 0.4.0 ships the Terminal SDK, multi-instance and multi-user surfaces; the version bump itself is part of the release step (F phase).
+- **`@succinix/engine`** ships independently on its own line (`0.1.x`, decoupled first release; the 0.4.0 release adds the `./terminal` and `./instance` exports) — the package is a new artifact with its own version lifecycle.

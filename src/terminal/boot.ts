@@ -1,20 +1,14 @@
-// 启动模块（参数化，E2）：boot 步骤 / 进度 / 重试 / testMode 可配置的 TerminalBoot。
-// 从 src/boot.ts 迁移：checkEnvironment / detectSystemInfo / initWorkspace / withRetry /
-// bootWebContainerWithRetry / waitForHostReadyWithRetry 与 ok/note/failStep/noteOnly 包装
-// （步骤计数 N/M）。BootUI 直接复用 boot-ui.ts 的实际接口；进度由 TerminalBoot 内部用
-// ui.log('[  OK  ] N/M <msg>', 'ok') 实现，不改 boot-ui.ts。独立应用 bootSuccinix(ui)
-// 保留在 src/boot.ts，内部改为 createTerminalBoot(...).boot()，行为与时序不变。
+// Terminal SDK 启动编排（参数化，E2 / D1）：boot 步骤 / 进度 / 重试 / testMode 可配置的
+// TerminalBoot。本模块只做**引擎级**流程编排（环境检测 → WebContainer.boot 重试 → 快照
+// 恢复钩子 → host 注入/spawn → 应用级步骤钩子），不 import 应用层模块：
+// BootUI 接口来自 ./ui.ts（同 SDK）；快照恢复 / 应用级 bootsteps（config/services/motd/
+// log/autostart）由宿主经 restore / appSteps / logLine 钩子注入（实现见 src/boot-steps.ts，
+// 应用层）。独立应用 bootSuccinix(ui) 保留在 src/boot.ts，内部经 createTerminalBoot 注入
+// 应用钩子，行为与时序不变。
 import { WebContainer, type FileSystemAPI, type WebContainerProcess } from '@webcontainer/api';
-import type { BootUI } from '../boot-ui.js';
-import { TerminalClient, bootEngineHost, waitForHostReady, type CommandLogEntry, type EngineBootHooks } from '../engine/index.js';
-import { loadSnapshot } from '../persist.js';
-import { getSetting, readEnvFile, isValidWorkspaceName } from '../config.js';
-import { ensureServicesFiles, readAutostart, startService } from '../services.js';
-import { initLogger, log } from '../log.js';
-import { ensureMotd } from '../motd.js';
-import { respawnWithKillFirst } from '../host-restart.js';
-import { sleep, ensureParentDir } from '../util.js';
-import { DEFAULT_INSTANCE_ID, statePath, userHomePath, browserPathToSessionCwd } from '../instance/paths.js';
+import type { BootUI } from './ui.js';
+import { TerminalClient, bootEngineHost, type CommandLogEntry, type EngineBootHooks } from '../engine/index.js';
+import { sleep } from '../util.js';
 
 // ─── 选项 / 结果契约 ───
 
@@ -30,6 +24,17 @@ export interface TerminalBootOptions {
   hostReadyDeadlineMs?: number;
   /** 命令执行采集点（引擎只产生条目，宿主决定过滤与落盘；缺省不记录） */
   onCommand?: (entry: CommandLogEntry) => void;
+  /** 动态步骤数（D1：SDK 不 import 应用层；独立应用传 autostart 服务数，缺省 0）。
+   *  在 WebContainer.boot 成功后调用（幂等；失败按 0 处理，流程不阻断）。 */
+  dynamicStepCount?: (wc: WebContainer) => Promise<number>;
+  /** 步骤日志落盘钩子（D1：SDK 不 import 应用日志层；独立应用传 log('BOOT', text)） */
+  logLine?: (text: string) => void;
+  /** 快照恢复钩子（D1：SDK 不 import persist；缺省 = 不恢复，步骤按固定文案计步）。
+   *  返回 null = 无快照（全新系统）；非 null = 恢复成功（fileCount/totalBytes 供步骤文案）。 */
+  restore?: (wc: WebContainer) => Promise<{ fileCount: number; totalBytes: number } | null>;
+  /** 应用级 boot 步骤钩子（D1：config/services/motd/workspace/autostart 由宿主注入；
+   *  缺省 = 无。返回最终 host 进程句柄（R3.2 重试换源后），缺省沿用 ctx.hostProc）。 */
+  appSteps?: (boot: TerminalBoot, ctx: TerminalBootAppContext) => Promise<WebContainerProcess | null | undefined>;
 }
 
 export interface TerminalBootResult {
@@ -39,6 +44,22 @@ export interface TerminalBootResult {
   ports: Map<number, string>;
   /** 当前 host 进程句柄（宿主 host 重启路径用 kill 清理旧进程，防双 host 竞态） */
   hostProc: WebContainerProcess;
+}
+
+/** 应用级 boot 步骤上下文（D1，SDK 侧最小契约）：引擎级 boot 产物 + 重试换源所需 hooks。 */
+export interface TerminalBootAppContext {
+  wc: WebContainer;
+  client: TerminalClient;
+  /** 端口注册表：port → 预览 URL（来自 WebContainer 的 server-ready 事件，每次 boot 重建） */
+  ports: Map<number, string>;
+  /** 初始 host 进程句柄（宿主 host 重启路径用 kill 清理旧进程，防双 host 竞态）。
+   *  SDK 调用时必有；应用层扩展上下文（AppBootStepsContext）在 demo 路径可缺省。 */
+  hostProc?: WebContainerProcess;
+  /** 本次 boot 的 host 注入 hooks（hostSrc/lifoCoreSrc 供 R3.2 重试换源；端口回调已接页面级分发）。
+   *  SDK 调用时必有；应用层扩展上下文在 demo 路径可缺省。 */
+  hostHooks?: EngineBootHooks;
+  /** 探活时限透传（缺省 = engine waitForHostReady 默认） */
+  hostReadyDeadlineMs?: number;
 }
 
 export interface TerminalBoot {
@@ -67,7 +88,7 @@ export const DEFAULT_BOOT_STEPS = [
 
 // TASK18：bench 模式记录 boot 阶段时间戳（window.__bootTimes.phases 由 scripts/bench.mjs 的
 // 注入脚本创建）。正常会话无该对象，函数为 no-op —— 仅一次 window 读的微小开销。
-function bootPhase(name: string): void {
+export function bootPhase(name: string): void {
   const t = (window as unknown as { __bootTimes?: { phases?: Record<string, number> } }).__bootTimes;
   if (t && t.phases) t.phases[name] = performance.now();
 }
@@ -225,207 +246,6 @@ export async function bootWebContainerWithRetry(
   return { wc, error: bootError };
 }
 
-// 就绪探活（hostReadyDeadlineMs 变体）：在时限内轮询 ping；超时抛错。
-// 缺省走 engine waitForHostReady（60 次 × 2s 语义不变）。
-async function waitHostReady(client: TerminalClient, deadlineMs?: number): Promise<void> {
-  if (deadlineMs === undefined) {
-    await waitForHostReady(client);
-    return;
-  }
-  const start = Date.now();
-  while (Date.now() - start < deadlineMs) {
-    try {
-      const p = await client.exec('ping', undefined, 2000);
-      if (p.kind === 'pong') return;
-    } catch {
-      /* host 未就绪 */
-    }
-    await sleep(100);
-  }
-  throw new Error('host did not respond');
-}
-
-// R3.2：waitForHostReady 失败自动重试。每次重试先 kill 旧 hostProc 再重新 spawn
-// （respawnWithKillFirst 模式，防双 host 同时轮询 cmd.json）。重试只补 spawn：
-// onInjected/onSpawned 置空避免 boot 步骤重复累计；onServerReady/onServerClosed 已在
-// 首次注册到 wc（engine 侧 WeakSet 防重复注册，M1）。3 次全败抛出，走宿主 catch → 错误页路径。
-export async function waitForHostReadyWithRetry(
-  ui: BootUI,
-  wc: WebContainer,
-  client: TerminalClient,
-  hostProc: WebContainerProcess,
-  hostHooks: EngineBootHooks,
-  deadlineMs?: number,
-  attempts = MAX_HOST_READY_ATTEMPTS
-): Promise<WebContainerProcess> {
-  let current = hostProc;
-  return withRetry(
-    async () => {
-      await waitHostReady(client, deadlineMs);
-      return current;
-    },
-    attempts,
-    {
-      onRetry: (attempt) => {
-        ui.log(`[ WARN ] TerminalExecutor not ready (attempt ${attempt}/${attempts}), respawning host...`);
-      },
-      beforeRetry: async () => {
-        current = await respawnWithKillFirst(
-          () => {
-            try {
-              current?.kill();
-            } catch {
-              /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
-            }
-          },
-          () =>
-            bootEngineHost(wc, client, {
-              hostSrc: hostHooks.hostSrc,
-              lifoCoreSrc: hostHooks.lifoCoreSrc,
-            })
-        );
-      },
-    }
-  );
-}
-
-// ─── 应用级 bootsteps（M5：默认路径与 ?instance= demo 共用，避免两套 boot 逻辑分叉）───
-// createTerminalBoot.boot() 在 host 注入/spawn 之后调用；demo（实例工厂路径）在
-// createSuccinixInstance（引擎级 boot 已完成）之后调用。两路径共用同一套
-// config / workspace / env / services / motd / 自检文件 / 探活重试 / autostart 步骤。
-// 缺省实例（不传 instanceId）= 现状 /etc 语义全等。
-export interface AppBootStepsContext {
-  wc: WebContainer;
-  client: TerminalClient;
-  ports: Map<number, string>;
-  /** 实例上下文（M5，additive）：settings/services/autostart/motd 按实例解析；缺省 = 默认实例 */
-  instanceId?: string;
-  /** 状态根前缀覆盖（M5，additive）：缺省 = DM-12 内置前缀 */
-  statePrefix?: string;
-  /** 用户 home（U1，浏览器 wc.fs 视角，如 /workspace/users/alice）：非空 = 多用户模式 ——
-   *  首次启动创建 home（mkdir + .succinix 状态种子）并把会话 cwd 种子写入实例状态文件
-   *  （Lifo 视图 /workspace + home 路径，host 首启恢复为会话 cwd）。缺省 = 现状（guest 无 home） */
-  userHome?: string;
-  /** 跳过探活与 'TerminalExecutor ready' 步（demo：工厂已 waitForHostReady） */
-  skipHostReady?: boolean;
-  /** 探活重试参数（默认路径传；R3.2 kill-before-spawn，返回最终 host 句柄） */
-  hostReadyRetry?: {
-    ui: BootUI;
-    hostProc: WebContainerProcess;
-    hostHooks: EngineBootHooks;
-    deadlineMs?: number;
-  };
-}
-
-export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootStepsContext): Promise<WebContainerProcess | null> {
-  const { wc, client, ports } = ctx;
-  let hostProc = ctx.hostReadyRetry?.hostProc ?? null;
-
-  // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。在快照恢复之后调用，
-  // 恢复写回的旧日志不再与新日志写竞争；此后的 boot/命令/快照事件全部落盘。
-  initLogger(wc.fs);
-
-  // 系统配置（TASK10）：settings 决定全新系统的默认工作区名；env 文件统计加载数。
-  // 读取失败 / 值被手改非法时全部回退默认，不阻断 boot。
-  let defaultWorkspace = 'main';
-  let envCount = 0;
-  try {
-    const wsRaw = await getSetting(wc.fs, 'default-workspace', ctx.instanceId, ctx.statePrefix);
-    if (isValidWorkspaceName(wsRaw)) defaultWorkspace = wsRaw;
-    envCount = (await readEnvFile(wc.fs, ctx.instanceId, ctx.statePrefix)).size;
-  } catch (e) {
-    boot.noteOnly(`Config load failed (${String(e).slice(0, 80)}); using defaults`);
-  }
-
-  // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
-  // 全新系统则用配置的默认工作区名初始化。
-  await initWorkspace(boot, wc.fs, defaultWorkspace);
-
-  // 多用户 home（U1）：首次启动创建 /workspace/users/<id>（mkdir + .succinix 状态种子）；
-  // 会话 cwd 状态文件缺失时种子为 home 的 Lifo 视图（host 按实例恢复，刷新后仍在 home）。
-  if (ctx.userHome) {
-    const userId = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
-    try {
-      await ensureUserHome(wc.fs, userId, ctx.userHome);
-    } catch (e) {
-      boot.noteOnly(`User home init failed (${String(e).slice(0, 80)})`);
-    }
-    const cwdFile = statePath(userId, 'etc/succinix.cwd', ctx.statePrefix);
-    try {
-      await wc.fs.readFile(cwdFile, 'utf8');
-    } catch {
-      try {
-        await ensureParentDir(wc.fs, cwdFile);
-        await wc.fs.writeFile(cwdFile, browserPathToSessionCwd(ctx.userHome));
-      } catch (e) {
-        boot.noteOnly(`Session cwd seed failed (${String(e).slice(0, 80)})`);
-      }
-    }
-    boot.ok('Initialized user home');
-  }
-  boot.ok(`Loaded ${envCount} environment variables`);
-
-  // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
-  try {
-    await ensureServicesFiles(wc.fs, ctx.instanceId, ctx.statePrefix);
-  } catch (e) {
-    boot.noteOnly(`Service files init failed (${String(e).slice(0, 80)})`);
-  }
-
-  // 登录横幅（TASK15）：确保 /etc/succinix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
-  try {
-    await ensureMotd(wc.fs, ctx.instanceId, ctx.statePrefix);
-  } catch (e) {
-    boot.noteOnly(`Motd init failed (${String(e).slice(0, 80)})`);
-  }
-
-  // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
-  // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
-  await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
-  bootPhase('config-done');
-
-  // 探活：命令轮询循环就绪，TerminalExecutor 可用（host 预热已与配置读取重叠完成）。
-  // TASK18：waitForHostReady 已确认 pong；删去其后的冗余 ping（在延迟预热窗口内，
-  // 多余 ping 会被 Sandbox.create 的同步前缀阻塞，白白拖慢 boot）。
-  // R3.2：探活失败自动重试（最多 3 次，含首次），返回最终存活 host 句柄。
-  if (!ctx.skipHostReady) {
-    const r = ctx.hostReadyRetry;
-    if (r) {
-      hostProc = await waitForHostReadyWithRetry(r.ui, wc, client, hostProc ?? r.hostProc, r.hostHooks, r.deadlineMs);
-    }
-    bootPhase('host-ready');
-    boot.ok();
-  }
-
-  // 服务自启（TASK11）：声明式重启 —— boot 后按 autostart 逐个拉起（M5：按实例）。
-  // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
-  try {
-    const autostart = await readAutostart(wc.fs, ctx.instanceId, ctx.statePrefix);
-    for (const name of autostart) {
-      const r = await startService({ wc, client, ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix }, name);
-      if (r.ok) boot.ok(`Started service '${name}' (autostart)`);
-      else boot.failStep(`service '${name}' failed to start`);
-    }
-  } catch (e) {
-    boot.noteOnly(`Autostart skipped (${String(e).slice(0, 80)})`);
-  }
-
-  void log('BOOT', 'boot complete');
-  return hostProc;
-}
-
-// ─── 用户 home 初始化（U1）───
-// 首次启动创建 home 目录（浏览器视角绝对路径，宿主可覆盖根）+ .succinix 状态种子
-// （随快照持久，供宿主/自检确认 home 已初始化）。幂等：目录/种子已存在则跳过写入。
-export async function ensureUserHome(fs: FileSystemAPI, userId: string, homePath: string = userHomePath(userId)): Promise<void> {
-  await fs.mkdir(homePath, { recursive: true });
-  try {
-    await fs.readFile(`${homePath}/.succinix`, 'utf8');
-  } catch {
-    await fs.writeFile(`${homePath}/.succinix`, userId);
-  }
-}
-
 // ─── 工厂：createTerminalBoot ───
 
 export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): TerminalBoot {
@@ -453,7 +273,7 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
     bootStep++;
     const text = msg ?? opts.steps[bootStep - 1] ?? `step ${bootStep}`;
     ui.log(`[  OK  ] ${progressPrefix()}${text}`, 'ok');
-    void log('BOOT', text);
+    opts.logLine?.(text);
   }
 
   // 灰色 [ .... ] 标记，用于中间过程的过渡说明
@@ -461,7 +281,7 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
     bootStep++;
     const text = msg ?? opts.steps[bootStep - 1] ?? `step ${bootStep}`;
     ui.log(`[ .... ] ${progressPrefix()}${text}`, 'note');
-    void log('BOOT', text);
+    opts.logLine?.(text);
   }
 
   // [ FAIL ] 计步变体（M2）：autostart 单个服务失败行计入步骤 —— initBootSteps 已把
@@ -471,7 +291,7 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
     bootStep++;
     const text = msg ?? opts.steps[bootStep - 1] ?? `step ${bootStep}`;
     ui.log(`[ FAIL ] ${progressPrefix()}${text}`, 'fail');
-    void log('BOOT', text);
+    opts.logLine?.(text);
   }
 
   // 降级提示（L1/L2）：失败降级分支的额外说明行[ .... ] **不参与**步骤计数。总步数按
@@ -479,7 +299,7 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
   // 溢出总步数（>M/M）。降级是用户可感知信息，行保留、只不计步。
   function noteOnly(msg: string): void {
     ui.log(`[ .... ] ${progressPrefix()}${msg}`, 'note');
-    void log('BOOT', msg);
+    opts.logLine?.(msg);
   }
 
   const boot: TerminalBoot = {
@@ -520,19 +340,18 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
       // R2：总步数 = 固定步数 + autostart 服务数。提前读 autostart 只取计数（幂等，
       // 文件缺失回落空清单；与启动阶段的实际读取结果一致）。
       try {
-        initBootSteps(opts.steps.length + (await readAutostart(wc.fs)).length);
+        initBootSteps(opts.steps.length + ((await opts.dynamicStepCount?.(wc)) ?? 0));
       } catch {
         initBootSteps(opts.steps.length);
       }
       ok();
       bootPhase('wc-booted');
 
-      // TASK16 R3：先 loadSnapshot 再 initLogger —— 消除恢复期日志写竞争。
-      // loadSnapshot 会把旧 /var/log/succinix.log 写回容器 FS；若日志系统先初始化，
-      // 恢复写回会与并发日志写互相覆盖（恢复前的 boot 事件不落盘，可接受）。
-      // initLogger 之后所有 boot / 快照 / 命令事件照常落盘。
+      // TASK16 R3：快照恢复先于日志初始化 —— 恢复会把旧 /var/log/succinix.log 写回
+      // 容器 FS；日志系统（应用级 initLogger）随后才初始化，避免恢复写回与并发日志写
+      // 互相覆盖。D1：恢复逻辑由宿主经 restore 钩子注入（SDK 不 import persist）。
       try {
-        const restored = await loadSnapshot(wc.fs);
+        const restored = await opts.restore?.(wc) ?? null;
         if (restored) {
           ok(`Restored workspace from persistent storage (${restored.fileCount} files, ${Math.round(restored.totalBytes / 1024)} KB)`);
         } else {
@@ -569,14 +388,17 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
       bootPhase('host-spawned');
 
       // 应用级 bootsteps（config / workspace / env / services / motd / 自检文件 / 探活 /
-      // autostart）—— 与 ?instance= demo 共用同一实现（runApplicationBootSteps），防两套
-      // boot 逻辑漂移。不传 instanceId = 默认实例 /etc 语义，行为全等现状。
+      // autostart）—— D1：由宿主注入（独立应用传 src/boot-steps.ts 的
+      // runApplicationBootSteps；?instance= demo 在工厂 boot 后自行调用同一实现），
+      // 防两套 boot 逻辑漂移。不传 instanceId = 默认实例 /etc 语义，行为全等现状。
       hostProc =
-        (await runApplicationBootSteps(boot, {
+        (await opts.appSteps?.(boot, {
           wc,
           client,
           ports,
-          hostReadyRetry: { ui, hostProc, hostHooks, deadlineMs: opts.hostReadyDeadlineMs },
+          hostProc,
+          hostHooks,
+          hostReadyDeadlineMs: opts.hostReadyDeadlineMs,
         })) ?? hostProc;
       bootPhase('boot-done');
       return { wc, client, ports, hostProc };

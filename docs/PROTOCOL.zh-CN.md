@@ -35,6 +35,7 @@ Browser (TerminalClient)                Container (node host.js)
   "protocol": 1,        // protocol version（协议版本，v1 加入；字段缺失视为 1）
   "id": 42,             // 唯一请求 id，按客户端严格递增
   "cmd": "run",         // 取值：run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
+  "instanceId": "c-1",  // 实例上下文（可选，additive；缺失 = 默认实例）
   "opts": {             // 命令特定选项（可选）
     "command": "...",   // 完整命令字符串（run / spawn）
     "pid": 1234,        // 目标进程 id（kill）
@@ -91,7 +92,7 @@ host 为每个请求恰好写一个结果文件，以请求 id 命名。浏览�
 |----------|------------------------------------------------------------------|
 | `run`    | `{ ok, exitCode, stdout, stderr, runtime }`（成功 `cd` 时另附 `cwd` 字段，TASK23） |
 | `spawn`  | `{ ok: true, pid, runtime: "node" }`（立即）；确认窗口内失败 `{ ok: false, exitCode, error, runtime }` |
-| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
+| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` —— 带 `instanceId` 时过滤为该实例 + `system` |
 | `kill`   | `{ ok, killed, message }`                                        |
 | `interrupt` | `{ ok, kind: "interrupted", pid, killed, message }` —— `pid` 为数字 = 已向当前前台 `run` 子进程发 SIGTERM；`null` = 无在途可中断 run |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
@@ -121,6 +122,26 @@ host 维护**会话 cwd**（初始值 `process.cwd()`，持久化到 `/etc/succi
 host 每 **60 s** 清理陈旧的 `result-*.json` 文件（浏览器超时后放弃的请求），删除所有比结果
 TTL（默认 **120 s**）更老的文件。TTL 可经在 host 启动前向 `/etc/succinix.engine.json` 写入
 `{ "resultTtlMs": <ms> }` 覆盖（engine 的 `boot` 仅在传入 `resultTtlMs` 时写它）。
+
+### 实例上下文（`instanceId`）
+
+`instanceId` 是 **additive** 的可选请求字段（M3）。不带该字段的请求——即所有既有客户端——
+指向**默认实例**，与单实例协议逐字节兼容。每个结果文件回带归一化的 `instanceId`
+（缺失时回 `"default"`），客户端可据此核对路由。
+
+共享 host 上的按实例语义（一页 = 一条 RPC 通道 + 一个 host）：
+
+| 面          | 行为 |
+|-------------|------|
+| 状态文件     | 会话 cwd（`/etc/succinix.cwd`）、env（`/etc/succinix.env`）、settings / services / autostart / motd / `succinix.engine.json` 按实例状态根 `<stateRoot>/etc/...` 解析（`stateRoot = /workspace/.succinix-<id>`；默认 = `/etc`）。 |
+| `ps`        | 带 `instanceId` 时只返回该实例进程 **+** `system` 进程；不带时返回全部（现状）。归属是启发式（spawn cwd），非安全边界。 |
+| `interrupt` | 只中断请求实例的当前前台 `run` 子进程（`Map<instanceId, pid>`；default 键 = 旧单值行为全等）。中断 A 不会杀 B 的 run。 |
+| 共享队列     | `/cmd.json` 仍是单槽串行邮箱；`instanceId` 只区分归属。 |
+| 共享运行时   | Lifo sandbox 是页面级（每 host 一个）：交互 Lifo cwd **不**按实例同步。每实例 cwd 是浏览器侧逻辑值；node/python spawn 用显式绝对 cwd。完整边界见 SDK.md「多实例」节。 |
+
+验证盲区（如实标注）：两个浏览器 tab 是独立容器（各自 host），永远不会向共享 host 发
+`instanceId`——同页共享 host 的按实例路由（Map 分键 / ps 过滤 / 按实例 interrupt）由协议级
+单测覆盖，不由双 tab e2e 证明。
 
 ## 4. 命令路由（Command routing）
 

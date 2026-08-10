@@ -40,6 +40,8 @@ import {
   normalizeInstanceId,
   instanceStateRootFor,
   instanceStateFile,
+  filterProcessesForInstance,
+  CurrentRunRegistry,
 } from './host-route.js';
 
 const CMD_FILE = 'cmd.json';
@@ -301,8 +303,10 @@ interface CommandRequest {
   instanceId?: string;
 }
 
-function writeResult(id: number, payload: Record<string, unknown>): void {
-  fs.writeFileSync(RESULT_PREFIX + id + '.json', JSON.stringify({ id, ...payload }));
+// M3：结果回带请求的 instanceId（additive，旧客户端忽略未知字段）。instanceId 必须是
+// 请求时刻捕获的归一化值 —— node 子进程 settle 是异步的，不能用当时已变的 currentInstanceId。
+function writeResult(id: number, payload: Record<string, unknown>, instanceId = DEFAULT_INSTANCE_ID): void {
+  fs.writeFileSync(RESULT_PREFIX + id + '.json', JSON.stringify({ id, instanceId, ...payload }));
 }
 
 // 清理被放弃请求留下的陈旧 result-*.json，避免无限累积。
@@ -360,12 +364,13 @@ function instanceOf(req: CommandRequest): string {
 // node 子进程的 run 会立即返回（结果异步写回），保证 ps/kill 在长命令期间仍可用。
 async function handleCommand(req: CommandRequest): Promise<void> {
   currentInstanceId = instanceOf(req);
+  const inst = instanceOf(req);
   switch (req.cmd) {
     case 'ping':
-      writeResult(req.id, { ok: true, kind: 'pong' });
+      writeResult(req.id, { ok: true, kind: 'pong' }, inst);
       return;
     case 'cwd':
-      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(instanceOf(req)) });
+      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(inst) }, inst);
       return;
     case 'setCwd':
       dispatchSetCwd(req);
@@ -377,7 +382,7 @@ async function handleCommand(req: CommandRequest): Promise<void> {
       dispatchSpawn(req);
       return;
     case 'ps':
-      writeResult(req.id, { ok: true, kind: 'ps', processes: listProcesses() });
+      dispatchPs(req);
       return;
     case 'kill':
       dispatchKill(req);
@@ -386,10 +391,10 @@ async function handleCommand(req: CommandRequest): Promise<void> {
       dispatchInterrupt(req);
       return;
     case 'exit':
-      writeResult(req.id, { ok: true, kind: 'bye' });
+      writeResult(req.id, { ok: true, kind: 'bye' }, inst);
       return;
     default:
-      writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` });
+      writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` }, inst);
   }
 }
 
@@ -404,28 +409,29 @@ async function dispatchRun(req: CommandRequest): Promise<void> {
     writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: 'empty command', runtime: 'lifo' });
     return;
   }
+  const inst = instanceOf(req);
   const prefix = classifyPrefix(command);
   if (prefix !== 'lifo') {
     // node/python/pip 系才分词做 shell 元字符检查（与旧行为一致：纯 Lifo 命令不经过
     // 分词，未闭合引号交给 Lifo shell 自己处理）。
     const t = tryTokenize(command);
     if (!t.ok) {
-      writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
+      writeResult(req.id, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, inst);
       return;
     }
     const route = classifyRoute(command, hasShellMetaToken(t.tokens));
     if (route === 'node') {
-      runNode(command, req.opts, req.id); // 立即返回；子进程结束时异步写结果
+      runNode(command, req.opts, req.id, inst); // 立即返回；子进程结束时异步写结果
       return;
     }
     if (route === 'python') {
-      await runPython(command, req.opts, req.id); // daemon 响应后写结果
+      await runPython(command, req.opts, req.id, inst); // daemon 响应后写结果
       return;
     }
-    await runLifo(command, req.opts, req.id); // 混合链：Lifo shell 层执行
+    await runLifo(command, req.opts, req.id, inst); // 混合链：Lifo shell 层执行
     return;
   }
-  await runLifo(command, req.opts, req.id);
+  await runLifo(command, req.opts, req.id, inst);
 }
 
 // 分词兜底：未闭合引号等语法错误给出明确报错，不静默截断、不抛到协议层。
@@ -439,21 +445,21 @@ function tryTokenize(command: string): { ok: true; tokens: string[] } | { ok: fa
 
 // 真 Node 子进程：命令串 → 简单分词 → spawn(prog, args, { cwd: spawnCwd(currentInstanceId) })。
 // 结果带 runtime: 'node'。进程登记进进程表，可被 ps / kill 管理。
-function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: number): void {
+function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): void {
   const t = tryTokenize(command);
   if (!t.ok) {
-    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
+    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, instanceId);
     return;
   }
   const [prog, ...args] = t.tokens;
-  spawnChild(prog, args, opts, reqId, 'node');
+  spawnChild(prog, args, opts, reqId, 'node', instanceId);
 }
 
 // TASK27：python / python3 / pip / pip3 命令 → 发往常驻 Pyodide daemon（python-daemon-client）。
 // 纯 python/pip 命令（无 shell 元字符）走这里；含管道/重定向的混合链由 dispatchRun 转给
 // Lifo shell（python/pip 段再经 registerRealBinaryCommands 转发到同一 daemon —— 实例状态共享）。
 // 资产未注入时给明确错误，系统不崩（装不坏：python 不依赖用户 npm install）。
-async function runPython(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
+async function runPython(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): Promise<void> {
   if (!fs.existsSync(PYTHON_DAEMON_JS)) {
     writeResult(reqId, {
       ok: false,
@@ -462,12 +468,12 @@ async function runPython(command: string, opts: Record<string, unknown> | undefi
       stderr:
         'python runtime failed to load: assets not injected yet — run any other command first, or refresh the page (the runtime is injected on first use)',
       runtime: 'node',
-    });
+    }, instanceId);
     return;
   }
   const t = tryTokenize(command);
   if (!t.ok) {
-    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' });
+    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, instanceId);
     return;
   }
   const [, ...rawArgs] = t.tokens; // 丢弃 python/python3/pip/pip3 前缀
@@ -480,7 +486,7 @@ async function runPython(command: string, opts: Record<string, unknown> | undefi
     stdout: capOutput(r.stdout),
     stderr: withEaccesHint(capOutput(r.stderr)),
     runtime: 'node',
-  });
+  }, instanceId);
 }
 
 // ─── 共享子进程工具（P2-8）───
@@ -539,12 +545,13 @@ function spawnChild(
   args: string[],
   opts: Record<string, unknown> | undefined,
   reqId: number,
-  label: string
+  label: string,
+  instanceId: string
 ): void {
   const realCwd = spawnCwd(currentInstanceId);
   const { pid, child, out } = spawnTracked(prog, args, { cwd: realCwd, mode: 'accumulate' });
-  // P5-15：登记为当前前台 run（Ctrl+C 中断目标）；settle 时清除。
-  currentRunPid = pid;
+  // P5-15 / M3：按实例登记为当前前台 run（Ctrl+C 中断目标，只中断该实例的 run）；settle 时清除。
+  currentRunByInstance.register(instanceId, pid);
 
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -553,14 +560,14 @@ function spawnChild(
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
-    if (currentRunPid === pid) currentRunPid = null;
+    currentRunByInstance.clearIf(instanceId, pid);
     // TASK18 输出上限：最终截断在 settle 应用，保证结果文件有界。
     // TASK24 坑 3：EACCES 提示在截断之后追加，保证即使输出超上限提示也在。
     writeResult(reqId, {
       ...payload,
       stdout: capOutput(out.stdout()),
       stderr: withEaccesHint(capOutput(out.stderr())),
-    });
+    }, instanceId);
   };
 
   // 超时兜底：避免挂死的子进程永久占坑；可被 opts.timeout 覆盖
@@ -590,9 +597,10 @@ function spawnChild(
 // 与 run 的 node 分支不同：不写最终结果文件，立即返回 { ok, pid, runtime: 'node' }；
 // 子进程输出持续收集进进程表条目（outputTail，ps 返回最近 ~500 字符）。
 function dispatchSpawn(req: CommandRequest): void {
+  const inst = instanceOf(req);
   const command = String(req.opts?.command ?? '').trim();
   if (!command) {
-    writeResult(req.id, { ok: false, error: 'empty command', runtime: 'node' });
+    writeResult(req.id, { ok: false, error: 'empty command', runtime: 'node' }, inst);
     return;
   }
   if (!NODE_PREFIX_RE.test(command)) {
@@ -600,12 +608,12 @@ function dispatchSpawn(req: CommandRequest): void {
       ok: false,
       error: 'spawn only supports node/npm/npx background processes (Lifo side has no background concept)',
       runtime: 'lifo',
-    });
+    }, inst);
     return;
   }
   const t = tryTokenize(command);
   if (!t.ok) {
-    writeResult(req.id, { ok: false, error: t.error, runtime: 'node' });
+    writeResult(req.id, { ok: false, error: t.error, runtime: 'node' }, inst);
     return;
   }
   const [prog, ...args] = t.tokens;
@@ -618,7 +626,7 @@ function dispatchSpawn(req: CommandRequest): void {
     if (settled) return;
     settled = true;
     if (confirmTimer) clearTimeout(confirmTimer);
-    writeResult(req.id, payload);
+    writeResult(req.id, payload, inst);
   };
   child.on('error', (e: Error) => {
     appendProcessOutput(pid, `[spawn error] ${e}\n`);
@@ -642,7 +650,7 @@ function dispatchSpawn(req: CommandRequest): void {
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。
 // TASK23：cd 成功后把会话 cwd 同步到 Lifo 新 cwd（仅 /workspace 下 —— 映射 host 真实路径），
 // 并持久化 /etc/succinix.cwd；cd 到不存在目录 → Lifo 报错（exit≠0），会话 cwd 不变。
-async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number): Promise<void> {
+async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): Promise<void> {
   try {
     const timeout = typeof opts?.timeout === 'number' ? opts.timeout : LIFO_TIMEOUT_MS;
     // 首次使用才 await sandbox 初始化（懒加载兜底；延迟预热通常已让内核就绪）。
@@ -667,21 +675,31 @@ async function runLifo(command: string, opts: Record<string, unknown> | undefine
         payload.cwd = effectiveCwd;
       }
     }
-    writeResult(reqId, payload);
+    writeResult(reqId, payload, instanceId);
   } catch (e) {
-    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: String(e).slice(0, 200), runtime: 'lifo' });
+    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: String(e).slice(0, 200), runtime: 'lifo' }, instanceId);
   }
+}
+
+// ps：进程表快照。请求带 instanceId 时按实例过滤（该实例 + system）；缺省不过滤（现状全等）。
+// 归属判定以 host-procs 启发式为准（M2 状态根 .succinix-<id> + CISOL c-<id> 命名空间），
+// 非安全边界（UI 展示 / 查询过滤用）。
+function dispatchPs(req: CommandRequest): void {
+  const inst = instanceOf(req);
+  const processes = filterProcessesForInstance(listProcesses(), inst);
+  writeResult(req.id, { ok: true, kind: 'ps', processes }, inst);
 }
 
 // kill：真实子进程交给进程表模块；Lifo 侧进程不在表内，明确返回"仅支持列表"。
 function dispatchKill(req: CommandRequest): void {
+  const inst = instanceOf(req);
   const pid = parsePid(req);
   if (!Number.isInteger(pid) || pid <= 0) {
-    writeResult(req.id, { ok: false, killed: false, message: `invalid pid: ${req.opts?.pid ?? req.cmd}` });
+    writeResult(req.id, { ok: false, killed: false, message: `invalid pid: ${req.opts?.pid ?? req.cmd}` }, inst);
     return;
   }
   const r = killProcess(pid);
-  writeResult(req.id, { ok: r.killed, killed: r.killed, message: r.message });
+  writeResult(req.id, { ok: r.killed, killed: r.killed, message: r.message }, inst);
 }
 
 // interrupt（P5-15）：浏览器 Ctrl+C —— 终止当前前台 run 的 node 子进程。
@@ -690,40 +708,44 @@ function dispatchKill(req: CommandRequest): void {
 // 浏览器侧在途 exec 随即读到结果，busy 结束回到提示符。
 // 无当前 run（纯 Lifo 命令 / 空闲）→ 返回 pid:null，浏览器如实提示。
 function dispatchInterrupt(req: CommandRequest): void {
-  if (currentRunPid !== null) {
-    const r = killProcess(currentRunPid);
+  // M3：只中断请求实例的当前前台 run（按实例分键；缺省 default 键 = 现状单值全等）。
+  const inst = instanceOf(req);
+  const runPid = currentRunByInstance.get(inst);
+  if (runPid !== null) {
+    const r = killProcess(runPid);
     writeResult(req.id, {
       ok: true,
       kind: 'interrupted',
-      pid: currentRunPid,
+      pid: runPid,
       killed: r.killed,
       message: r.message,
-    });
+    }, inst);
     return;
   }
-  writeResult(req.id, { ok: true, kind: 'interrupted', pid: null });
+  writeResult(req.id, { ok: true, kind: 'interrupted', pid: null }, inst);
 }
 
 // setCwd：显式设置会话 cwd（TASK23 协议新增，向后兼容 —— 客户端可选使用）。
 // 校验绝对路径且为已存在目录；cd 命令的自动同步已覆盖交互路径，此命令供生态/自检显式设置。
 function dispatchSetCwd(req: CommandRequest): void {
+  const inst = instanceOf(req);
   const raw = String(req.opts?.cwd ?? '');
   if (!raw.startsWith('/')) {
-    writeResult(req.id, { ok: false, error: `setCwd: cwd must be an absolute path: ${raw}` });
+    writeResult(req.id, { ok: false, error: `setCwd: cwd must be an absolute path: ${raw}` }, inst);
     return;
   }
   try {
     const real = vfsToReal(raw, process.cwd());
     if (!fs.statSync(real).isDirectory()) {
-      writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` });
+      writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` }, inst);
       return;
     }
   } catch {
-    writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` });
+    writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` }, inst);
     return;
   }
   setSessionCwd(currentInstanceId, raw);
-  writeResult(req.id, { ok: true, kind: 'cwd', cwd: raw });
+  writeResult(req.id, { ok: true, kind: 'cwd', cwd: raw }, inst);
 }
 
 // kill 协议支持 { cmd: 'kill', opts: { pid } }，也兼容 "kill 1234" 字符串形式。
@@ -736,10 +758,11 @@ function parsePid(req: CommandRequest): number {
 // 保持原有的 cmd.json → result-<id>.json 轮询协议，仅把处理逻辑结构化。
 let processedId = -1;
 let busy = false;
-// P5-15：当前前台 run 的 node 子进程 pid（interrupt 协议用）。spawnChild 启动时登记、
-// settle 时清除（只清自己启动的）。后台 spawn / Lifo 混合链 / 纯 Lifo 命令不在此列——
-// 后台服务不应被 Ctrl+C 误杀，Lifo 沙箱无 abort API（host 侧 busy 期间 interrupt 也进不来）。
-let currentRunPid: number | null = null;
+// P5-15 / M3：当前前台 run 的 node 子进程 pid 按实例登记（interrupt 协议用；缺省 default 键
+// = 现状单值全等）。spawnChild 启动时 register、settle 时 clearIf（只清自己启动的）。
+// 后台 spawn / Lifo 混合链 / 纯 Lifo 命令不在此列——后台服务不应被 Ctrl+C 误杀，
+// Lifo 沙箱无 abort API（host 侧 busy 期间 interrupt 也进不来）。
+const currentRunByInstance = new CurrentRunRegistry();
 
 // 定期清理被放弃请求留下的陈旧结果文件（浏览器已超时放弃的请求）。
 setInterval(pruneStaleResults, 60000);
@@ -756,7 +779,7 @@ setInterval(async () => {
     try {
       await handleCommand(req);
     } catch (e) {
-      writeResult(req.id, { ok: false, error: String(e).slice(0, 200) });
+      writeResult(req.id, { ok: false, error: String(e).slice(0, 200) }, instanceOf(req));
     } finally {
       busy = false;
     }

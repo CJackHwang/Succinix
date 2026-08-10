@@ -188,3 +188,49 @@ export function instanceStateFile(instanceId: string, root: string, name: string
   const clean = name.replace(/^\/+/, '');
   return `${instanceStateRootFor(instanceId, root)}/${clean}`;
 }
+
+// ─── 实例路由（M3，纯函数）───
+// ps 过滤与 interrupt 分键是 host 协议按实例路由的核心，抽成纯函数供协议级单测。
+// 归属以 host-procs 的启发式为准（scope/containerId），非安全边界。
+
+/**
+ * ps 响应按实例过滤：请求带 instanceId 时只返回该实例 + system 进程；
+ * 缺省实例（'default'）不过滤（现状全等）。实例进程判定：
+ *   - scope=system → 恒包含（运行时进程）；
+ *   - containerId === `.succinix-<id>`（M2 实例状态根命名空间）→ 该实例；
+ *   - containerId === `c-<id>`（CISOL 兼容命名空间，DM-12 共存）→ 同 id 归该实例；
+ *   - 其余（unknown / 其他实例）→ 排除。
+ */
+export function filterProcessesForInstance(
+  procs: Array<{ scope: string; containerId?: string }>,
+  instanceId: string
+): Array<{ scope: string; containerId?: string }> {
+  if (instanceId === DEFAULT_INSTANCE_ID) return procs;
+  return procs.filter((p) => {
+    if (p.scope === 'system') return true;
+    // 状态根命名空间：containerId = `.succinix-<id>`；CISOL 兼容命名空间：containerId = `c-<id>`。
+    // 两处 id 段都已含前缀（instanceIdFromPath 返回整段），直接整段比较。
+    return p.containerId === `.succinix-${instanceId}` || p.containerId === instanceId;
+  });
+}
+
+/**
+ * 当前前台 run 的按实例注册表（M3）：interrupt 只杀请求实例的当前 run。
+ * 缺省 default 键 = 现状单值语义全等。spawnChild 登记 / settle 清除 / interrupt 查询。
+ */
+export class CurrentRunRegistry {
+  private runs = new Map<string, number>();
+
+  register(instanceId: string, pid: number): void {
+    this.runs.set(instanceId, pid);
+  }
+
+  /** settle 时清除自己启动的 run（只清自己，防串号）。 */
+  clearIf(instanceId: string, pid: number): void {
+    if (this.runs.get(instanceId) === pid) this.runs.delete(instanceId);
+  }
+
+  get(instanceId: string): number | null {
+    return this.runs.get(instanceId) ?? null;
+  }
+}

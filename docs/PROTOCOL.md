@@ -37,6 +37,7 @@ The browser writes a JSON object to `/cmd.json`:
   "protocol": 1,        // protocol version (added in v1; a missing field is treated as 1)
   "id": 42,             // unique request id, strictly increasing per client
   "cmd": "run",         // one of: run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
+  "instanceId": "c-1",  // instance context (optional, additive; missing = default instance)
   "opts": {             // command-specific options (optional)
     "command": "...",   // full command string (run / spawn)
     "pid": 1234,        // target process id (kill)
@@ -94,7 +95,7 @@ Per-command response fields:
 |----------|------------------------------------------------------------------|
 | `run`    | `{ ok, exitCode, stdout, stderr, runtime }` (+ optional `cwd` on a successful `cd`, TASK23) |
 | `spawn`  | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
-| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` |
+| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` — filtered to the requesting instance + `system` when `instanceId` is present |
 | `kill`   | `{ ok, killed, message }`                                        |
 | `interrupt` | `{ ok, kind: "interrupted", pid, killed, message }` — `pid` is a number when a current foreground `run` child was targeted (SIGTERM sent), `null` when no interruptible run is in flight |
 | `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
@@ -108,7 +109,8 @@ Per-command response fields:
 recent foreground `run` child (a real Node subprocess); `interrupt` sends it SIGTERM.
 Scope: it only targets that foreground `run` — **background `spawn` services are never
 interrupted**, and pure Lifo commands (which run inside the sandbox, not as a table child)
-are not interruptible (the sandbox has no abort API). After the kill, the child's `close`
+are not interruptible (the sandbox has no abort API). With `instanceId` present the target
+is the requesting instance's current `run` (per-instance keying, additive). After the kill, the child's `close`
 event settles the original `run` request (its result file appears) and clears the tracked
 pid, so the browser's in-flight wait unblocks. The client sends it via `interruptDirect()`
 — a direct `/cmd.json` write that bypasses the serialized queue (a queued `interrupt` would
@@ -131,6 +133,27 @@ The host prunes stale `result-*.json` files (requests the browser abandoned by t
 out) every **60 s**, deleting any file older than the result TTL (**120 s** by default).
 The TTL can be overridden by writing `{ "resultTtlMs": <ms> }` to `/etc/succinix.engine.json`
 before the host starts (the engine's `boot` writes it only when `resultTtlMs` is passed).
+
+### Instance context (`instanceId`)
+
+`instanceId` is an **additive** optional request field (M3). A request without it — the
+behavior of every existing client — targets the **default instance** and is byte-for-byte
+compatible with the single-instance protocol. Each result file echoes the normalized
+`instanceId` (`"default"` when absent) so the client can verify routing.
+
+Per-instance semantics on the shared host (one page = one RPC channel + one host):
+
+| Surface    | Behavior |
+|------------|----------|
+| State files | Session cwd (`/etc/succinix.cwd`), env (`/etc/succinix.env`), settings / services / autostart / motd / `succinix.engine.json` resolve under the instance state root `<stateRoot>/etc/...` (`stateRoot = /workspace/.succinix-<id>`, default = `/etc`). |
+| `ps`       | With `instanceId`, the response lists only that instance's processes **plus** `system` processes. Without it, all processes (unchanged). Ownership is heuristic (spawn cwd), not a security boundary. |
+| `interrupt` | Only interrupts the requesting instance's current foreground `run` child (`Map<instanceId, pid>`; default key = previous single-value behavior). Interrupting A never kills B's run. |
+| Shared queue | `/cmd.json` remains a single serialized mailbox; `instanceId` only distinguishes ownership. |
+| Shared runtime | The Lifo sandbox is page-level (one per host): interactive Lifo cwd is **not** per-instance. Per-instance cwd is a browser-side logical value; node/python spawns use explicit absolute cwd. See SDK.md "Multi-instance" for the full boundary. |
+
+Validation note: two browser tabs are independent containers (separate hosts), so they never
+exercise the shared-host `instanceId` routing — that path is covered by protocol-level unit
+tests (`Map` keying, `ps` filtering, per-instance interrupt), not by the dual-tab e2e demo.
 
 ## 4. Command routing
 

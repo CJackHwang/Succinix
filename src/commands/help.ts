@@ -1,0 +1,47 @@
+// help 命令：内置命令清单（O1 拆分）。
+import type { Terminal } from '@xterm/xterm';
+export function printHelp(term: Terminal): void {
+  term.writeln('Succinix built-in commands');
+  term.writeln(`  help         show this help`);
+  term.writeln(`  clear        clear the screen (Ctrl+L also works)`);
+  term.writeln(`  sysinfo      re-print system information`);
+  term.writeln(`  ports        list service ports that are ready`);
+  term.writeln(`  db start     start the tinbase database (auto-installs in-container when missing)`);
+  term.writeln(`  db status    show tinbase status`);
+  term.writeln(`  db stop      stop tinbase (data persists in workspace)`);
+  term.writeln(`  snapshot     show persistent storage status`);
+  term.writeln(`  snapshot now  save a snapshot immediately (auto-saves every ~2.5s)`);
+  term.writeln(`  snapshot clear  clear snapshot (= reset system, next boot fresh)`);
+  term.writeln(`  free         show memory overview (device + JS heap; estimates marked ~)`);
+  term.writeln(`  top          live process table — 3 snapshots, 2s apart`);
+  term.writeln(`  reboot       restart the system (browser reload; persistent data survives)`);
+  term.writeln(`  shutdown     power off (you can close this tab)`);
+  term.writeln(`  cache        show cache usage; 'cache clear' cleans rebuildable caches`);
+  term.writeln(`  workspace    list workspaces; create/switch/rm manage isolated workspaces`);
+  term.writeln(`  env          list / set / unset environment variables (persisted in /etc/succinix.env)`);
+  term.writeln(`  settings     view / set / reset system settings (persisted in /etc/succinix.settings)`);
+  term.writeln(`  service      list services; start/stop/status/enable/disable manage them (declarative autostart)`);
+  term.writeln(`  log          show recent log entries (last 20); log -n <count> / log clear / log boot`);
+  term.writeln(`  pkg          package management: list / search <term> / install <name> / remove <name> / info <name>`);
+  term.writeln(`  netstat      list virtual listening ports ('netstat -p' shows associated processes)`);
+  term.writeln(`  ip addr      show virtual network identity (browser platform + preview domain)`);
+  term.writeln(`  uname        show system identity: kernel / runtime / arch (honest, no fake Linux)`);
+  term.writeln(`  motd         view the login banner; 'motd <text>' sets, 'motd reset' restores default`);
+  term.writeln(`  lang         list built-in language runtimes (node / python / typescript)`);
+  term.writeln(`  pwd          show the session working directory (synced with node/python child cwd)`);
+  term.writeln(`  version      show version`);
+  term.writeln(`  whoami       show current user`);
+  term.writeln('');
+  term.writeln('host side (TerminalExecutor unified routing)');
+  term.writeln(`  node|npm|npx ...   real node subprocess (spawn for long-running background)`);
+  term.writeln(`  python ...         Pyodide runtime (python -c "<code>" | python <script.py> | python -m pip <cmd>)`);
+  term.writeln(`  other commands      Lifo sandbox: grep / cat / wc / echo / curl ...`);
+  term.writeln(`  ps / kill <pid>    process table management`);
+  term.writeln(`  cwd / setCwd / ping / exit  protocol commands`);
+  term.writeln('');
+  term.writeln('terminal keys');
+  term.writeln(`  Ctrl+C             interrupt the running command (node run) and discard queued commands`);
+  term.writeln(`  Up / Down arrows   command history (session memory)`);
+  term.writeln(`  Tab                complete built-in command names and file paths`);
+  term.writeln(`  Ctrl+L             clear the screen`);
+}

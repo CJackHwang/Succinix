@@ -1,0 +1,110 @@
+// service 命令域：声明式服务管理（O1 拆分）。
+import { readServices, listServiceStates, getServiceState, startService, stopService, enableAutostart, disableAutostart, type ServiceContext } from '../services.js';
+import { AMBER, RED, RESET } from '../theme.js';
+import type { CommandContext } from './types.js';
+// ─── 服务管理（TASK11）：service 命令族，spawn/ps/kill + 端口注册表的声明式封装 ───
+// 定义在 /etc/succinix.services（name|command|port），自启清单在 /etc/succinix.autostart，
+// 两者都随快照持久。状态由进程表 + 端口注册表联合判定（services.ts）。
+
+// 单个服务详情：state + pid + port/url（未匹配显示 unknown service）。
+async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: string): Promise<void> {
+  const { term } = ctx;
+  const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
+  const def = defs.find((d) => d.name === name);
+  if (!def) {
+    term.writeln(`${RED}unknown service: ${name}${RESET}`);
+    return;
+  }
+  const st = await getServiceState(svc, def);
+  term.writeln(`Service '${name}'`);
+  term.writeln(`  state  ${st.state === 'running' ? `${AMBER}${st.state}${RESET}` : st.state}`);
+  if (st.pid !== undefined) term.writeln(`  pid    ${st.pid}`);
+  if (st.effectivePort !== null) term.writeln(`  port   ${st.effectivePort}${st.url ? `  -> ${st.url}` : ''}`);
+}
+
+export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix };
+  const sub = args[0] ?? '';
+
+  if (sub === '') {
+    const states = await listServiceStates(svc);
+    if (states.length === 0) {
+      term.writeln('Services');
+      term.writeln('  (none defined)');
+      return;
+    }
+    // 表格对齐：NAME / STATE 按最长值 + 2 空格间隔，running 用暗橙。
+    const nameW = Math.max(4, ...states.map((s) => s.def.name.length)) + 2;
+    const stateW = Math.max(5, ...states.map((s) => s.state.length)) + 2;
+    term.writeln('Services');
+    term.writeln('  ' + 'NAME'.padEnd(nameW) + 'STATE'.padEnd(stateW) + 'PORT');
+    for (const s of states) {
+      const st = s.state === 'running' ? AMBER + s.state.padEnd(stateW) + RESET : s.state.padEnd(stateW);
+      const portStr = s.effectivePort !== null ? String(s.effectivePort) : '-';
+      term.writeln('  ' + s.def.name.padEnd(nameW) + st + portStr);
+    }
+    return;
+  }
+
+  if (sub === 'start') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service start <name>');
+      return;
+    }
+    const r = await startService(svc, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'stop') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service stop <name>');
+      return;
+    }
+    const r = await stopService(svc, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
+  if (sub === 'status') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service status <name>');
+      return;
+    }
+    await serviceStatusOne(ctx, svc, name);
+    return;
+  }
+
+  if (sub === 'enable') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service enable <name>');
+      return;
+    }
+    const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
+    if (!defs.some((d) => d.name === name)) {
+      term.writeln(`${RED}unknown service: ${name}${RESET}`);
+      return;
+    }
+    const added = await enableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
+    term.writeln(added ? `service '${name}' enabled (will start on boot)` : `service '${name}' is already enabled`);
+    return;
+  }
+
+  if (sub === 'disable') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service disable <name>');
+      return;
+    }
+    const removed = await disableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
+    term.writeln(removed ? `service '${name}' disabled` : `service '${name}' is not enabled`);
+    return;
+  }
+
+  term.writeln('usage: service | service start <name> | service stop <name> | service status <name> | service enable <name> | service disable <name>');
+}

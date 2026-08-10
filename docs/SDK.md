@@ -173,5 +173,5 @@ Each stage is gated on the previous one; none of them changes the wire protocol
 
 ## Version strategy (TASK-S1/S2 decision)
 
-- **Main project** stays `0.2.0` (continuity with WebUnix history).
-- **`@succinix/engine`** ships `0.1.0` — decoupled first release; the package is a new artifact with its own version lifecycle.
+- **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0`, continuity with WebUnix history).
+- **`@succinix/engine`** ships independently on its own line (`0.1.0` → `0.1.3` at the 0.3.0 release) — decoupled first release; the package is a new artifact with its own version lifecycle.

@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-10
+
 ### Changed
 
-- **TODO-optimizations: full 19-item architecture/code-quality batch (`docs/TODO-optimizations.md`)** —
+- **TODO-optimizations: full 19-item architecture/code-quality batch** —
   - **P0**: auto-snapshot adds a 30 s **maximum-age force** (`persist.isAgeForced` + `AUTO_SNAPSHOT_FORCE_INTERVAL_MS`) bounding the equal-length-edit loss window; the host now **deletes `/cmd.json`** after processing a request so a stale command is never executed by a freshly respawned host.
   - **P1**: the `createTerminalExecutor()` facade gains `pingDirect()` + `respawn()` (single-host invariant) and `boot` accepts `EngineBootHooks`; the README documents the "two execution surfaces, one host" split. `host.ts` pure logic (route classification / path mapping / output cap / EACCES hint / pid parsing) extracted to `src/engine/host-route.ts` (unit-tested, in the coverage gate). Process-ownership `scope` is documented as **heuristic, not a security boundary**.
   - **P2**: shared `src/theme.ts` (ANSI colors), `src/util.ts` (`sleep`/`ensureParentDir`), `src/engine/sleep.ts` (engine self-contained sleep), `forcePersist` consolidated in `persist.ts` (tag param); version injected at build time as `__SUCCINIX_VERSION__` (`src/version.ts`, single source = root `package.json`); the three host spawn sites merged via `attachOutputCollector` + `spawnTracked`; `dbStart` failure blocks consolidated into one `fail()`; `execute`/`scenarioRun` share `callHostRpc`.
@@ -51,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`cd /` returns to the workspace root (`~`)** — the session-cwd sync only recognized `/workspace`-prefixed paths, so `cd /` (Lifo VFS root) left the session cwd unchanged and the prompt/pwd/node children stayed at the old directory ("can't get back to root"). The Lifo root is now mapped to the workspace root (`lifoCwdToSessionCwd`: `/` → `/workspace`, `/workspace/...` as-is, Lifo-private paths → no sync; unit-tested). Refresh keeps the persisted cwd (by design); `cd /` is the one-shot way back to `~`.
 - **Prompt follows the session cwd (cd now updates the prompt)** — the REPL prompt was hardcoded `guest@succinix:~$` and never reflected `cd`. The browser now tracks the session cwd (initialized from the host `cwd` protocol after boot, so a persisted `/etc/succinix.cwd` survives a refresh; updated from the `cwd` field on a successful `cd` run) and renders the directory: `/workspace` → `~`, `/workspace/proj` → `~/proj` (`sessionCwdPromptLabel`, unit-tested). `cd /workspace/proj` now turns the prompt into `guest@succinix:~/proj$`.
 - **P0-1 follow-up: the auto-snapshot 30 s age-force never re-armed after a snapshot restore** — `lastFullSaveAt` started at 0 on a fresh page and, with a restored snapshot that kept deduping (idle), never updated, so `isAgeForced` stayed false for the whole session and an equal-length shell edit after a refresh had an *unbounded* loss window. `loadSnapshot` now re-arms the clock to `Date.now()` (regression test seeds a snapshot into IndexedDB and asserts `reason=age` fires after the interval).
 - **P0-2 follow-up: the post-request `/cmd.json` delete could swallow a direct probe** — the `finally` deleted whatever was in the file; a watchdog `pingDirect` / Ctrl+C `interruptDirect` written (queue-bypassing) while the host was busy on a long Lifo/Python command was deleted instead of processed, so the watchdog could count a false failure (2 ⇒ spurious host restart). The delete now only fires when the file still holds the just-processed request id (`shouldRemoveCmdFile`, unit-tested); a newer out-of-band request is left for the next poll.

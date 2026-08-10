@@ -18,7 +18,7 @@ Postgres database (tinbase), and persistence.
 | Product | SuccinixOS (formerly WebUnix) — unified brand, zero functional change | TASK26 |
 | Engine | TerminalExecutor (unified routing: `node|npm|npx` → real Node child; everything else → Lifo sandbox) | TASK1 |
 | Runtime | WebContainer + Lifo, shared virtualized `node:fs` (browser `wc.fs`, Node children, Lifo — one tree) | TASK1, README |
-| Version | **0.2.0** | CHANGELOG |
+| Version | **0.3.0** | CHANGELOG |
 | License | **MIT** © 2026 CJackHwang | README |
 | Browser | Chromium family only (Chrome/Edge) + COOP/COEP cross-origin isolation + SharedArrayBuffer | TASK4, README |
 

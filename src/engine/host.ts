@@ -29,7 +29,7 @@ import {
   spawnCwdFor,
   pythonRuntimeArgs,
   lifoSpawndCwd,
-  isUnderWorkspace,
+  lifoCwdToSessionCwd,
   capOutput,
   MAX_OUTPUT_BYTES,
   withEaccesHint,
@@ -81,8 +81,9 @@ if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs
 // `process.cwd()/etc/` 下；若 CWD_FILE 仍用 node 虚拟系统根 `/etc/succinix.cwd`（只读系统根），
 // 写不进去/读不到 → 刷新后 cwd 永久丢失。统一用 process.cwd() 拼接。
 const CWD_FILE = `${process.cwd()}/etc/succinix.cwd`;
-// WORKSPACE_MOUNT / isUnderWorkspace / vfsToReal / spawnCwdFor / resolveBrowserPath /
-// pythonRuntimeArgs / lifoSpawndCwd / capOutput / MAX_OUTPUT_BYTES 均在 host-route.ts（P1-4）。
+// WORKSPACE_MOUNT / vfsToReal / spawnCwdFor / resolveBrowserPath /
+// pythonRuntimeArgs / lifoSpawndCwd / lifoCwdToSessionCwd / capOutput /
+// MAX_OUTPUT_BYTES 均在 host-route.ts（P1-4）。
 
 // 启动读持久化 cwd；文件缺失 / 目录已不存在（被删）时回落 process.cwd()。
 // 校验用 vfsToReal 映射到 host 真实路径再 statSync —— 持久化的值可能是 Lifo VFS 路径
@@ -610,8 +611,11 @@ async function runLifo(command: string, opts: Record<string, unknown> | undefine
     };
     if (r.exitCode === 0 && CD_PREFIX_RE.test(command)) {
       const lifoCwd = sandbox.cwd;
-      if (isUnderWorkspace(lifoCwd)) {
-        sessionCwd = lifoCwd;
+      // cd 后 Lifo cwd → 会话 cwd（TASK23 同步；`cd /` 映射到工作区根 /workspace —— 否则
+      // isUnderWorkspace('/') 为 false、会话 cwd 不更新，"回到根目录"不可达。决策见 host-route.ts）。
+      const effectiveCwd = lifoCwdToSessionCwd(lifoCwd);
+      if (effectiveCwd !== null) {
+        sessionCwd = effectiveCwd;
         persistSessionCwd();
         // 结果带会话 cwd 字段（新增可选协议字段，向后兼容）。
         payload.cwd = sessionCwd;

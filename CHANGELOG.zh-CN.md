@@ -9,9 +9,11 @@
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-10
+
 ### Changed
 
-- **TODO-optimizations 全量 19 项（`docs/TODO-optimizations.md` 架构审计批次）** ——
+- **TODO-optimizations 全量 19 项（架构审计批次）** ——
   - **P0**：自动快照新增 **30s 最大年龄强制**（`persist.isAgeForced` + `AUTO_SNAPSHOT_FORCE_INTERVAL_MS`），把等长编辑的丢失窗口收敛到有界；host 处理完请求后**删除 `/cmd.json`**，防陈旧命令被重启后的新 host 执行。
   - **P1**：`createTerminalExecutor()` 门面补全 `pingDirect()` + `respawn()`（单 host 不变量），`boot` 接受 `EngineBootHooks`；README 记录「两个执行面、同一 host」分工。host.ts 纯逻辑（路由判定 / 路径映射 / 输出截断 / EACCES 提示 / pid 解析）抽到 `src/engine/host-route.ts`（已单测 + 入覆盖门禁）。进程归属 `scope` 文档化标注为**启发式、非安全边界**。
   - **P2**：抽 `src/theme.ts`（ANSI 色）、`src/util.ts`（sleep/ensureParentDir）、`src/engine/sleep.ts`（引擎自包含 sleep），`forcePersist` 收敛到 `persist.ts`（带 tag）；版本号构建期注入 `__SUCCINIX_VERSION__`（`src/version.ts`，单一来源 = 根 package.json）；host 三处 spawn 经 `attachOutputCollector` + `spawnTracked` 合并；`dbStart` 失败块收敛为单个 `fail()`；`execute`/`scenarioRun` 共享 `callHostRpc`。
@@ -53,6 +55,7 @@
 
 ### Fixed
 
+- **`cd /` 回到工作区根（`~`）** —— 会话 cwd 同步原本只认 `/workspace` 前缀，`cd /`（Lifo VFS 根）后会话 cwd 不更新，提示符/pwd/node 子进程留在旧目录（「回不到根目录」）。Lifo 根现在映射到工作区根（`lifoCwdToSessionCwd`：`/` → `/workspace`，`/workspace/...` 原样，Lifo 私有路径不同步；已单测）。刷新仍按设计恢复持久化 cwd；`cd /` 是一键回 `~` 的路径。
 - **提示符随会话 cwd 更新（cd 现在会改提示符）** —— REPL 提示符原硬编码 `guest@succinix:~$`，`cd` 后不反映目录。浏览器现在跟踪会话 cwd（boot 后从 host `cwd` 协议取一次初值，刷新后持久化的 `/etc/succinix.cwd` 不再退化；成功的 `cd` run 结果带 `cwd` 字段时更新），并渲染目录：`/workspace` → `~`、`/workspace/proj` → `~/proj`（`sessionCwdPromptLabel`，已单测）。`cd /workspace/proj` 后提示符变为 `guest@succinix:~/proj$`。
 - **P0-1 跟进：快照恢复后 30s 年龄强制不再重新武装** —— 新页面 `lastFullSaveAt` 为 0，恢复快照后空闲一直 dedup 又永不更新，`isAgeForced` 整个会话恒为 false，刷新后的等长 shell 编辑丢失窗口变成无界。`loadSnapshot` 现在把时钟归零到 `Date.now()`（回归测试直接向 IndexedDB 种子快照，断言间隔后 `reason=age` 触发）。
 - **P0-2 跟进：处理后删除 `/cmd.json` 可能吞掉直接探活** —— `finally` 盲目删除文件内容；看门狗 `pingDirect` / Ctrl+C `interruptDirect`（绕过队列）在 host 忙于长 Lifo/Python 命令时写入的请求被删而非处理，看门狗可能误计失败（连续 2 次即误重启 host）。现在只在文件仍持有刚处理请求 id 时删除（`shouldRemoveCmdFile`，已单测）；更新的带外请求留给下一轮轮询。

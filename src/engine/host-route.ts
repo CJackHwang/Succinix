@@ -109,6 +109,16 @@ export function sessionCwdPromptLabel(cwd: string): string {
   return '~';
 }
 
+// cd 后 Lifo 新 cwd → 会话 cwd（TASK23 同步 + cd / 映射）。/workspace 下原样同步；
+// Lifo VFS 根 `/` 映射到工作区根 /workspace（用户"cd / 回根目录"的直觉 —— 否则 isUnderWorkspace('/')
+// 为 false，会话 cwd 不更新，回到根目录不可达）；其余（Lifo 私有路径如 /tmp，无 host 等价物）
+// 返回 null 表示不同步（会话 cwd 保持旧值）。
+export function lifoCwdToSessionCwd(lifoCwd: string): string | null {
+  if (lifoCwd === '/') return WORKSPACE_MOUNT;
+  if (isUnderWorkspace(lifoCwd)) return lifoCwd;
+  return null;
+}
+
 // ─── 输出截断 / EACCES 提示 ───
 
 // TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。正常命令

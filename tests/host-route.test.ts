@@ -10,6 +10,7 @@ import {
   resolveBrowserPath,
   pythonRuntimeArgs,
   lifoSpawndCwd,
+  lifoCwdToSessionCwd,
   sessionCwdToBrowserPath,
   sessionCwdPromptLabel,
   capOutput,
@@ -124,6 +125,18 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     // host 真实路径（初始 cwd，即工作区根的真实路径视图）→ 回落 ~
     expect(sessionCwdPromptLabel('/home/wc-123')).toBe('~');
     expect(sessionCwdPromptLabel('/workspacex')).toBe('~'); // 前缀误判防护
+  });
+
+  it('lifoCwdToSessionCwd：cd 后 Lifo cwd → 会话 cwd（cd / 映射回工作区根）', () => {
+    // /workspace 下原样同步
+    expect(lifoCwdToSessionCwd('/workspace')).toBe('/workspace');
+    expect(lifoCwdToSessionCwd('/workspace/proj')).toBe('/workspace/proj');
+    // Lifo VFS 根 / → 工作区根（否则 cd / 后会话 cwd 不更新，"回到根目录"不可达）
+    expect(lifoCwdToSessionCwd('/')).toBe('/workspace');
+    // Lifo 私有路径（无 host 等价物）→ null（不同步）
+    expect(lifoCwdToSessionCwd('/tmp')).toBeNull();
+    expect(lifoCwdToSessionCwd('/home/user')).toBeNull();
+    expect(lifoCwdToSessionCwd('/workspacex')).toBeNull(); // 前缀误判防护
   });
 });
 

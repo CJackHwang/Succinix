@@ -354,7 +354,7 @@ async function main() {
     note(`  cmd=${xtermBig.cmd} rtt=${Math.round(xtermBig.ms)}ms bytes=${xtermBig.bytes} lines=${xtermBig.lines} render=${Math.round(xtermBig.renderMs)}ms runtime=${xtermBig.runtime}`);
 
     const result = {
-      version: '0.2.0',
+      version: '0.3.0',
       timestamp: new Date().toISOString(),
       platform: process.platform,
       boot_ms: boot,

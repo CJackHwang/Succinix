@@ -16,7 +16,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | 产品 | SuccinixOS（原 WebUnix）—— 统一品牌，零功能改动 | TASK26 |
 | 引擎 | TerminalExecutor（统一路由：`node|npm|npx` → 真实 Node 子进程；其余 → Lifo 沙箱） | TASK1 |
 | 运行时 | WebContainer + Lifo，共享虚拟化 `node:fs`（浏览器 `wc.fs`、Node 子进程、Lifo —— 同一棵树） | TASK1, README |
-| 版本 | **0.2.0** | CHANGELOG |
+| 版本 | **0.3.0** | CHANGELOG |
 | 许可 | **MIT** © 2026 CJackHwang | README |
 | 浏览器 | 仅 Chromium 系（Chrome/Edge）+ COOP/COEP 跨源隔离 + SharedArrayBuffer | TASK4, README |
 

@@ -19,7 +19,7 @@
 | --- | --- |
 | `npx tsc -p tsconfig.json --noEmit` | 0 errors |
 | `npm run lint` | pass |
-| `npm run test:coverage` | 320 tests / 23 files；95% lines，阈值 70% |
+| `npm run test:coverage` | 334 tests / 26 files；95% lines，阈值 70% |
 | `grep -rn '✅\|❌\|🎉\|GREEN' src/ index.html` | 无匹配 |
 | `node scripts/build-host.mjs` | pass |
 | `npm run build` | pass |
@@ -50,18 +50,19 @@
 
 ### R1. 0.4.0 发布/最终验收未闭环
 
-- `package.json` 版本仍为 `0.3.0`；`packages/engine/package.json` 仍为 `0.1.3`。
+- `package.json` 已本地 bump 为 `0.4.0`（README/bench 版本同步，单一事实来源）；`packages/engine/package.json` 仍为 `0.1.3`（SDK.md 策略：engine 独立 `0.1.x` 线，发布时决定）。
 - `MASTER-PLAN.md` §11 全部为未勾选状态。
-- npm 0.4.0 干净安装、GitHub Release、Vercel 部署站 `?instance=`/`?user=` 均无仓库内证据。
+- npm 0.4.0 干净安装、GitHub Release、Vercel 部署站 `?instance=`/`?user=` 均无仓库内证据（需用户/Hermes 凭据）。
 
 建议：完成 P0/P1 缺陷修复后，由用户/Hermes 执行发布流程并回填 §11。
 
 ### R2. F3/F4 无远程证据
 
 - `.github/workflows/ci.yml` 有 push 门禁和 nightly-scenarios，但本次无法验证线上 job conclusion。
+- `gh auth status` 显示默认 token 已失效（account CJackHwang），推送/触发 CI 需先重新认证。
 - `webunix-development` 技能更新仅出现在计划清单中，仓库内无产物。
 
-建议：修复后跑一次完整 CI，并在验收文档中附 `gh run view` 结果。
+建议：`gh auth login` 后跑一次完整 CI，并在验收文档中附 `gh run view` 结果。
 
 ### R3. instance-demo 未接入自动门禁
 
@@ -311,8 +312,8 @@ scripts/lib/
 
 | ID | 类型 | 优先级 | 问题 | 位置 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 未开始 |
-| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始 |
+| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（本地 bump 0.4.0 + README/bench 版本同步；npm 发布/GitHub Release/Vercel 部署待用户执行） |
+| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始（`gh` token 失效，需重新认证后跑 CI 并回填 `gh run view`） |
 | R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
 | R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb） |
 | D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 已完成（7326bdb） |

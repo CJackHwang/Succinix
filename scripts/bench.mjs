@@ -8,12 +8,13 @@
 //   （默认先 npm run build 再用 vite preview 托管 dist/；--skip-build 要求 dist/ 已是最新。）
 // 输出：JSON 单行到 stdout（CI 可复用）；进度日志走 stderr。
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
 import { connectPageCDP, evalValue } from './lib/cdp.mjs';
 import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
+const PKG_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
 const portIdx = args.indexOf('--port');
@@ -215,7 +216,7 @@ async function main() {
     note(`  cmd=${xtermBig.cmd} rtt=${Math.round(xtermBig.ms)}ms bytes=${xtermBig.bytes} lines=${xtermBig.lines} render=${Math.round(xtermBig.renderMs)}ms runtime=${xtermBig.runtime}`);
 
     const result = {
-      version: '0.3.0',
+      version: PKG_VERSION,
       timestamp: new Date().toISOString(),
       platform: process.platform,
       boot_ms: boot,

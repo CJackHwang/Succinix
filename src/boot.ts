@@ -26,7 +26,7 @@ export type SuccinixServices = TerminalBootResult;
 
 // 日志采集在这里接线：采集条目类型用引擎导出的 CommandLogEntry（结构性兼容），
 // 前端过滤纯轮询 ps（避免刷屏）并落盘 /var/log/succinix.log。
-function makeClientLogger(): (entry: CommandLogEntry) => void {
+export function makeClientLogger(): (entry: CommandLogEntry) => void {
   return (entry) => {
     if (entry.command.trim() !== 'ps') {
       void log('INFO', `cmd: ${entry.command} exit=${entry.exit} runtime=${entry.runtime}`);

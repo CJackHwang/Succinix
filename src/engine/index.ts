@@ -47,6 +47,9 @@ export interface TerminalExecutor {
   /** 看门狗直接探活（P1-3）：绕过互斥队列 —— 长命令占着队列时也能及时确认 host 存活。
    *  true=host 存活（pong）；false=超时；null=通道忙（有排队未启动请求 / 刚写入在途 cmd.json），本轮跳过（中性）。 */
   pingDirect(timeoutMs?: number): Promise<boolean | null>;
+  /** Ctrl+C 真中断（P5-15）：绕过互斥队列直接发 interrupt；pid 为数字 = 已向该进程发 kill；
+   *  pid 为 null = 无当前 run 可中断；null = 通道忙 / 无法发送。 */
+  interruptDirect(timeoutMs?: number): Promise<ExecResult | null>;
   /** 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
    *  cmd.json），重新注入资产并等待就绪。返回后 host 可立即接受命令。 */
   respawn(): Promise<void>;
@@ -142,6 +145,13 @@ class TerminalExecutorImpl implements TerminalExecutor {
   private hostProc: WebContainerProcess | null = null;
   private opts: EngineBootHooks = {};
 
+  /** 复用已 boot 的 client / host（createTerminalExecutor(seed) 用；避免双 host） */
+  seed(s: { wc?: WebContainer | null; client?: TerminalClient | null; hostProc?: WebContainerProcess | null }): void {
+    this.wc = s.wc ?? null;
+    this.client = s.client ?? null;
+    this.hostProc = s.hostProc ?? null;
+  }
+
   async boot(wc: WebContainer, opts: EngineBootHooks = {}): Promise<void> {
     this.wc = wc;
     this.opts = opts;
@@ -194,6 +204,10 @@ class TerminalExecutorImpl implements TerminalExecutor {
     return client.pingDirect(timeoutMs);
   }
 
+  async interruptDirect(timeoutMs = 2000): Promise<ExecResult | null> {
+    return this.requireClient().interruptDirect(timeoutMs);
+  }
+
   // 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
   // cmd.json），重新注入资产并等待就绪。引擎自包含 —— kill-before-spawn 就地实现，
   // 不依赖系统层 host-restart.ts。
@@ -239,6 +253,16 @@ class TerminalExecutorImpl implements TerminalExecutor {
   }
 }
 
-export function createTerminalExecutor(): TerminalExecutor {
-  return new TerminalExecutorImpl();
+/** 构造命令式通道。可选 seed 复用已 boot 的 client（宿主 boot 流程已拉起 host 时，
+ *  直接包装既有 TerminalClient，避免双 host；未传时行为不变 —— boot(wc) 自建 client）。 */
+export function createTerminalExecutor(seed?: {
+  wc?: WebContainer | null;
+  client?: TerminalClient | null;
+  hostProc?: WebContainerProcess | null;
+}): TerminalExecutor {
+  const impl = new TerminalExecutorImpl();
+  if (seed) {
+    impl.seed(seed);
+  }
+  return impl;
 }

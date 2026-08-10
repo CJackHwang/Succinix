@@ -69,6 +69,8 @@ export interface TerminalSessionOptions {
   beforeRpc?: (command: string) => Promise<void>;
   /** RPC 失败 / 本地命令异常回调（应用层决定 ERROR 日志落盘） */
   onCommandError?: (command: string, error: string, phase: 'local' | 'pre' | 'rpc') => void;
+  /** 首提示符 / 每次重绘提示符回调（bench 模式记录首提示符时间戳用） */
+  onPrompt?: () => void;
   /** 呈现着色（缺省无色，纯文本；应用层注入主题色） */
   colors?: { red(s: string): string; gray(s: string): string; amber(s: string): string };
 }
@@ -145,11 +147,17 @@ export class SuccinixTerminalSession {
     return this.cwd;
   }
 
+  /** 显式设置会话 cwd（boot 后从 host 取一次真实值 / 实例工厂注入初始 cwd 用） */
+  setCwd(cwd: string): void {
+    this.cwd = cwd;
+  }
+
   // 重绘提示符（清行 + 新提示符 + 当前输入）。公开供宿主在外部状态变化后调用。
   prompt(): void {
     if (this.disposed) return;
     this.output.write('\r\n' + this.getPrompt());
     this.line = '';
+    this.options.onPrompt?.();
   }
 
   // 浏览器侧输入处理：回车执行、Ctrl+L 清屏、Ctrl+C 中断、支持粘贴。

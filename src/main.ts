@@ -1,30 +1,35 @@
 // Succinix 入口：全屏暗橙终端 + REPL；boot 日志全程写入终端（无 DOM splash 覆盖层）。
-// 默认进入终端；URL 带 ?test=1 时在终端里自动跑完整系统自检（boot diagnostics）。
+// E3：main.ts 重构为组装层 —— xterm 呈现 + 应用特性（看门狗/自动快照/开发钩子）+ 装配
+// Terminal SDK（SuccinixTerminalSession + createTerminalBoot）。交互状态机（历史/补全/
+// 真中断/队列/提示符 cwd）已迁移到 src/terminal/session.ts；commands.ts 经薄适配层注入。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
-import { bootSuccinix } from './boot.js';
+import { makeClientLogger, type SuccinixServices } from './boot.js';
 import { createBootUI } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
-import { sessionCwdToBrowserPath, sessionCwdPromptLabel } from './engine/host-route.js';
 import { log } from './log.js';
 import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
-import { respawnWithKillFirst } from './host-restart.js';
 import { AMBER, RED, GRAY, RESET } from './theme.js';
-import { sleep } from './util.js';
 import { SUCCINIX_VERSION } from './version.js';
-import type { ExecResult } from './engine/index.js';
-import { ensurePythonRuntime } from './engine/index.js';
+import { ensurePythonRuntime, createTerminalExecutor } from './engine/index.js';
+import {
+  SuccinixTerminalSession,
+  createTerminalBoot,
+  DEFAULT_BOOT_STEPS,
+  type TerminalOutput,
+  type TerminalRpc,
+  type LocalCommandHandler,
+} from './terminal/index.js';
 
-// 欢迎横幅：boot 日志之后显示在终端里（TASK3 的"启动后进入系统首页"）。
-// TASK15：默认横幅改由 /etc/succinix.motd 提供（可编辑、随快照持久）；此处仅作
-// motd 文件缺失时的兜底。版本号构建期注入（P2-7，随 package.json 单一来源）。
+// 欢迎横幅：boot 日志之后显示在终端里。默认横幅由 /etc/succinix.motd 提供（可编辑、
+// 随快照持久）；此处仅作 motd 文件缺失时的兜底。版本号构建期注入（随 package.json 单一来源）。
 const WELCOME_BANNER =
   `Succinix ${SUCCINIX_VERSION} — kernel: JS runtime + WebContainer | userland: Lifo | exec: TerminalExecutor\n` +
   `Type 'help' to see available commands.`;
@@ -68,351 +73,98 @@ term.open(document.getElementById('terminal')!);
 fitAddon.fit();
 window.addEventListener('resize', () => fitAddon.fit());
 
-// ─── REPL 状态 ───
-// 提示符前缀；目录段随会话 cwd 动态渲染（cd 后提示符跟随，~ = /workspace）。
-const promptPrefix = 'guest@succinix:';
-// 浏览器侧缓存的会话 cwd（Lifo 视图）：初始 /workspace（即提示符初始 `~` 所指），
-// cd 成功后由 run 结果的 cwd 字段更新，boot 后取一次真实值（支持刷新后持久化的 cwd）。
-let sessionCwd = '/workspace';
-function promptStr(): string {
-  return `${promptPrefix}${sessionCwdPromptLabel(sessionCwd)}$ `;
-}
-let line = '';
-let busy = false;
-const queue: string[] = [];
-// P5-16：命令历史（内存，会话内有效）+ 上下箭头浏览位置。historyIdx 指向当前浏览条目；
-// 末尾哨兵 = history.length（新输入，按上箭头回退到最后一条）。
-const history: string[] = [];
-let historyIdx = -1;
-let ctx: CommandContext;
-// R1（TASK-BOOTGATE）：boot 门禁 —— boot（含可选 ?test=1 自检）完成前为 false，
-// handleData 静默忽略一切输入（不 echo、不排队、不执行）。boot 失败路径不置位（错误页常驻）。
-let booted = false;
-
-const testMode = new URLSearchParams(location.search).get('test') === '1';
-// TASK18：性能基准模式（scripts/bench.mjs 用 ?bench=1 打开）。与 ?test=1 完全独立：
-// 正常走 boot 全流程（无自检），仅多暴露内部句柄 + 记录首提示符时间戳，供 headless Chrome 测量。
+// 模式（与既有开发钩子形状完全一致，scripts/bench.mjs / scenarios.mjs / verify-deploy.mjs 依赖）。
 const benchMode = new URLSearchParams(location.search).get('bench') === '1';
-// TASK19：场景测试驱动模式（scripts/scenarios.mjs 用 ?scenario=1 打开）。与 ?test=1 / ?bench=1
-// 独立：正常走 boot 全流程，暴露 window.__succinixScenario 供 headless Chrome 驱动真实命令。
 const scenarioMode = new URLSearchParams(location.search).get('scenario') === '1';
 
 // TASK18：bench 模式记录首提示符出现时间（基准脚本读 window.__bootTimes.prompt）。
-// 只在 bench 模式下有微小分支开销，正常会话零影响。
 function benchMarkPrompt(): void {
   if (!benchMode) return;
   const t = (window as unknown as { __bootTimes?: { prompt: number | null } }).__bootTimes;
   if (t && t.prompt === null) t.prompt = performance.now();
 }
 
-function prompt(): void {
-  term.write('\r\n' + promptStr());
-  line = '';
-  benchMarkPrompt();
-}
+// ─── TerminalOutput 适配（SDK 契约 ≤10 行；xterm 只在应用层）───
+const output: TerminalOutput = {
+  write: (d) => term.write(d),
+  clear: () => term.clear(),
+};
 
-// 浏览器侧输入处理：回车执行、Ctrl+L 清屏、Ctrl+C 中断、支持粘贴。
-function handleData(data: string): void {
-  // R1：boot 门禁 —— boot（含 ?test=1 自检）完成前静默忽略一切输入。
-  // 不 echo、不排队、不显示提示；Ctrl+L/Ctrl+C/退格等控制键一并忽略。
-  if (!booted) return;
-  // P5-16：完整转义序列 —— xterm 把箭头/Tab 作为单条 data 交付（onData 合并字节）。
-  if (data === '\x1b[A') {
-    historyNavigate(-1);
-    return;
-  }
-  if (data === '\x1b[B') {
-    historyNavigate(1);
-    return;
-  }
-  if (data === '\t' || data === '\x1b[Z') {
-    void handleTab();
-    return;
-  }
-  for (let i = 0; i < data.length; i++) {
-    const ch = data[i];
-    if (ch === '\x1b') {
-      // 残缺/未知转义序列（顶部已处理完整箭头/Tab）：丢弃整段，避免把 '[' / 字母回显成乱码。
-      i = data.length;
-      continue;
-    }
-    if (ch === '\r') {
-      term.write('\r\n');
-      const cmd = line;
-      line = '';
-      const trimmed = cmd.trim();
-      // P5-16：非空命令进历史（busy 排队也一样记录），浏览位置复位到末尾。
-      if (trimmed) {
-        history.push(cmd);
-        historyIdx = history.length;
-      }
-      if (busy) {
-        if (trimmed) {
-          queue.push(trimmed);
-          term.write(`${GRAY}queued: will run after the current command finishes${RESET}\r\n`);
-        }
-        return;
-      }
-      if (!trimmed) {
-        // 空命令：只换到下一行提示符，不发 host（否则 host 会回一个 "empty command" 错误）。
-        term.write(promptStr());
-        return;
-      }
-      void runCommand(cmd);
-      return;
-    }
-    if (ch === '\u007f' || ch === '\b') {
-      if (line.length > 0) {
-        line = line.slice(0, -1);
-        term.write('\b \b');
-      }
-      continue;
-    }
-    if (ch === '\u0003') {
-      if (busy) {
-        term.write(`^C\r\n`);
-        // P5-15/17：Ctrl+C 中断当前命令 + 清空队列。当前命令 settle 后 runCommand 的
-        // finally 会回到提示符（队列已清空，不会接续执行被丢弃的命令）。
-        void interruptCommand();
-      } else {
-        term.write('^C\r\n');
-        prompt();
-      }
-      continue;
-    }
-    if (ch === '\u000c') {
-      term.clear();
-      term.write(promptStr() + line);
-      continue;
-    }
-    // 单个 Tab 已在循环前整体处理（补全）。粘贴内容里的嵌入式 tab（0x09 < ' '）由下方
-    // `ch >= ' '` 守卫一并丢弃，不进入命令行 —— 无需单独分支。
-    if (ch >= ' ') {
-      line += ch;
-      term.write(ch);
-    }
-  }
-}
-term.onData(handleData);
-
-// P5-16：上下箭头浏览命令历史。方向 dir：-1=上（旧），+1=下（新）。
-// 底部哨兵 = history.length（回到"正在输入的新行"）。重绘时先清当前行再写历史行。
-function historyNavigate(dir: -1 | 1): void {
-  if (history.length === 0) return;
-  const next = historyIdx + dir;
-  if (next < 0 || next > history.length) return; // 越界忽略
-  historyIdx = next;
-  const entry = historyIdx < history.length ? history[historyIdx] ?? '' : '';
-  term.write(`\r${promptStr()}${' '.repeat(line.length)}\r${promptStr()}`);
-  line = entry;
-  term.write(entry);
-}
-
-// 内置命令表（P5-16 Tab 补全候选；与 commands.ts tryHandleLocalCommand 的 case 对齐）。
-const BUILTIN_COMMANDS = [
+// ─── commands.ts 薄适配层 ───
+// 闭包捕获 CommandContext 所需字段（wc/client/ports/fit/hostProc）；term 用
+// { writeln, write, clear } shim 桥接 TerminalOutput —— commands.ts 本身不改。
+const LOCAL_COMMAND_NAMES = [
   'help', 'clear', 'sysinfo', 'ports', 'db', 'snapshot', 'free', 'top', 'reboot', 'shutdown',
   'cache', 'workspace', 'env', 'settings', 'service', 'log', 'pkg', 'netstat', 'ip', 'uname',
   'motd', 'lang', 'pwd', 'version', 'whoami',
 ];
 
-function commonPrefix(xs: string[]): string {
-  if (xs.length === 0) return '';
-  let p = xs[0];
-  for (const x of xs.slice(1)) {
-    while (!x.startsWith(p)) p = p.slice(0, -1);
-  }
-  return p;
-}
-
-// P5-16：Tab 补全 —— 首 token 补内置命令名；含 / 的 token 按目录 readdir 补文件路径；
-// 无 / 的 token 按**会话 cwd**（host cwd 协议取得）补当前目录条目。唯一命中直接补全，多命中列出 + 共同前缀。
-async function handleTab(): Promise<void> {
-  const tokens = line.split(/\s+/);
-  const token = tokens[tokens.length - 1] ?? '';
-  const candidates = new Set<string>();
-  if (tokens.length === 1) {
-    for (const c of BUILTIN_COMMANDS) candidates.add(c);
-  }
-  try {
-    const hasSlash = token.includes('/');
-    // P5-16 复审：无斜杠 token 按会话 cwd 补全（cd /workspace/proj 之后 cat fi<Tab> 补当前目录，
-    // 而非根目录）。经 host cwd 协议取会话 cwd —— client.exec 不经 onCommand，不产生命令日志；
-    // 会话 cwd 是 Lifo 视图，经 sessionCwdToBrowserPath 映射到浏览器可读路径。busy 时跳过 RPC 回落根目录。
-    let dir = '/';
-    if (hasSlash) {
-      dir = token.slice(0, token.lastIndexOf('/') + 1) || '/';
-    } else if (!busy) {
-      try {
-        const r = await ctx.client.exec('cwd');
-        if (r.cwd) dir = sessionCwdToBrowserPath(String(r.cwd));
-      } catch {
-        /* cwd 不可得：回落根目录 */
-      }
-    }
-    const entries = await ctx.wc.fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const name = String(e.name);
-      const isDir = typeof e.isDirectory === 'function' && e.isDirectory();
-      // 无斜杠 token：候选是「当前目录下的条目名」（相对），补全后命令在会话 cwd 里执行；
-      // 含 / 的 token：候选是 dir + 名称（绝对路径）。
-      candidates.add((hasSlash ? dir : '') + name + (isDir ? '/' : ''));
-    }
-  } catch {
-    /* 目录不可读：只保留内置命令候选 */
-  }
-  const matches = [...candidates].filter((c) => c.startsWith(token)).sort();
-  if (matches.length === 0) return;
-  if (matches.length === 1) {
-    const add = matches[0].slice(token.length);
-    line += add;
-    term.write(add);
-    return;
-  }
-  const common = commonPrefix(matches);
-  if (common.length > token.length) {
-    const add = common.slice(token.length);
-    line += add;
-    term.write(add);
-    return;
-  }
-  // 多候选且无共同前缀：列出候选并重绘提示符。
-  term.write(`\r\n${matches.join('  ')}\r\n${promptStr()}${line}`);
-}
-
-// 协议命令（ps/cwd/kill/spawn...）没有 stdout，直接呈现字段。
-function printProtocolResponse(res: ExecResult): void {
-  if (Array.isArray(res.processes)) {
-    term.writeln('PID  STATUS  COMMAND');
-    for (const p of res.processes) {
-      const row = p as { pid: number; status: string; cmd: string; outputTail?: string };
-      const status = row.status === 'running' ? AMBER + 'running' + RESET : GRAY + 'exited' + RESET;
-      term.writeln(`${String(row.pid).padEnd(6)}  ${status}  ${row.cmd ?? ''}`);
-      if (row.outputTail) {
-        term.writeln(`         ${GRAY}output tail: ${row.outputTail.slice(-120)}${RESET}`);
-      }
-    }
-    return;
-  }
-  if (typeof res.pid === 'number') {
-    term.writeln(`started in background (pid=${res.pid}, runtime=${res.runtime ?? '?'})`);
-    return;
-  }
-  if (res.cwd) {
-    term.writeln(String(res.cwd));
-    return;
-  }
-  if (res.message) {
-    term.writeln(String(res.message));
-    return;
-  }
-  if (res.kind === 'bye') term.writeln('bye');
-}
-
-// P2-10：execute / scenarioRun 的共享核心 —— python 预注入 + client.terminal RPC 调用。
-// 浏览器侧拦截（tryHandleLocalCommand）留在各调用方（两者语义不同：execute 写终端 + 记日志，
-// scenarioRun 捕获进 lines）。phase 区分 python 资产注入失败与 RPC 失败（execute 的日志文案不同）。
-type HostRpcOutcome = { res: ExecResult } | { error: string; phase: 'python' | 'rpc' };
-
-async function callHostRpc(ctx: CommandContext, cmd: string, timeoutMs: number): Promise<HostRpcOutcome> {
-  // TASK27：python/pip 命令（含链中段，如 `echo hi && python -c ...`）首用前懒注入运行时资产。
-  // 宽松触发（tokenize 后任一 token 为 python/python3/pip/pip3）——注入幂等，~13MB 仅一次。
-  if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
-    try {
-      await ensurePythonRuntime(ctx.wc);
-    } catch (e) {
-      return { error: String(e), phase: 'python' };
-    }
-  }
-  try {
-    return { res: await ctx.client.terminal(cmd, undefined, timeoutMs) };
-  } catch (e) {
-    return { error: String(e), phase: 'rpc' };
-  }
-}
-
-// 执行一条命令：浏览器侧拦截 → 否则发 host；输出前空行分隔，stderr 红色，exit≠0 灰色标注。
-// TASK12：本地命令记录 runtime=browser（log clear 除外：它清空日志文件，记录会破坏"清空后为空"语义）；
-// host 命令由 TerminalClient 记录；exec 异常 / host 掉线记 ERROR。
-async function execute(cmd: string): Promise<void> {
-  term.write('\r\n'); // 输出前空行分隔，可读性好
-  let handled: boolean;
-  try {
-    handled = await tryHandleLocalCommand(ctx, cmd);
-  } catch (e) {
-    term.write(`${RED}${String(e)}${RESET}`);
-    void log('ERROR', `cmd: ${cmd} error: ${String(e)}`);
-    return;
-  }
-  if (handled) {
-    if (!/^log\s+clear\b/.test(cmd.trim())) {
-      void log('INFO', `cmd: ${cmd} exit=0 runtime=browser`);
-    }
-    return;
-  }
-
-  const rpc = await callHostRpc(ctx, cmd, 60000);
-  if ('error' in rpc) {
-    term.write(`${RED}${rpc.error}${RESET}`);
-    void log(
-      'ERROR',
-      rpc.phase === 'python' ? `cmd: ${cmd} python asset inject failed: ${rpc.error}` : `cmd: ${cmd} error: ${rpc.error}`
-    );
-    return;
-  }
-  const res = rpc.res;
-  // 提示符跟随：成功的 cd（run 结果带 cwd 字段，Lifo 视图）同步浏览器缓存，
-  // 下一次 prompt() 即显示新目录（如 guest@succinix:~/proj$）。仅 exitCode===0 的 cd 带 cwd。
-  if (typeof res.cwd === 'string') sessionCwd = res.cwd;
-
-  // 协议命令响应直接呈现
-  if (Array.isArray(res.processes) || typeof res.pid === 'number' || res.cwd || res.message || res.kind) {
-    printProtocolResponse(res);
-    return;
-  }
-
-  const stdout = String(res.stdout ?? '');
-  const stderr = String(res.stderr ?? '');
-  if (stdout) term.write(stdout);
-  if (stderr) {
-    if (stdout && !stdout.endsWith('\n')) term.write('\r\n');
-    term.write(`${RED}${stderr}${RESET}`);
-  }
-  const code = res.exitCode;
-  if (res.ok === false && typeof code === 'number' && code !== 0) {
-    if ((stdout || stderr) && !(stderr || '').endsWith('\n')) term.write('\r\n');
-    term.write(`${GRAY}[exit ${code}]${RESET}`);
-  }
-  // TASK3 修复：stdout/stderr 均空但 error 存在时显示 error，杜绝静默失败
-  // （如 host 的 { ok:false, error } 协议响应、spawn 的非 node 拒绝、unknown command 等）。
-  if (res.ok === false && !stdout && !stderr && res.error) {
-    term.write(`${RED}${String(res.error)}${RESET}`);
-  }
-}
-
-// TASK19：场景测试驱动 —— 与 execute() 相同分发路径（浏览器侧拦截 → 否则 host RPC），
-// 但输出改为结构化捕获（capture-term shim），供 scripts/scenarios.mjs 做真实断言。
-// 命令形态：browser-side 命令（db/service/workspace/snapshot...）经 tryHandleLocalCommand，
-// 输出收集进 lines；host 命令（node/npm/lifo/ps...）走 client.terminal，返回 stdout/stderr。
-// timeoutMs 仅约束 host 命令的 RPC 等待；browser-side 命令自带长超时（如 db start 的 install）。
-async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000): Promise<Record<string, unknown>> {
-  const lines: string[] = [];
-  const shim = {
-    writeln: (l: unknown) => void lines.push(String(l)),
-    write: (d: unknown) => void lines.push(String(d)),
-    clear: () => {},
+function termShimFor(out: TerminalOutput): Terminal {
+  return {
+    writeln: (l: unknown) => out.write(String(l) + '\r\n'),
+    write: (d: unknown) => out.write(String(d)),
+    clear: () => out.clear(),
   } as unknown as Terminal;
+}
+
+// 每个命令名一个处理器：把 (ctx, args) 还原成完整命令串交给 tryHandleLocalCommand。
+// ctx 是可变引用（boot 完成后赋值），处理器在运行时才取值。
+function makeLocalHandlers(getCtx: () => CommandContext): Record<string, LocalCommandHandler> {
+  const handlers: Record<string, LocalCommandHandler> = {};
+  for (const name of LOCAL_COMMAND_NAMES) {
+    handlers[name] = async (lctx, args) => {
+      const c = getCtx();
+      const handled = await tryHandleLocalCommand({ ...c, term: termShimFor(lctx.output) }, [name, ...args].join(' '));
+      if (!handled) throw new Error(`unknown command: ${name}`);
+    };
+  }
+  return handlers;
+}
+
+// ─── 命令日志采集（对齐既有 /var/log/succinix.log 行为）───
+// host 命令由 TerminalClient.onCommand（boot 注入）落盘；本地命令由 session.onCommand 落盘；
+// 错误由 session.onCommandError 落盘（phase 区分 python 注入失败与 RPC 失败）。
+function makeSessionLogger(): {
+  onCommand: (entry: { command: string; exit: number | null; runtime: string }) => void;
+  onCommandError: (command: string, error: string, phase: 'local' | 'pre' | 'rpc') => void;
+} {
+  return {
+    onCommand: (entry) => {
+      if (entry.runtime === 'browser' && !/^log\s+clear\b/.test(entry.command)) {
+        void log('INFO', `cmd: ${entry.command} exit=0 runtime=browser`);
+      }
+    },
+    onCommandError: (command, error, phase) => {
+      void log('ERROR', phase === 'pre' ? `cmd: ${command} python asset inject failed: ${error}` : `cmd: ${command} error: ${error}`);
+    },
+  };
+}
+
+// ─── 场景测试驱动（TASK19，scripts/scenarios.mjs 用）───
+// 与 execute() 相同分发路径（本地命令经 session.dispatchLocal 捕获，host 命令走 rpcExec），
+// 输出改为结构化捕获（capture shim）。timeoutMs 仅约束 host 命令的 RPC 等待。
+async function scenarioRun(
+  session: SuccinixTerminalSession,
+  services: SuccinixServices,
+  cmd: string,
+  timeoutMs = 60000
+): Promise<Record<string, unknown>> {
+  const lines: string[] = [];
+  const [word, ...args] = cmd.trim().split(/\s+/);
   let handled: boolean;
   try {
-    handled = await tryHandleLocalCommand({ ...ctx, term: shim }, cmd);
+    handled = await session.dispatchLocal(word ?? '', args, {
+      write: (d: string) => void lines.push(d),
+      clear: () => {},
+    });
   } catch (e) {
     return { handled: true, ok: false, error: String(e), output: lines.join('\n'), lines };
   }
   if (handled) {
     return { handled: true, ok: true, output: lines.join('\n'), lines };
   }
-  const rpc = await callHostRpc(ctx, cmd, timeoutMs);
+  const rpc = await session.rpcExec(cmd, timeoutMs);
   if ('error' in rpc) {
-    // python 注入失败 / RPC 失败都按 thrown 处理（与旧实现一致：二者原在同一 try 内）。
     return { handled: false, ok: false, error: rpc.error, thrown: true };
   }
   const res = rpc.res;
@@ -432,88 +184,45 @@ async function scenarioRun(ctx: CommandContext, cmd: string, timeoutMs = 60000):
   };
 }
 
-async function runCommand(cmd: string): Promise<void> {
-  busy = true;
-  try {
-    await execute(cmd);
-  } finally {
-    busy = false;
-    const next = queue.shift();
-    if (next) {
-      void runCommand(next);
-    } else {
-      prompt();
-    }
-  }
-}
-
-// P5-15/17：busy 时 Ctrl+C —— 向 host 发 interrupt（杀掉当前 node run 子进程）并清空队列。
-// 清空先做：之后 runCommand 的 finally 从空队列 shift 不到命令 → 回到提示符。
-// 中断只对 node run 子进程生效；Lifo 沙箱无 abort API、后台 spawn 服务不被误杀（如实提示）。
-async function interruptCommand(): Promise<void> {
-  const discarded = queue.length;
-  queue.length = 0;
-  if (discarded > 0) term.write(`${GRAY}queued commands discarded (${discarded})${RESET}\r\n`);
-  const res = await ctx.client.interruptDirect();
-  if (res && typeof res.pid === 'number') {
-    term.write(`${GRAY}interrupting command (pid=${res.pid})...${RESET}\r\n`);
-  } else if (res) {
-    term.write(`${GRAY}no running node command to interrupt; waiting for the current command to finish${RESET}\r\n`);
-  } else {
-    term.write(`${GRAY}could not send interrupt (channel busy); waiting for the current command to finish${RESET}\r\n`);
-  }
-}
-
-// 自动快照：每 ~2.5s 保存一次容器 FS 快照到 IndexedDB（persist 内部做"内容变化"去重，
-// 文件数/总字节未变就不写 IDB）。另挂 pagehide/beforeunload 兜底：卸载前强制保存一次
-// （force=true 跳过内容缓存——等长编辑在关闭时也必须落盘，否则必丢）。
-// P4-13：空闲退避 —— saveSnapshot 返回 reason='changed'（真实内容/结构变化）时复位 2.5s；
-// 否则（dedup/age 等）连续空闲拉长到 5s/10s/15s（首个间隔后每 2 tick 翻倍、上限 15s）。
-// P0-1 的最大年龄强制（30s）在 persist 内部兜底等长编辑，与退避解耦：即使用户等长编辑后
-// 空闲，也会在 30s 内被年龄强制写盘。
+// ─── 自动快照（每 ~2.5s 保存一次；persist 内部去重 + 空闲退避）───
 const AUTO_SNAPSHOT_BASE_MS = 2500;
 const AUTO_SNAPSHOT_MAX_MS = 15000;
 
-function startAutoSnapshot(ctx: CommandContext): void {
+function startAutoSnapshot(fs: SuccinixServices['wc']['fs']): void {
   let interval = AUTO_SNAPSHOT_BASE_MS;
   let idleTicks = 0;
   const tick = async () => {
     try {
-      const r = await saveSnapshot(ctx.wc.fs);
+      const r = await saveSnapshot(fs);
       if (r.reason === 'changed') {
         idleTicks = 0;
-        interval = AUTO_SNAPSHOT_BASE_MS; // 有真实变化：恢复灵敏
+        interval = AUTO_SNAPSHOT_BASE_MS;
       } else {
         idleTicks++;
-        if (idleTicks >= 2) interval = Math.min(interval * 2, AUTO_SNAPSHOT_MAX_MS); // 空闲退避
+        if (idleTicks >= 2) interval = Math.min(interval * 2, AUTO_SNAPSHOT_MAX_MS);
       }
     } catch (e) {
       console.warn('[persist] auto snapshot failed:', e);
     }
-    setTimeout(tick, interval); // 句柄不保留：定时器自持闭包，随页面卸载由 pagehide flush 兜底
+    setTimeout(tick, interval);
   };
   setTimeout(tick, AUTO_SNAPSHOT_BASE_MS);
   const flush = () => {
-    void saveSnapshot(ctx.wc.fs, true).catch(() => {});
+    void saveSnapshot(fs, true).catch(() => {});
   };
   window.addEventListener('pagehide', flush);
   window.addEventListener('beforeunload', flush);
 }
 
-// TASK16 稳定性：host 失联自动重启。
-// 每 30s ping 一次，连续 2 次失败视为 host 掉线 → 重新注入 host.js + spawn（WARN 日志）。
-// 新 host 的进程表是全新内存表（孤儿进程不在此表内），重启后 ps 干净。
-// r4 B 时效边界：ping 走 pingDirect 绕过 exec 互斥队列——长命令（node 子进程等结果期间）
-// 排队不再阻塞探活。通道忙（有排队未启动请求 / 刚写入在途请求）时本轮跳过（中性，不计成败）；
-// 超时取 30s 以覆盖 host 处理长 Lifo 命令（≤25s）的繁忙窗口，避免繁忙误判为掉线。
-function startHostWatchdog(ctx: CommandContext): void {
+// ─── host 看门狗（每 30s ping，连续 2 次失败 → executor.respawn 重启 host）───
+function startHostWatchdog(executor: ReturnType<typeof createTerminalExecutor>, wc: SuccinixServices['wc']): void {
   let consecutiveFailures = 0;
-  let probing = false; // 上一轮探活未完成（长超时）时跳过本轮，避免重叠
+  let probing = false;
   setInterval(async () => {
     if (probing) return;
     probing = true;
     try {
-      const p = await ctx.client.pingDirect(30000);
+      const p = await executor.pingDirect(30000);
       if (p === true) {
         consecutiveFailures = 0;
         return;
@@ -522,141 +231,135 @@ function startHostWatchdog(ctx: CommandContext): void {
         consecutiveFailures++;
         if (consecutiveFailures >= 2) {
           consecutiveFailures = 0;
-          void restartHost(ctx);
+          void restartHost(executor, wc);
         }
         return;
       }
-      // p === null：通道忙（队列未消化 / 刚写入在途请求），中性：不计成败。
+      // p === null：通道忙，中性不计。
     } finally {
       probing = false;
     }
   }, 30000);
 }
 
-// 重新注入 host.js（容器内缺失时从构建产物拉取）并 spawn 新 host，等待 ping 就绪。
-// TASK18 双 host 竞态修复：spawn 新 host 前先 kill 旧 host 进程。否则旧 host（挂死但进程仍在）
-// 会与新 host 同时轮询 /cmd.json —— 两个 host 都读请求、都写结果文件，命令结果不确定。
-async function restartHost(ctx: CommandContext): Promise<void> {
-  const { term } = ctx;
+// 重新注入 host.js（容器内缺失时从构建产物拉取）并 respawn，等待就绪。
+async function restartHost(executor: ReturnType<typeof createTerminalExecutor>, wc: SuccinixServices['wc']): Promise<void> {
   try {
     term.writeln(`${AMBER}[ WARN ] host unresponsive — re-injecting host.js and respawning${RESET}`);
     void log('WARN', 'host unresponsive — re-injecting host.js and respawning');
     try {
-      await ctx.wc.fs.readFile('/host.js');
-    } catch {
-      const src = await (await fetch('/host.js')).text();
-      await ctx.wc.fs.writeFile('/host.js', src);
-    }
-    // TASK18：lifo-core.js 同 host.js 一起确保存在（host 首个 Lifo 命令动态 import 需要）；
-    // 异步写入不阻塞重启就绪等待（ping 不需要 Lifo 内核）。
-    try {
-      await ctx.wc.fs.readFile('/lifo-core.js');
-    } catch {
-      const src = await (await fetch('/lifo-core.js')).text();
-      void ctx.wc.fs.writeFile('/lifo-core.js', src).catch(() => {});
-    }
-    // kill 旧 host：避免新旧两个 host 同时轮询 cmd.json（见上注释）。
-    // 若旧 host 已崩溃 kill 是 no-op；若只是挂死则真正终止，保证单 host 不变量。
-    // TASK19：kill-before-spawn 提取为可测的 respawnWithKillFirst（自检直接断言顺序）。
-    ctx.hostProc = await respawnWithKillFirst(
-      () => {
-        try {
-          ctx.hostProc?.kill();
-        } catch {
-          /* 旧 host 句柄失效：忽略，spawn 新 host 继续 */
-        }
-      },
-      () => ctx.wc.spawn('node', ['host.js'])
-    );
-    // 等待新 host 就绪：TerminalClient 的 exec 自动指向新 host。
-    let ready = false;
-    for (let i = 0; i < 40; i++) {
+      // 确保 host.js / lifo-core.js 存在（缺失时从构建产物拉取；lifo-core 异步写不阻塞重启就绪）。
       try {
-        const p = await ctx.client.exec('ping', undefined, 2000);
-        if (p.kind === 'pong') {
-          ready = true;
-          break;
-        }
+        await wc.fs.readFile('/host.js');
       } catch {
-        /* host 尚未就绪 */
+        const src = await (await fetch('/host.js')).text();
+        await wc.fs.writeFile('/host.js', src);
       }
-      await sleep(100); // TASK18：与 boot 的 waitForHostReady 对齐，300→100ms
+      try {
+        await wc.fs.readFile('/lifo-core.js');
+      } catch {
+        const src = await (await fetch('/lifo-core.js')).text();
+        void wc.fs.writeFile('/lifo-core.js', src).catch(() => {});
+      }
+    } catch {
+      /* 资产注入失败：respawn 内部仍会尝试 */
     }
-    if (ready) {
-      term.writeln(`${AMBER}[  OK  ] host respawned — process table is clean${RESET}`);
-      void log('WARN', 'host respawned; process table is fresh');
-    } else {
-      term.writeln(`${RED}[ FAIL ] host respawn did not become ready${RESET}`);
-      void log('ERROR', 'host respawn did not become ready');
-    }
+    await executor.respawn();
+    term.writeln(`${AMBER}[  OK  ] host respawned — process table is clean${RESET}`);
+    void log('WARN', 'host respawned; process table is fresh');
   } catch (e) {
     term.writeln(`${RED}[ FAIL ] host restart failed: ${String(e)}${RESET}`);
     void log('ERROR', `host restart failed: ${String(e)}`);
   }
 }
 
-// ─── 主流程 ───
+// ─── 主流程（组装层）───
 async function main(): Promise<void> {
   const ui = createBootUI(term);
+  const logger = makeSessionLogger();
   try {
-    const services = await bootSuccinix(ui);
+    const boot = createTerminalBoot(ui, {
+      steps: [...DEFAULT_BOOT_STEPS],
+      testMode: new URLSearchParams(location.search).get('test') === '1',
+      onCommand: makeClientLogger(),
+    });
+    const services = await boot.boot();
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
     if (!services) return;
-    ctx = { wc: services.wc, client: services.client, ports: services.ports, term, fit: () => fitAddon.fit(), hostProc: services.hostProc };
+    const { wc, client, ports, hostProc } = services;
 
-    // TASK18：?bench=1 时暴露内部句柄（RPC 客户端 / 容器 FS / 终端 / 快照）供 scripts/bench.mjs
-    // 测量命令往返、快照开销、大输出；正常会话不暴露任何内部对象。
+    // 命令式通道：包装已 boot 的 client（复用同一 host，不双 spawn）。
+    const executor = createTerminalExecutor({ wc, client, hostProc });
+    const rpcAdapter: TerminalRpc = {
+      exec: (cmd, _opts, timeoutMs) => executor.exec(cmd, { timeoutMs }),
+      spawn: (cmd, _opts, timeoutMs) => executor.spawn(cmd, { timeoutMs }),
+      listProcesses: () => executor.listProcesses(),
+      kill: (pid) => executor.kill(pid),
+      ping: () => executor.ping(),
+      pingDirect: (timeoutMs) => executor.pingDirect(timeoutMs),
+      interruptDirect: (timeoutMs) => executor.interruptDirect(timeoutMs),
+      readdir: (dir) => wc.fs.readdir(dir, { withFileTypes: true }),
+    };
+
+    let ctx: CommandContext;
+    const getCtx = () => ctx;
+    const session = new SuccinixTerminalSession(rpcAdapter, output, {
+      localHandlers: makeLocalHandlers(getCtx),
+      beforeRpc: async (cmd) => {
+        // python/pip 命令（含链中段）首用前懒注入运行时资产（注入幂等，~13MB 仅一次）。
+        if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
+          await ensurePythonRuntime(wc);
+        }
+      },
+      onCommand: logger.onCommand,
+      onCommandError: logger.onCommandError,
+      onPrompt: benchMarkPrompt,
+      colors: { red: (s) => RED + s + RESET, gray: (s) => GRAY + s + RESET, amber: (s) => AMBER + s + RESET },
+    });
+    term.onData((d) => session.handleData(d));
+
+    ctx = { wc, client, ports, term, fit: () => fitAddon.fit(), hostProc };
+
+    // TASK18：?bench=1 时暴露内部句柄（RPC 客户端 / 容器 FS / 终端 / 快照）。
     if (benchMode) {
-      (window as unknown as { __succinixBench?: unknown }).__succinixBench = {
-        client: ctx.client,
-        wc: ctx.wc,
-        term,
-        saveSnapshot,
-      };
+      (window as unknown as { __succinixBench?: unknown }).__succinixBench = { client, wc, term, saveSnapshot };
     }
 
-    // TASK19：?scenario=1 时暴露场景驱动句柄（scripts/scenarios.mjs 用）。与 bench 句柄独立：
-    // run() 走与 execute() 相同的分发路径（browser 拦截 → host RPC），是真实命令执行的驱动面。
+    // TASK19：?scenario=1 时暴露场景驱动句柄。
     if (scenarioMode) {
       (window as unknown as { __succinixScenario?: unknown }).__succinixScenario = {
         booted: true,
-        client: ctx.client,
-        wc: ctx.wc,
-        ports: ctx.ports,
+        client,
+        wc,
+        ports,
         term,
         saveSnapshot,
-        run: (cmd: string, timeoutMs?: number) => scenarioRun(ctx, cmd, timeoutMs),
+        run: (cmd: string, timeoutMs?: number) => scenarioRun(session, services, cmd, timeoutMs),
       };
     }
 
-    // 应用持久化设置（TASK10）：font-size 在终端显示前生效（xterm options 动态可改）。
-    const fontSizeNum = Number(await getSetting(services.wc.fs, 'font-size'));
+    // 应用持久化设置（TASK10）：font-size 在终端显示前生效。
+    const fontSizeNum = Number(await getSetting(wc.fs, 'font-size'));
     if (Number.isInteger(fontSizeNum) && fontSizeNum >= 8 && fontSizeNum <= 72) {
       term.options.fontSize = fontSizeNum;
     }
 
     let testResult: TestResult | null = null;
     let testCrashed = '';
-    if (testMode) {
-      // 自检期间把用户输入排队，避免与断言互相干扰；自检输出直接写终端。
-      busy = true;
+    if (boot.testMode) {
       try {
-        testResult = await runTests({ wc: services.wc, client: services.client, ports: services.ports, term });
+        testResult = await runTests({ wc, client, ports, term });
       } catch (e) {
-        // 自检自身异常（非环境问题）：显示 self-test crashed，不误报成 Startup failed。
         testCrashed = String(e);
         term.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
-      } finally {
-        busy = false;
       }
     }
 
-    // boot（及可选自检）完成：移除错误页 DOM（终端全程可见），然后打印登录横幅（motd）+ 提示符。
+    // boot（及可选自检）完成：移除错误页 DOM（终端全程可见）。
     await ui.complete();
     fitAddon.fit();
 
-    // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）——结果留在滚动历史可回溯。
-    // 失败 >0 时暗红显示失败行；全绿只打印 summary 行。
+    // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）。
     if (testResult) {
       const summary = `Self-test result: ${testResult.pass} passed, ${testResult.fail} failed, ${testResult.skip} skipped`;
       if (testResult.fail > 0) {
@@ -667,8 +370,6 @@ async function main(): Promise<void> {
       } else {
         term.writeln(`${AMBER}${summary}${RESET}`);
       }
-      // TASK-BOOTUI：自检输出全程走终端（canvas 无法经 DOM 读文本），把结果暴露到
-      // window.__succinixResult，供 scripts/verify-deploy.mjs 的 CDP 轮询读取（?test=1）。
       (window as unknown as { __succinixResult?: { passed: number; failed: number; skipped: number; fails: string[] } }).__succinixResult = {
         passed: testResult.pass,
         failed: testResult.fail,
@@ -679,44 +380,30 @@ async function main(): Promise<void> {
       term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
     }
 
-    // R1：boot（及可选自检）完成，解锁输入。置于 motd + 提示符输出之前：
-    // ?test=1 模式下在自检结果输出后、motd 前；失败路径（catch → ui.fail）不置位。
-    booted = true;
-
-    // 提示符准确性：boot 后取一次真实会话 cwd（host 启动已恢复 /etc/succinix.cwd 的持久值），
-    // 刷新后提示符不再退化成初始 ~。exec 不经 onCommand，不产生命令日志；短超时避免万一
-    // host 此刻无响应时把首提示符推迟到 30s（host 已在 waitForHostReady 确认就绪，正常必快）。
+    // 提示符准确性：boot 后取一次真实会话 cwd（host 启动已恢复 /etc/succinix.cwd 的持久值）。
     try {
-      const cwdRes = await ctx.client.exec('cwd', undefined, 2000);
-      if (cwdRes.cwd) sessionCwd = String(cwdRes.cwd);
+      const cwdRes = await client.exec('cwd', undefined, 2000);
+      if (cwdRes.cwd) session.setCwd(String(cwdRes.cwd));
     } catch {
-      /* host cwd 不可得：保持 /workspace（提示符仍显示 ~） */
+      /* host cwd 不可得：保持 /workspace */
     }
 
-    const motdText = await readMotd(services.wc.fs);
+    const motdText = await readMotd(wc.fs);
     if (motdText) {
       for (const line of motdText.split(/\r?\n/)) term.writeln(line);
     } else {
-      term.writeln(WELCOME_BANNER); // 兜底：motd 文件缺失时保留旧欢迎行
+      term.writeln(WELCOME_BANNER);
     }
 
-    // 持久化主循环：此后每 ~2.5s 自动快照（内容未变不写 IDB）。
-    startAutoSnapshot(ctx);
+    // R1：解锁输入（session.boot 写首提示符；置于 motd 之后）。
+    await session.boot();
 
-    // TASK16 稳定性：host 失联自动重启（每 30s ping，连续 2 次失败重新注入+spawn）。
-    startHostWatchdog(ctx);
-
-    // 容器里任何服务就绪都实时打印暗橙预览提示（覆盖层已移除，走终端）。
-    services.wc.on('server-ready', (port, url) => {
+    // 持久化主循环 + host 看门狗 + 服务就绪预览提示。
+    startAutoSnapshot(wc.fs);
+    startHostWatchdog(executor, wc);
+    wc.on('server-ready', (port, url) => {
       term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
     });
-
-    const next = queue.shift();
-    if (next) {
-      void runCommand(next);
-    } else {
-      prompt();
-    }
   } catch (e) {
     // 启动期异常（host 未就绪等）：在覆盖层内显示错误页并停留。
     ui.fail([`Startup failed: ${String(e)}`], {

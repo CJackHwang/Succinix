@@ -9,6 +9,48 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-10
+
+### 新增（Added）
+
+- **终端 SDK（E1–E4）** —— `SuccinixTerminalSession`：无 UI 终端交互核心（历史 / Tab 补全 /
+  真 Ctrl+C 中断 / 命令队列 / cwd 跟随提示符），基于窄契约 `TerminalRpc` / `TerminalOutput`；
+  `createTerminalBoot` 参数化 boot 流程（步骤 / 重试 / testMode），`BootUI` 进度 marker 复用。
+  独立应用重构为 SDK 之上的薄组装层，行为零变化。新包导出 `@succinix/engine/terminal`
+  （自包含，无 `node:` 引用）。
+- **多实例（M1–M5）** —— `@succinix/engine/instance` 导出
+  `createSuccinixInstance({ wc, instanceId, ... })`：一次调用聚合 executor + 终端会话 +
+  每实例快照持久化、服务与端口视图。实例上下文是协议 **additive** 字段（`instanceId`）：
+  状态文件移至 `/workspace/.succinix-<id>`、IndexedDB 快照按实例键分割、`ps` 按实例过滤、
+  `interrupt` 按实例分键；`?instance=<id>` 以命名实例启动独立应用（双 tab demo，已 e2e 验证）。
+- **多用户语义（U1）** —— `userId` 与 `instanceId` 是同一字段；`?user=<id>`
+  （`?instance=<id>` 的别名）种子每用户 home（`/workspace/users/<id>`）：会话在 home 内启动
+  （提示符 `~`、node/python spawn 从 home 起步）、`whoami`/提示符显示用户，状态 / 快照 /
+  进程视图按用户。host 侧 `kill` 授权拒绝跨实例 kill
+  （`permission denied: process <pid> is not owned by instance '<id>'`）与非默认实例的
+  `system` 进程。文档化声明：**组织性隔离，非安全边界**（AGENTS.md / SDK.md / PROTOCOL.md）。
+
+### 变更（Changed）
+
+- `src/main.ts` 与 `src/boot.ts` 改为在终端 SDK 与实例工厂之上组装应用；boot 步骤 / demo
+  路径共享同一实现（`runApplicationBootSteps`）。
+- `?test=1` 自检增至 **76 passed, 0 failed, 5 skipped**；Vitest 套件增至 **320 用例 / 23 文件**
+  （实例协议/路径、多用户 kill 授权、用户 home 种子、host 路由）。
+- `scripts/instance-demo.mjs` 现覆盖双 tab `?instance=` 与双用户 `?user=` 隔离（27/27 检查）。
+
+### 修复（Fixed）
+
+- U1 demo 接线的 TypeScript 错误（未用导入 / 选项类型）在 commit 前被 tsc 门禁拦截。
+
+### 性能（2026-08-10 本机实测）
+
+- `public/host.js` 从 ~5 KB（0.3.0）增至 **15,037 B** —— 按实例/按用户路由（cwd/env/状态
+  Map、`ps` 过滤、`kill` 授权）位于 host daemon；`public/lifo-core.js` 不变
+  （**1,066,097 B**，首个 Lifo 命令懒加载）。
+- `scripts/bench.mjs`：boot overlay → 提示符 **~6.1 s**（主要耗时在 `WebContainer.boot`
+  5.35 s，环境相关），命令往返 **Lifo p50 ≈ 79 ms / Node p50 ≈ 79 ms**（0.3.0 基线 ~80 ms，
+  无回归），快照 N=200 **13 ms**、N=1000 **193 ms**，`seq 1 5000` 渲染 **79 ms**。
+
 ## [0.3.0] — 2026-08-10
 
 ### Changed

@@ -19,15 +19,18 @@ dev server 已配置 WebContainers 所需的 `Cross-Origin-Opener-Policy` / `Cro
 
 ```
 src/
-  main.ts            # 入口：xterm 终端、REPL、boot 编排
-  boot.ts            # 启动序列、系统信息、自检
+  main.ts            # 入口：xterm 终端、REPL、boot 编排（组装层）
+  boot.ts            # 启动序列、系统信息、自检（demo ?instance=/?user= 路径）
   commands.ts        # 浏览器侧命令（help/ports/db/...）
   tests.ts           # 自检套件（?test=1）
   engine/            # TerminalExecutor 引擎（已解耦、可复用——见 README 生态）
     index.ts         # 公开 API：createTerminalExecutor / bootEngineHost / waitForHostReady + 类型
     client.ts        # 文件 RPC 客户端，TerminalClient（原 terminal-client.ts）
-    host.ts          # TerminalExecutor 守护进程，运行于 WebContainer 内（原 host.ts）
-    host-procs.ts    # 统一进程注册表（原 host-procs.ts）
+    host.ts          # TerminalExecutor 守护进程，运行于 WebContainer 内
+    host-route.ts    # host 纯逻辑：路由 / 路径映射 / 按实例过滤 + kill 授权
+    host-procs.ts    # 统一进程注册表
+  terminal/          # 终端 SDK（无 UI 会话 + 参数化 boot；打包为 @succinix/engine/terminal）
+  instance/          # 实例工厂（createSuccinixInstance；打包为 @succinix/engine/instance）
 scripts/build-host.mjs
 ```
 
@@ -50,7 +53,8 @@ scripts/build-host.mjs
 - **文件 RPC（file RPC）**：`/cmd.json` → `/result-<id>.json`。每个请求一个独立结果文件。绝不可回退到单一共享结果文件（它曾导致丢响应竞态，见提交历史）。
 - **路由（routing）**：以 `node`、`npm` 或 `npx` 开头的命令交给真实 Node.js 子进程；其余命令交给 Lifo 沙箱。
 - **统一文件系统（unified filesystem）**：浏览器的 `wc.fs`、Node 子进程与 Lifo 经 WebContainer 虚拟化的 `node:fs` 共享同一个文件系统。不要引入文件系统桥。
-- **数据库（database）**：tinbase 必须以 `--engine wasm --memory` 启动（WebContainer 内无原生二进制）；安装超时必须传主机侧 `{ timeout: 120000 }` 选项。
+- **数据库（database）**：tinbase 必须以 `--engine wasm` 启动（**不带 `--memory`**——数据持久于工作区快照）；安装超时必须传主机侧 `{ timeout: 120000 }` 选项（客户端等待 150000）。
+- **多实例 / 多用户**：仅组织性隔离——按实例/用户分割状态、快照与进程视图；**绝非安全边界**。不添加登录仪式，不伪造权限位。
 
 ## 质量门禁
 

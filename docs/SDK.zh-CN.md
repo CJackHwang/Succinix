@@ -2,9 +2,10 @@
 
 > 中文翻译。英文版为准：见 [SDK.md](SDK.md)
 >
-> 这是**设计文档**，不是已发布的包。它评估如何让*其他*前端项目把 Succinix engine 作为沙箱内嵌，
-> 并给出推荐路径。仓库内解耦已完成（`src/engine/`，线上契约见 [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)）；
-> 本文档决定*分发形态*应该是什么样。
+> 状态：**已发布** —— `@succinix/engine` 在 npm 上（0.1.x 线；**0.4.0** 增加下方 `./terminal`
+> 与 `./instance` 导出，即终端 SDK / 多实例 / 多用户一次发布）。本文档始于 SDK 形态设计建议
+> （形态 A：同页 npm 内嵌），现同时作为宿主的集成参考。线上契约见
+> [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)，能力矩阵见 [FEATURES.zh-CN.md](FEATURES.zh-CN.md)。
 
 ## 目标场景（Target scenario）
 
@@ -132,7 +133,7 @@ await term.dispose();
 每个阶段以前一阶段为门禁；没有一个阶段改变线上协议（见 [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)，
 版本 1）。
 
-## 已完成的部分（本任务之后）
+## 当前状态
 
 - `src/engine/index.ts` —— 公开 API：`TerminalClient`、`createTerminalExecutor()`、
   `bootEngineHost`、`waitForHostReady`、类型（`TerminalExecutor`、`ExecResult`、

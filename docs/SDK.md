@@ -162,7 +162,7 @@ app in one command.
 Each stage is gated on the previous one; none of them changes the wire protocol
 (see [PROTOCOL.md](./PROTOCOL.md), version 1).
 
-## What already exists (after this task)
+## Current state
 
 - `src/engine/index.ts` — public API: `TerminalClient`, `createTerminalExecutor()`,
   `bootEngineHost`, `waitForHostReady`, types (`TerminalExecutor`, `ExecResult`,

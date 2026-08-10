@@ -173,7 +173,7 @@ node scripts/verify-deploy.mjs
 | `db status`    | Show database status (port registry + process table)     |
 | `db stop`      | Stop the database                                       |
 | `version`      | Show version                                            |
-| `whoami`       | Show current user (`guest`)                              |
+| `whoami`       | Show current user (`guest`; the user id in `?user=` mode) |
 | `snapshot`     | Persistence status; `snapshot now` saves, `snapshot clear --yes` resets |
 | `free`         | Show memory overview (device + JS heap; sandbox estimates marked `~`)    |
 | `top`          | Live process table — 3 snapshots 2s apart, then exits                    |
@@ -206,7 +206,7 @@ node scripts/verify-deploy.mjs
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **7? passed, 0 failed, ? skipped** (TASK27 run, 2026-08-05, against the minified host bundle; the Python runtime was switched from the python-wasm stdlib-only runtime to the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks were added). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/tests.ts`): **76 passed, 0 failed, 5 skipped** (2026-08-10 run, against the minified host bundle; the Python runtime runs on the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks are included). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -275,7 +275,7 @@ These are environmental constraints, not bugs:
 - **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
 - **lifo packages are session-scoped; npm packages persist**: `lifo install` places packages in the Lifo runtime's in-memory global module directory, so they exist for the current host session and are recreated when the host restarts (a full refresh boots a fresh Lifo kernel). npm packages install into `/node_modules` on the shared filesystem and persist with the workspace snapshot. `pkg list` merges both; the source rule is "lifo if `lifo-pkg-<name>` exists on npm, otherwise npm; lifo wins on a name conflict".
 - **`pkg` installs need registry access**: `pkg install`/`search`/`info` hit the npm registry (via `lifo search` / real npm). When the registry is unreachable the command reports the reason and does not pretend to succeed.
-- **Single-user, no permission bits**: Succinix is a single-user browser sandbox (`guest` is the only user); there is no multi-user login / isolation, and permission-bit management (`chmod` semantics) is not simulated — simulated modes would add no real value.
+- **Multi-user is organizational isolation, no permission bits**: the standalone app stays single-user (`guest` is the only user; `?user=<id>`/`?instance=<id>` embed mode partitions directories, state and process views per user/instance — **not a security boundary**, no real kernel or permission model). Permission-bit management (`chmod` semantics) is not simulated — simulated modes would add no real value.
 - **Chromium-only**: WebContainers requires a Chromium-based browser (Chrome/Edge). Firefox, Safari, and mobile browsers are not supported; the environment-check error page explains the requirements instead of degrading.
 - **Deployment hosts must send custom response headers**: WebContainer's cross-origin isolation requires the COOP/COEP headers configured in `vercel.json`. Hosts that cannot set custom response headers (e.g. some object-storage/CDN static hosting) cannot run Succinix. Vercel's free plan supports custom headers via `vercel.json`.
 - **No Content-Security-Policy header (evaluated, deferred)**: a CSP is not currently sent. WebContainer's internals need `worker-src blob:` (worker bootstrap), `script-src` with `wasm-unsafe-eval` (Lifo/Pyodide), and `connect-src` to the npm registry / Pyodide CDN; a strict CSP risks breaking the runtime. It was evaluated and deliberately deferred rather than shipped unverified (P6-18) — revisit with a `?test=1` + `verify-deploy` pass before enabling.
@@ -298,11 +298,14 @@ src/
     index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
     client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
     host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
+    host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
     host-procs.ts    # unified process registry (was host-procs.ts)
     lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
     python-daemon.ts     # resident Pyodide 314.0.4 daemon CLI (bundled to public/pyodide/python-daemon.js)
     python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
     python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
+  terminal/          # terminal SDK: UI-free session + parameterized boot (@succinix/engine/terminal)
+  instance/          # instance factory: createSuccinixInstance aggregate API (@succinix/engine/instance)
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test

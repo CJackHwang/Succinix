@@ -17,15 +17,18 @@ The dev server is configured with the `Cross-Origin-Opener-Policy` / `Cross-Orig
 
 ```
 src/
-  main.ts            # entry: xterm terminal, REPL, boot orchestration
-  boot.ts            # boot sequence, system info, self-checks
+  main.ts            # entry: xterm terminal, REPL, boot orchestration (assembly layer)
+  boot.ts            # boot sequence, system info, self-checks (demo ?instance=/?user= paths)
   commands.ts        # browser-side commands (help/ports/db/...)
   tests.ts           # self-test suite (?test=1)
   engine/            # TerminalExecutor engine (decoupled, reusable — see README Ecosystem)
     index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
     client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
-    host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
-    host-procs.ts    # unified process registry (was host-procs.ts)
+    host.ts          # TerminalExecutor daemon, runs inside WebContainer
+    host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
+    host-procs.ts    # unified process registry
+  terminal/          # terminal SDK (UI-free session + parameterized boot; packaged as @succinix/engine/terminal)
+  instance/          # instance factory (createSuccinixInstance; packaged as @succinix/engine/instance)
 scripts/build-host.mjs
 ```
 
@@ -48,7 +51,8 @@ These invariants must not be broken:
 - **File RPC**: `/cmd.json` -> `/result-<id>.json`. Each request gets its own result file. Never revert to a single shared result file (it caused a lost-response race, see commit history).
 - **Routing**: commands starting with `node`, `npm`, or `npx` go to a real Node.js child process; everything else goes to the Lifo sandbox.
 - **Unified filesystem**: the browser `wc.fs`, Node child processes, and Lifo all share one filesystem via WebContainer's virtualized `node:fs`. Do not introduce a filesystem bridge.
-- **Database**: tinbase must be started with `--engine wasm --memory` (no native binaries in WebContainer); installation timeouts must pass the host-side `{ timeout: 120000 }` option.
+- **Database**: tinbase must be started with `--engine wasm` (no `--memory` — data persists in the workspace snapshot); installation timeouts must pass the host-side `{ timeout: 120000 }` option (client wait 150000).
+- **Multi-instance / multi-user**: organizational isolation only — per-instance/per-user state, snapshots and process views; never a security boundary. Do not add a login ritual or fake permission bits.
 
 ## Quality Gates
 

@@ -27,6 +27,8 @@
 - **端口管理** — 通过 WebContainer `server-ready` 事件探测服务，`ports` 列出端口与预览 URL。
 - **数据库** — `db start` 在容器内启动真实 Postgres（tinbase，PGlite/WASM 引擎）；`db status` / `db stop` 管理它。
 - **持久化** — 工作区（文件、配置、env、settings、工作区）快照到 IndexedDB，boot 时恢复；刷新永不丢用户文件。`snapshot` 命令查看状态 / 手动保存 / 重置。快照以文本为主：二进制/不可读文件跳过（在保存日志中计数报告）；收集大小超过 ~50 MB 的快照跳过并告警而非写入（`snapshot now` 报告 `skipped (over 50MB limit)`）。tinbase 数据库存储（`.tinbase`，PGlite/WASM）整体排除——它是二进制的，纯文本的部分恢复会损坏它；因此 tinbase 数据在会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新（刷新重建全新 store）。
+- **多实例内嵌（0.4.0）** — `?instance=<id>` 以命名实例启动应用：状态文件、快照、服务/端口视图与进程视图按实例（`ps` 过滤、跨实例 `kill` 拒绝）。不同 id 的双 tab 完全隔离（独立 host + IndexedDB 键）。
+- **多用户语义（0.4.0）** — `?user=<id>`（`?instance=<id>` 的别名）额外种子每用户 home（`/workspace/users/<id>`）：会话在 home 内启动、提示符渲染为 `~`、`whoami` 显示用户，状态/快照/进程视图按用户。**组织性隔离，非安全边界**——无真实内核/权限模型；独立应用仍是 `guest` 单用户（见 AGENTS.zh-CN.md）。
 - **内存管理** — `free` / `top` 提供内存概览（设备 + JS heap；沙箱估算诚实标注），`reboot` 以浏览器重载重启系统（持久化数据存活），`shutdown` 关机，`cache` / `cache clear` 报告与清理可重建缓存（绝不触碰 `/workspace`）。
 - **工作区分拆** — `workspace` 管理多个隔离工作区：每个工作区在独立 `/ws/<name>` 目录，各有文件与状态；`create` / `switch` / `rm` 管理它们，当前工作区记录在 `/ws/.current`（跨刷新持久）。首次 boot 初始化默认 `main` 工作区。
 - **系统配置** — `env` 管理持久环境变量（`/etc/succinix.env`，spawn 时合并进真实 Node 子进程）与 `settings` 管理持久系统设置（`/etc/succinix.settings`）：tinbase 端口（`preview-port`，默认 3001）、初始工作区（`default-workspace`，默认 `main`）、终端字号（`font-size`，实时生效）。两个文件随快照跨刷新持久。
@@ -171,7 +173,7 @@ node scripts/verify-deploy.mjs
 | `db status` | 显示数据库状态（端口注册表 + 进程表） |
 | `db stop` | 停止数据库 |
 | `version` | 显示版本 |
-| `whoami` | 显示当前用户（`guest`） |
+| `whoami` | 显示当前用户（`guest`；`?user=` 模式显示用户 id） |
 | `snapshot` | 持久化状态；`snapshot now` 保存、`snapshot clear --yes` 重置 |
 | `free` | 显示内存概览（设备 + JS heap；沙箱估算标 `~`） |
 | `top` | 实时进程表——间隔 2s 共 3 次快照后退出 |
@@ -201,7 +203,7 @@ node scripts/verify-deploy.mjs
 
 ## 已验证行为
 
-浏览器运行时验证套件结果（见 `src/tests.ts`）：**75 passed, 0 failed, 5 skipped**（TASK25 轮，2026-08-05，针对压缩 host bundle；TASK24 → TASK25 新增语言生态检查：扩展标准库 import、共享 FS 读写、`python -m pip` 明确报错、`npm i -g` EACCES hint）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
+浏览器运行时验证套件结果（见 `src/tests.ts`）：**76 passed, 0 failed, 5 skipped**（2026-08-10 轮，针对压缩 host bundle；语言生态检查含扩展标准库 import、共享 FS 读写、micropip、`npm i -g` EACCES hint）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
 
 - 共享文件系统：浏览器 → Lifo 与 Lifo → 浏览器读写均工作。
 - 路由：`node -e "console.log(21*2)"` → `42`（`runtime=node`）；`npm --version` → 真实 npm 版本；`grep`/`cat`/`wc` → `runtime=lifo`。
@@ -216,7 +218,7 @@ node scripts/verify-deploy.mjs
 - 包：`pkg list` 渲染双通道表（NAME / SOURCE / VERSION）；`pkg search git` 命中 `lifo-pkg-git`（依赖网络——失败按已知边界约定跳过）。
 - 网络视图：`netstat` 把端口注册表渲染为虚拟监听端口表，`netstat -p` 关联 spawn 的 echo server（端口 3456）与进程；`kill` 后端口从表消失。`ip addr` 打印虚拟回环与预览域，诚实标注 `(virtual)`。
 - 系统信息：`uname` 渲染诚实的系统行（`Succinix <version> js-runtime+webcontainer <api-version> <arch>`）与 `-a`/`-r`/`-m` 形态；`-r`/`-m` 参数解析额外经命令分发路径断言（不只 builder）。`motd` 设置 → 读回 → 重置使 `/etc/succinix.motd` 回到默认（零残留）。
-- 冒烟：全部 23 个安全内置命令（help/clear/sysinfo/version/whoami/ports/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown）经浏览器处理器分发无错误；`reboot` 与 `db start` 排除在自动化冒烟外（破坏性/重副作用）。
+- 冒烟：全部 25 个安全内置命令（help/clear/sysinfo/version/whoami/ports/pwd/lang/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown）经浏览器处理器分发无错误；`reboot` 与 `db start` 排除在自动化冒烟外（破坏性/重副作用）。
 - 语言生态（TASK27）：`python -c "print(6*7)"` → `42`（内置 **Pyodide 314.0.4**，Python 3.14.2）；完整标准库 import 矩阵（json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib）全绿且扩展标准库进入自检；`python3 --version` 报 Python 3.14.2；python 读写共享 FS（浏览器 + node 读到同一文件）；`python -m pip install pyparsing` → import 可用（micropip）。权威、以实测为准的矩阵见 **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)**（英文 **[docs/LANGUAGES.md](LANGUAGES.md)**）。
 - 语言防回归（TASK25，场景 S14）：用户实测 5 坑逐条锁定 —— `node --version && npm --version` 链、`node -e` 嵌套引号写文件（穿透 tsc）、`npm i -g` EACCES + hint、cd 同步装包（进项目目录非根 node_modules）、python 真管道。
 - 稳定性：RPC 客户端在单槽 `/cmd.json` 通道上串行化请求（无并行通道竞态），只读命令（ping/ps/cwd）传输失败重试一次，浏览器看门狗连续 2 次 ping 失败后重注入 + 重拉 `host.js`。
@@ -261,7 +263,7 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 - **内置 tinbase 服务需一次安装步骤**：预置 `service` 定义（`tinbase`）跑 `npx tinbase start --port ${PORT} --engine wasm`，要求容器内已装 tinbase。先跑一次 `db start` 完成容器内安装，再 `service start tinbase`。
 - **lifo 包会话级；npm 包持久**：`lifo install` 把包放进 Lifo 运行时的内存全局模块目录，因此只存在于当前 host 会话，host 重启重建（完整刷新启动全新 Lifo 内核）。npm 包装进共享文件系统的 `/node_modules` 并随工作区快照持久。`pkg list` 合并两者；来源规则"`lifo-pkg-<name>` 在 npm 存在走 lifo，否则 npm；同名冲突 lifo 优先"。
 - **`pkg` 安装需要 registry 访问**：`pkg install`/`search`/`info` 访问 npm registry（经 `lifo search` / 真实 npm）。registry 不可达时命令报告原因，不假装成功。
-- **单用户、无权限位**：Succinix 是单用户浏览器沙箱（`guest` 是唯一用户）；无多用户登录/隔离，权限位管理（`chmod` 语义）不模拟——模拟模式无真实价值。
+- **多用户仅为组织性隔离、无权限位**：独立应用仍是单用户（`guest` 是唯一用户；`?user=<id>`/`?instance=<id>` 嵌入模式按用户/实例分割目录、状态与进程视图——**非安全边界**，无真实内核/权限模型）。权限位管理（`chmod` 语义）不模拟——模拟模式无真实价值。
 - **仅 Chromium**：WebContainers 要求 Chromium 系浏览器（Chrome/Edge）。Firefox、Safari 与移动浏览器不支持；环境检查错误页说明要求而非降级。
 - **部署宿主必须能发自定义响应头**：WebContainer 的跨源隔离要求 `vercel.json` 里配置的 COOP/COEP 头。不能设置自定义响应头的托管（如某些对象存储/CDN 静态托管）无法运行 Succinix。Vercel 免费版经 `vercel.json` 支持自定义头。
 - **无 Content-Security-Policy 响应头（已评估、暂缓）**：当前不发送 CSP。WebContainer 内部需要 `worker-src blob:`（worker 引导）、带 `wasm-unsafe-eval` 的 `script-src`（Lifo/Pyodide）、以及指向 npm registry / Pyodide CDN 的 `connect-src`；严格 CSP 有破坏运行时的风险。已评估并有意暂缓而非未验证强上（P6-18）——启用前需经 `?test=1` + `verify-deploy` 一轮验证。
@@ -284,8 +286,11 @@ src/
     index.ts         # 公开 API：createTerminalExecutor / bootEngineHost / waitForHostReady + 类型
     client.ts        # 文件 RPC 客户端，TerminalClient（原 terminal-client.ts）
     host.ts          # TerminalExecutor 守护进程，运行于 WebContainer 内（原 host.ts）
+    host-route.ts    # host 纯逻辑：路由 / 路径映射 / 按实例过滤 + kill 授权
     host-procs.ts    # 统一进程注册表（原 host-procs.ts）
     lifo-core.ts     # 懒加载 @lifo-sh/core 内核入口（打包为 public/lifo-core.js）
+  terminal/          # 终端 SDK：无 UI 会话 + 参数化 boot（@succinix/engine/terminal）
+  instance/          # 实例工厂：createSuccinixInstance 聚合 API（@succinix/engine/instance）
 scripts/
   build-host.mjs     # esbuild 打包容器内 host（host.js + 懒加载 lifo-core.js）
   verify-deploy.mjs  # 部署就绪门禁：build + preview + COOP/COEP + ?test=1 自检
@@ -314,11 +319,11 @@ public/
 
 ## 生态
 
-Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解耦**，因此其他前端项目可以把它作为浏览器原生 Unix 沙箱内嵌。使用方页面启动 WebContainer、调用 `createTerminalExecutor()`，即得共享文件系统的 Shell——带真实 Node 运行时（`node|npm|npx`）与 Lifo Unix 用户态（其余一切）——无需自己构建任何部分。
+Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解耦**，因此其他前端项目可以把它作为浏览器原生 Unix 沙箱内嵌。它以 **`@succinix/engine`** 发布到 npm：`createTerminalExecutor()`（命令式通道）、`@succinix/engine/terminal`（无 UI 终端会话 + boot 编排）、`@succinix/engine/instance`（多实例/多用户聚合工厂）。使用方页面启动 WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python 与 Lifo Unix 用户态（其余一切）——无需自己构建任何部分。内嵌参考见 [docs/SDK.zh-CN.md](SDK.zh-CN.md)。
 
 ### 引擎 API
 
-公开面是 `src/engine/index.ts`（未来的 `@succinix/engine` 包）。每行一句话：
+公开面是 `@succinix/engine`（由 `src/engine/index.ts` 构建；0.1.x 已发布——0.4.0 增加下方 `./terminal` 与 `./instance` 导出）。每行一句话：
 
 | 符号 | 作用 |
 | ---- | ---- |
@@ -338,7 +343,7 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 ### 协议与 SDK 文档
 
 - **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。生态使用方可只凭本文档构建替代客户端或 host，无需读实现。
-- **[docs/SDK.md](SDK.md)** — "把 Succinix 引擎内嵌到不同人的前端项目做沙箱"的 SDK 形态设计：对比 npm 包（同页内嵌、共享文件系统）、iframe 沙箱（硬隔离）与脚手架，并给出推荐路径。
+- **[docs/SDK.md](SDK.md)** — "把 Succinix 引擎内嵌到不同人的前端项目做沙箱"的 SDK 形态设计（已落地为 npm 包）+ 集成参考：对比 npm 包（同页内嵌、共享文件系统）、iframe 沙箱（硬隔离）与脚手架，并给出推荐路径。
 - **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)** — 以实测为准的语言支持矩阵（Python 标准库、Node/TS 工具链、WASI、Ruby 探测、缺失的编译器）。
 
 ### 愿景

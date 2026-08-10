@@ -12,6 +12,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./terminal": {
+      "types": "./dist/terminal/index.d.ts",
+      "import": "./dist/terminal.js",
+      "default": "./dist/terminal.js"
+    },
     "./host.js": "./assets/host.js",
     "./lifo-core.js": "./assets/lifo-core.js",
     "./package.json": "./package.json"

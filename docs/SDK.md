@@ -171,6 +171,78 @@ Each stage is gated on the previous one; none of them changes the wire protocol
 - `docs/PROTOCOL.md` — the authoritative wire contract.
 - This document — the SDK form decision.
 
+## Terminal SDK (embedding a terminal session, 0.4.0)
+
+Since 0.4.0 the package exposes `@succinix/engine/terminal` — a UI-free terminal
+interaction core for hosts that want a full terminal experience (history, Tab
+completion, real Ctrl+C interrupt, command queue, prompt with cwd tracking)
+without bundling xterm. The host brings its own rendering: `TerminalOutput` is a
+two-method contract (`write(data)` / `clear()`), so an xterm adapter is a ~10-line
+shim.
+
+```ts
+import { SuccinixTerminalSession, type TerminalRpc } from '@succinix/engine/terminal';
+import { createTerminalExecutor, type ExecResult } from '@succinix/engine';
+
+const executor = createTerminalExecutor();
+await executor.boot(wc); // inject host.js + spawn + wait ready (once per page)
+
+const rpc: TerminalRpc = {
+  exec: (cmd, _opts, timeoutMs) => executor.exec(cmd, { timeoutMs }),
+  spawn: (cmd, _opts, timeoutMs) => executor.spawn(cmd, { timeoutMs }),
+  listProcesses: () => executor.listProcesses(),
+  kill: (pid) => executor.kill(pid),
+  ping: () => executor.ping(),
+  pingDirect: (t) => executor.pingDirect(t),
+  interruptDirect: (t) => executor.interruptDirect(t),
+};
+
+const session = new SuccinixTerminalSession(rpc, { write: (d) => term.write(d), clear: () => term.clear() }, {
+  localHandlers: { hello: async (ctx, args) => `hello ${args.join(' ')}\n` },
+});
+term.onData((d) => session.handleData(d));
+await session.boot(); // unlock input gate + first prompt
+```
+
+### Contracts
+
+- **`TerminalRpc`** — narrow RPC surface: `exec` (required), plus optional
+  `spawn` / `listProcesses` / `kill` / `ping` / `pingDirect` / `interruptDirect` /
+  `readdir`. `createTerminalExecutor()` satisfies it natively (see
+  [engine index](./PROTOCOL.md)); optional methods degrade safely (e.g. no
+  `readdir` → Tab completion falls back to command names only; no
+  `interruptDirect` → Ctrl+C clears the queue without signaling the host).
+- **`TerminalOutput`** — `{ write(data: string): void; clear(): void }`. The SDK
+  never imports xterm; rendering (colors, font, scrollback) belongs to the host.
+- **Local command injection** — `localHandlers: Record<string, (ctx, args) => ...>`.
+  Built-ins are `help` / `clear` / `pwd` / `echo`; a host-provided handler overrides
+  the built-in with the same name. Commands not in the table go to the RPC unchanged
+  (the host answers `unknown command` semantics).
+- **Boot steps configuration** — `createTerminalBoot(ui, { steps, testMode?, retry?,
+  hostReadyDeadlineMs?, onCommand? })` runs the full boot flow (environment check,
+  WebContainer.boot with retry, host injection/spawn, snapshot restore, workspace
+  init, autostart) with `N/M` progress counting. `steps: string[]` labels the fixed
+  sequence; dynamic steps carry their own messages. The standalone app uses
+  `DEFAULT_BOOT_STEPS` (8 base steps + autostart services).
+
+### Division of labor
+
+- `createTerminalExecutor()` is the **imperative channel** (Agent/host plumbing):
+  boot/exec/spawn/ps/kill/ping/respawn.
+- `SuccinixTerminalSession` is the **interactive session**: it owns line editing,
+  history, completion, queueing, cwd-following prompts and the boot gate, and
+  renders command results through `TerminalOutput`.
+- `createTerminalBoot()` is the **boot orchestrator**: step labels/progress/retry
+  parameterization for hosts that want the same boot UX as the standalone app.
+
+### Packaging notes
+
+- `@succinix/engine/terminal` bundles `session` + `boot` (ESM, `@webcontainer/api`
+  external as a peer dependency). `grep "node:" dist/terminal.js` is empty — the
+  terminal layer is browser-only, like the engine itself.
+- The host owns one executor per page (single host invariant); create multiple
+  sessions over the same RPC channel when you need several terminal views.
+
 ## Version strategy (TASK-S1/S2 decision)
 
 - **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0`, continuity with WebUnix history).

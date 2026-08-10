@@ -141,3 +141,66 @@ await term.dispose();
   构建为 `public/host.js` + `public/lifo-core.js`。
 - `docs/PROTOCOL.md` —— 权威线上契约。
 - 本文档 —— SDK 形态决策。
+
+## 终端 SDK（嵌入终端会话，0.4.0）
+
+自 0.4.0 起包暴露 `@succinix/engine/terminal` —— 无 UI 的终端交互核心，供需要完整终端
+体验（历史 / Tab 补全 / 真 Ctrl+C 中断 / 命令队列 / cwd 跟随提示符）但不想捆绑 xterm 的
+宿主使用。渲染由宿主负责：`TerminalOutput` 只有两个方法（`write(data)` / `clear()`），
+xterm 适配器约 10 行。
+
+```ts
+import { SuccinixTerminalSession, type TerminalRpc } from '@succinix/engine/terminal';
+import { createTerminalExecutor, type ExecResult } from '@succinix/engine';
+
+const executor = createTerminalExecutor();
+await executor.boot(wc); // 注入 host.js + spawn + 就绪（每页一次）
+
+const rpc: TerminalRpc = {
+  exec: (cmd, _opts, timeoutMs) => executor.exec(cmd, { timeoutMs }),
+  spawn: (cmd, _opts, timeoutMs) => executor.spawn(cmd, { timeoutMs }),
+  listProcesses: () => executor.listProcesses(),
+  kill: (pid) => executor.kill(pid),
+  ping: () => executor.ping(),
+  pingDirect: (t) => executor.pingDirect(t),
+  interruptDirect: (t) => executor.interruptDirect(t),
+};
+
+const session = new SuccinixTerminalSession(rpc, { write: (d) => term.write(d), clear: () => term.clear() }, {
+  localHandlers: { hello: async (ctx, args) => `hello ${args.join(' ')}\n` },
+});
+term.onData((d) => session.handleData(d));
+await session.boot(); // 解锁输入门禁 + 首提示符
+```
+
+### 契约
+
+- **`TerminalRpc`** —— 窄 RPC 依赖面：`exec`（必选），可选 `spawn` / `listProcesses` /
+  `kill` / `ping` / `pingDirect` / `interruptDirect` / `readdir`。
+  `createTerminalExecutor()` 天然满足（见 [PROTOCOL.md](./PROTOCOL.md)）；可选方法安全降级
+  （无 `readdir` → Tab 补全只补命令名；无 `interruptDirect` → Ctrl+C 只清队列不通知 host）。
+- **`TerminalOutput`** —— `{ write(data: string): void; clear(): void }`。SDK 从不 import
+  xterm；渲染（颜色 / 字体 / 滚动）归属宿主。
+- **本地命令注入** —— `localHandlers: Record<string, (ctx, args) => ...>`。内置 `help` /
+  `clear` / `pwd` / `echo`；宿主同名处理器覆盖内置。表外命令原样走 RPC（host 回
+  unknown command 语义）。
+- **boot 步骤配置** —— `createTerminalBoot(ui, { steps, testMode?, retry?,
+  hostReadyDeadlineMs?, onCommand? })` 跑完整 boot 流程（环境检查 / WebContainer.boot 重试 /
+  host 注入与 spawn / 快照恢复 / 工作区初始化 / autostart），带 `N/M` 进度计数。
+  `steps: string[]` 是固定序列文案；动态步骤自带消息。独立应用用 `DEFAULT_BOOT_STEPS`
+  （8 基础步 + autostart 服务数）。
+
+### 分工
+
+- `createTerminalExecutor()` 是**命令式通道**（Agent/宿主管道）：boot/exec/spawn/ps/kill/ping/respawn。
+- `SuccinixTerminalSession` 是**交互会话**：行编辑 / 历史 / 补全 / 排队 / cwd 跟随提示符 /
+  boot 门禁，经 `TerminalOutput` 呈现命令结果。
+- `createTerminalBoot()` 是 **boot 编排器**：步骤文案 / 进度 / 重试参数化，给想要与独立
+  应用相同 boot 体验的宿主。
+
+### 打包说明
+
+- `@succinix/engine/terminal` 打包 `session` + `boot`（ESM，`@webcontainer/api` 为 external
+  peer 依赖）。`grep "node:" dist/terminal.js` 为空 —— 与引擎一致，纯浏览器层。
+- 宿主每页一个 executor（单 host 不变量）；需要多个终端视图时在同一 RPC 通道上创建多个
+  session。

@@ -147,9 +147,17 @@ Per-instance semantics on the shared host (one page = one RPC channel + one host
 |------------|----------|
 | State files | Session cwd (`/etc/succinix.cwd`), env (`/etc/succinix.env`), settings / services / autostart / motd / `succinix.engine.json` resolve under the instance state root `<stateRoot>/etc/...` (`stateRoot = /workspace/.succinix-<id>`, default = `/etc`). |
 | `ps`       | With `instanceId`, the response lists only that instance's processes **plus** `system` processes. Without it, all processes (unchanged). Ownership is heuristic (spawn cwd), not a security boundary. |
+| `kill`     | With `instanceId` (non-default), only processes owned by that instance may be killed; `system` processes and foreign/unattributed processes are rejected with `permission denied: process <pid> is not owned by instance '<id>'`. Default instance: unchanged (any table entry). Organizational only — same heuristic caveat as `ps`. |
 | `interrupt` | Only interrupts the requesting instance's current foreground `run` child (`Map<instanceId, pid>`; default key = previous single-value behavior). Interrupting A never kills B's run. |
 | Shared queue | `/cmd.json` remains a single serialized mailbox; `instanceId` only distinguishes ownership. |
 | Shared runtime | The Lifo sandbox is page-level (one per host): interactive Lifo cwd is **not** per-instance. Per-instance cwd is a browser-side logical value; node/python spawns use explicit absolute cwd. See SDK.md "Multi-instance" for the full boundary. |
+
+**Multi-user (U1):** `userId` and `instanceId` are the same field — the demo URL
+`?user=<id>` maps to `instanceId=<id>` plus a per-user home
+(`/workspace/users/<id>`; the session cwd is seeded to the home's Lifo view, so the
+prompt renders `~` and node/python spawns start there). `ps` / `kill` above apply to
+users exactly as to instances; the standalone app (`guest`) keeps the default-instance
+behavior.
 
 Validation note: two browser tabs are independent containers (separate hosts), so they never
 exercise the shared-host `instanceId` routing — that path is covered by protocol-level unit
@@ -227,9 +235,10 @@ settling the result, so result files are bounded even for huge dumps.
   is unchanged.
   - ⚠️ **Not a security boundary.** `scope` is derived from the command string + launch
     cwd and can be spoofed (any user process whose command looks like a system asset is
-    classified `system`). It is for **UI display and query filtering only** — do not use
-    it as a trust basis for permission / isolation / kill interception. For hard
-    semantics, switch to explicit declaration (the spawner passes `scope` at spawn time).
+    classified `system`). It is for **UI display, query filtering and organizational
+    kill authorization only** — do not use it as a trust basis for real permission /
+    security isolation. For hard semantics, switch to explicit declaration (the
+    spawner passes `scope` at spawn time).
 - **`kill`** sends SIGTERM to a table entry; the entry flips to `exited` on the child's
   `close` event. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
   `close` never fires in that case.

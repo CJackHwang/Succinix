@@ -22,7 +22,7 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 
 Browser-environment limits are accepted as-is. Do not build simulations with no real value; if a capability cannot genuinely work, it is omitted or clearly degraded:
 
-- **Multi-user / login / permission isolation.** Single-user browser sandbox; a login ritual without real isolation has no value. `guest` is the only user.
+- **Multi-user / login / permission isolation.** Organizational isolation only (available in embed mode): directories, state, and process views are partitioned per instance/user (`?instance=<id>` / `?user=<id>`); this is **not a security boundary** — there is no real kernel or permission bits. A login ritual without real isolation still has no value; `guest` remains the only user of the standalone app, and permission-bit / `chmod` semantics stay out.
 - **Permission-bit management (`chmod` semantics).** Simulated modes add no value; do not fake them.
 - **Real kernel / apt / native binaries.** Physically impossible in the sandbox. Succinix is a browser-native Linux (JS runtime + Lifo userland).
 - **Inbound external networking.** Ports are virtual previews; tunnels are outbound bridges, not real inbound.

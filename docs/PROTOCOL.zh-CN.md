@@ -135,9 +135,15 @@ TTL（默认 **120 s**）更老的文件。TTL 可经在 host 启动前向 `/etc
 |-------------|------|
 | 状态文件     | 会话 cwd（`/etc/succinix.cwd`）、env（`/etc/succinix.env`）、settings / services / autostart / motd / `succinix.engine.json` 按实例状态根 `<stateRoot>/etc/...` 解析（`stateRoot = /workspace/.succinix-<id>`；默认 = `/etc`）。 |
 | `ps`        | 带 `instanceId` 时只返回该实例进程 **+** `system` 进程；不带时返回全部（现状）。归属是启发式（spawn cwd），非安全边界。 |
+| `kill`      | 带 `instanceId`（非默认）时只能 kill 该实例归属进程；`system` 进程与外部/归属不明进程拒绝：`permission denied: process <pid> is not owned by instance '<id>'`。默认实例不变（可 kill 任意表条目）。组织性拦截，与 `ps` 同为启发式。 |
 | `interrupt` | 只中断请求实例的当前前台 `run` 子进程（`Map<instanceId, pid>`；default 键 = 旧单值行为全等）。中断 A 不会杀 B 的 run。 |
 | 共享队列     | `/cmd.json` 仍是单槽串行邮箱；`instanceId` 只区分归属。 |
 | 共享运行时   | Lifo sandbox 是页面级（每 host 一个）：交互 Lifo cwd **不**按实例同步。每实例 cwd 是浏览器侧逻辑值；node/python spawn 用显式绝对 cwd。完整边界见 SDK.md「多实例」节。 |
+
+**多用户（U1）**：`userId` 与 `instanceId` 是同一字段 —— demo URL `?user=<id>` 映射为
+`instanceId=<id>` 外加每用户 home（`/workspace/users/<id>`；会话 cwd 种子为 home 的
+Lifo 视图，提示符渲染 `~`、node/python spawn 从 home 起步）。上面的 `ps` / `kill`
+对用户与实例完全同义；独立应用（`guest`）保持默认实例行为。
 
 验证盲区（如实标注）：两个浏览器 tab 是独立容器（各自 host），永远不会向共享 host 发
 `instanceId`——同页共享 host 的按实例路由（Map 分键 / ps 过滤 / 按实例 interrupt）由协议级
@@ -203,8 +209,9 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
   `cd /workspace/c-<id> && <cmd>` 时的形态）→ `container` + `containerId`；其余 → `unknown`。
   均为新增字段，既有 `pid/cmd/status/...` 契约不变。
   - ⚠️ **不是安全边界。** `scope` 由命令串 + spawn cwd 推导，可被伪装（任何用户进程只要命令
-    长得像系统资产就会被标为 `system`）。仅用于 **UI 展示与查询过滤**——不可作为权限 / 隔离 /
-    kill 拦截的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传 `scope`）。
+    长得像系统资产就会被标为 `system`）。仅用于 **UI 展示、查询过滤与组织性 kill 授权**——
+    不可作为真实权限 / 安全隔离的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传
+    `scope`）。
 - **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。失败 spawn（如
   ENOENT）显式标记 `exited`，因为该情况下 `close` 永不触发。
 - **Lifo 侧进程仅可列出**——它们不在表中，`kill` 报 "not in process table" 消息而非假装终止。

@@ -285,7 +285,7 @@ daemon per page; instances split directories, state, snapshots and process views
 | Filesystem / interactive cwd | fully separate | shared (Lifo cwd is page-level) |
 | Persistent state / snapshots | fully separate | per-instance keys |
 | Services + port previews | fully separate | per-instance expected-port registry |
-| Process table (`ps`) / `kill` | fully separate | filtered by `instanceId` (host routing) |
+| Process table (`ps`) / `kill` | fully separate | filtered by `instanceId`; cross-instance/user `kill` rejected (host routing) |
 | RPC channel / watchdog | one per page | one shared per page |
 
 ### Sharing rules (same page)
@@ -309,7 +309,19 @@ container — each user gets full runtime isolation from the aggregate API:
 ```ts
 async function userSession(userId: string) {
   const wc = await WebContainer.boot();
-  const inst = await createSuccinixInstance({ wc, instanceId: userId, output: render(userId) });
+  const inst = await createSuccinixInstance({
+    wc,
+    instanceId: userId,
+    home: `/workspace/users/${userId}`, // per-user home (browser wc.fs view)
+    output: render(userId),
+  });
+  await runApplicationBootSteps(instBoot, {
+    wc,
+    client: inst.client,
+    ports: inst.ports,
+    instanceId: userId,
+    userHome: `/workspace/users/${userId}`, // seeds home + session cwd
+  });
   startHostWatchdog(inst.executor, wc); // once per page
   return inst;
 }
@@ -319,6 +331,32 @@ Same-page multi-instance is supported (each instance needs its own client with
 its own `instanceId` and its own `output`), but per DM-11 the shared runtime
 means interactive Lifo cwd and long-running processes are page-level, not
 per-instance.
+
+### Multi-user semantics (0.4.0, U1)
+
+`userId` and `instanceId` are the same field — a user is an instance with a home
+directory. The demo URL `?user=<id>` is an alias of `?instance=<id>` that
+additionally seeds a per-user home.
+
+- **Home convention**: `/workspace/users/<id>` (browser `wc.fs` view; the root
+  `/workspace/users` is overridable). Pass `home` to the factory — the session
+  starts inside the home (Lifo view `/workspace/workspace/users/<id>`) and the
+  prompt renders it as `~` (`alice@succinix:~$`).
+- **Home init**: `runApplicationBootSteps({ userHome })` (or `ensureUserHome`)
+  creates the directory on first boot, seeds a `.succinix` marker file with the
+  user id, and writes the session-cwd state file so the host resumes in the home
+  after refresh.
+- **Process view**: `ps` with a user/instance id returns only that user's
+  processes plus `system`. `kill` from a non-default instance rejects processes
+  not owned by it (`permission denied: process <pid> is not owned by instance
+  '<id>'`), including every `system` process. The default instance (`guest` /
+  standalone app) keeps the pre-0.4.0 behavior: full process table, kill
+  anything.
+- **Identity**: the standalone app remains `guest`-only. Embed hosts pass a
+  `promptPrefix` (e.g. `alice@succinix:`) and a `userId` for `whoami`.
+- **Isolation caveat**: organizational only — process ownership is a
+  cwd/scope heuristic, not a security boundary (see AGENTS.md "Explicitly Not
+  Implemented").
 
 ### statePrefix caveat
 

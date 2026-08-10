@@ -246,7 +246,7 @@ await inst.dispose();                      // 释放会话 + executor（共享 h
 | 文件系统 / 交互 cwd | 完全独立 | 共享（Lifo cwd 页面级） |
 | 持久化状态 / 快照 | 完全独立 | 每实例键 |
 | 服务 + 端口预览 | 完全独立 | 每实例期望端口注册表 |
-| 进程表（`ps`）/ `kill` | 完全独立 | 按 `instanceId` 过滤（host 路由） |
+| 进程表（`ps`）/ `kill` | 完全独立 | 按 `instanceId` 过滤；跨实例/用户 `kill` 拒绝（host 路由） |
 | RPC 通道 / 看门狗 | 每页一个 | 每页共享一个 |
 
 ### 同页共享规则
@@ -267,7 +267,19 @@ await inst.dispose();                      // 释放会话 + executor（共享 h
 ```ts
 async function userSession(userId: string) {
   const wc = await WebContainer.boot();
-  const inst = await createSuccinixInstance({ wc, instanceId: userId, output: render(userId) });
+  const inst = await createSuccinixInstance({
+    wc,
+    instanceId: userId,
+    home: `/workspace/users/${userId}`, // 每用户 home（浏览器 wc.fs 视角）
+    output: render(userId),
+  });
+  await runApplicationBootSteps(instBoot, {
+    wc,
+    client: inst.client,
+    ports: inst.ports,
+    instanceId: userId,
+    userHome: `/workspace/users/${userId}`, // 种子 home + 会话 cwd
+  });
   startHostWatchdog(inst.executor, wc); // 每页一次
   return inst;
 }
@@ -275,6 +287,26 @@ async function userSession(userId: string) {
 
 同页多实例受支持（每实例需自己的 client、自己的 `instanceId` 与自己的 `output`），
 但按 DM-11，共享运行时意味着交互式 Lifo cwd 与长驻进程是页面级，不是实例级。
+
+### 多用户语义（0.4.0，U1）
+
+`userId` 与 `instanceId` 是同一字段 —— 用户 = 带 home 目录的实例。demo URL
+`?user=<id>` 是 `?instance=<id>` 的别名，额外种子每用户 home。
+
+- **home 约定**：`/workspace/users/<id>`（浏览器 `wc.fs` 视角；根
+  `/workspace/users` 可覆盖）。工厂传 `home` —— 会话在 home 内启动（Lifo 视图
+  `/workspace/workspace/users/<id>`），提示符渲染为 `~`（`alice@succinix:~$`）。
+- **home 初始化**：`runApplicationBootSteps({ userHome })`（或 `ensureUserHome`）
+  首次启动创建目录、种子 `.succinix` 标记文件（内容 = 用户 id），并写入会话 cwd
+  状态文件 —— 刷新后 host 仍从 home 恢复会话起点。
+- **进程视图**：带用户/实例 id 的 `ps` 只返回该用户进程 + `system`；非默认实例的
+  `kill` 拒绝非本实例进程（`permission denied: process <pid> is not owned by
+  instance '<id>'`），含全部 `system` 进程。默认实例（`guest` / 独立应用）保持
+  0.4.0 前行为：全表可见、可 kill 任意进程。
+- **身份展示**：独立应用仍是 `guest` 单用户。嵌入宿主可传 `promptPrefix`
+  （如 `alice@succinix:`）与 `userId`（供 `whoami`）。
+- **隔离性质声明**：组织性隔离 —— 进程归属是 cwd/scope 启发式，非安全边界
+  （见 AGENTS.md "Explicitly Not Implemented"）。
 
 ### statePrefix 注意
 

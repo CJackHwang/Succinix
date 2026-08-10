@@ -36,6 +36,10 @@ import {
   parseKillPid,
   shouldRemoveCmdFile,
   CD_PREFIX_RE,
+  DEFAULT_INSTANCE_ID,
+  normalizeInstanceId,
+  instanceStateRootFor,
+  instanceStateFile,
 } from './host-route.js';
 
 const CMD_FILE = 'cmd.json';
@@ -55,9 +59,9 @@ const SPAWN_CONFIRM_MS = 2000;
 // 即 host 视角的 `process.cwd()/etc/succinix.engine.json`；若仍读 node 虚拟系统根 `/etc/...`
 // （bin/dev/etc 那个根）会读不到 → resultTtlMs 覆盖从未生效。统一用 process.cwd() 拼接。
 // 失败静默回落默认值 —— 配置文件是可选优化，不影响协议。
-function loadEngineConfig(): { resultTtlMs?: number } {
+function loadEngineConfig(stateRoot: string): { resultTtlMs?: number } {
   try {
-    const cfgPath = `${process.cwd()}/etc/succinix.engine.json`;
+    const cfgPath = `${stateRoot}/etc/succinix.engine.json`;
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { resultTtlMs?: unknown };
     if (typeof cfg.resultTtlMs === 'number' && Number.isFinite(cfg.resultTtlMs) && cfg.resultTtlMs > 0) {
       return { resultTtlMs: cfg.resultTtlMs };
@@ -68,9 +72,25 @@ function loadEngineConfig(): { resultTtlMs?: number } {
   return {};
 }
 
-// 启动即读一次引擎配置（host 常驻，之后不再变化）。
-const ENGINE_CFG = loadEngineConfig();
-if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs;
+// 引擎配置按实例读取（M2）：浏览器侧 boot 时把配置写到该实例的
+// <stateRoot>/etc/succinix.engine.json；host 按请求携带的 instanceId 解析自身配置路径
+// （全局单份 /etc 配置在多实例下会串扰，禁止）。配置缓存按实例存 —— host 常驻，
+// 每个实例的配置在其首请求时读一次。resultTtlMs 是全局结果文件清理参数，最后一次
+// 加载生效（清理动作是 host 全局的，不按实例区分）。
+const engineCfgByInstance = new Map<string, { resultTtlMs?: number }>();
+
+function getEngineConfig(instanceId: string): { resultTtlMs?: number } {
+  let cfg = engineCfgByInstance.get(instanceId);
+  if (cfg === undefined) {
+    cfg = loadEngineConfig(instanceStateRootFor(instanceId, process.cwd()));
+    if (cfg.resultTtlMs !== undefined) RESULT_TTL_MS = cfg.resultTtlMs;
+    engineCfgByInstance.set(instanceId, cfg);
+  }
+  return cfg;
+}
+
+// 启动即读默认实例配置（host 常驻，之后不再变化；默认实例 = 现状单例语义）。
+getEngineConfig(DEFAULT_INSTANCE_ID);
 
 // ─── 会话 cwd（TASK23，融合基石）───
 // node/npm/npx/python 子进程统一用会话 cwd（初始 = process.cwd()），不再固定 host cwd。
@@ -80,17 +100,17 @@ if (ENGINE_CFG.resultTtlMs !== undefined) RESULT_TTL_MS = ENGINE_CFG.resultTtlMs
 // TASK24 双根修复：浏览器 wc.fs 的 `/` == host 进程 cwd，随快照的 /etc/succinix.cwd 落在
 // `process.cwd()/etc/` 下；若 CWD_FILE 仍用 node 虚拟系统根 `/etc/succinix.cwd`（只读系统根），
 // 写不进去/读不到 → 刷新后 cwd 永久丢失。统一用 process.cwd() 拼接。
-const CWD_FILE = `${process.cwd()}/etc/succinix.cwd`;
 // WORKSPACE_MOUNT / vfsToReal / spawnCwdFor / resolveBrowserPath /
 // pythonRuntimeArgs / lifoSpawndCwd / lifoCwdToSessionCwd / capOutput /
 // MAX_OUTPUT_BYTES 均在 host-route.ts（P1-4）。
 
-// 启动读持久化 cwd；文件缺失 / 目录已不存在（被删）时回落 process.cwd()。
+// 会话 cwd 按实例分键（M2）：同页共享 host 时各实例独立 cwd（缺省 default 键 = 现状单值
+// 全等）。启动读各自持久化 cwd；文件缺失 / 目录已不存在（被删）时回落 process.cwd()。
 // 校验用 vfsToReal 映射到 host 真实路径再 statSync —— 持久化的值可能是 Lifo VFS 路径
 // （/workspace/...），node 虚拟系统根下不存在该路径，直接 existsSync 会误判为失效。
-function loadSessionCwd(): string {
+function loadSessionCwd(instanceId: string): string {
   try {
-    const saved = fs.readFileSync(CWD_FILE, 'utf8').trim();
+    const saved = fs.readFileSync(instanceStateFile(instanceId, process.cwd(), 'etc/succinix.cwd'), 'utf8').trim();
     if (saved) {
       const real = vfsToReal(saved, process.cwd());
       if (fs.existsSync(real) && fs.statSync(real).isDirectory()) {
@@ -103,24 +123,39 @@ function loadSessionCwd(): string {
   return process.cwd();
 }
 
-let sessionCwd = loadSessionCwd();
+const sessionCwdByInstance = new Map<string, string>();
+
+function getSessionCwd(instanceId: string): string {
+  let cwd = sessionCwdByInstance.get(instanceId);
+  if (cwd === undefined) {
+    cwd = loadSessionCwd(instanceId);
+    sessionCwdByInstance.set(instanceId, cwd);
+  }
+  return cwd;
+}
 
 // 持久化会话 cwd。写失败不阻断命令 —— cwd 同步是增强，不因持久化失败把命令报错。
-function persistSessionCwd(): void {
+function persistSessionCwd(instanceId: string, cwd: string): void {
   try {
     // 全新容器可能没有 /etc（浏览器侧只在首次写配置时 mkdir），host 侧写前确保父目录存在。
-    fs.mkdirSync(path.dirname(CWD_FILE), { recursive: true });
-    fs.writeFileSync(CWD_FILE, sessionCwd);
+    const file = instanceStateFile(instanceId, process.cwd(), 'etc/succinix.cwd');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, cwd);
   } catch {
     /* 写失败静默（快照仍会收录当前会话内已同步的 cwd） */
   }
 }
 
+function setSessionCwd(instanceId: string, cwd: string): void {
+  sessionCwdByInstance.set(instanceId, cwd);
+  persistSessionCwd(instanceId, cwd);
+}
+
 // TASK24（自检崩溃根因修复）：子进程 spawn 前必须把 VFS 路径映射回 host 真实路径
 // （/workspace → process.cwd()，/workspace/foo → process.cwd()/foo）；直接 spawn
 // { cwd: '/workspace' } 会因 chdir 失败在 WebContainer 里挂起（spawn 不报 ENOENT）。
-function spawnCwd(): string {
-  return spawnCwdFor(sessionCwd, process.cwd());
+function spawnCwd(instanceId: string): string {
+  return spawnCwdFor(getSessionCwd(instanceId), process.cwd());
 }
 
 // TASK18：Lifo 内核懒加载 + 延迟预热（评估成本后的选择）。
@@ -170,11 +205,13 @@ function getSandbox(): Promise<Awaited<ReturnType<typeof import('./lifo-core.js'
 // 每个命令把 ctx.args 直传给真二进制（python 是 node 加载运行时脚本），输出累积后写入
 // ctx.stdout/stderr（管道/链在 shell 层已接好，写 ctx 流即进管道）。stderr 累积以支持 EACCES 提示追加。
 // cwd 用 Lifo 命令上下文的 VFS cwd 映射回 host 真实路径（链内 `cd /workspace/sub` 也能跟随，
-// 与 runNode 的 spawnCwd() 语义一致）；非 /workspace 的 Lifo 私有路径回落会话 cwd。
+// 与 runNode 的 spawnCwd(instanceId) 语义一致）；非 /workspace 的 Lifo 私有路径回落会话 cwd。
 function registerRealBinaryCommands(
   sandbox: Awaited<ReturnType<typeof import('./lifo-core.js').Sandbox.create>>
 ): void {
-  const lifoSpawnCwd = (vfsCwd: string): string => lifoSpawndCwd(vfsCwd, sessionCwd, process.cwd());
+  // M2：Lifo 混合链的 node/python 转发在「当前在途请求」的实例上下文里执行（单 host 串行
+  // 处理请求，currentInstanceId 即请求所属实例）；cwd/环境按该实例解析。
+  const lifoSpawnCwd = (vfsCwd: string): string => lifoSpawndCwd(vfsCwd, getSessionCwd(currentInstanceId), process.cwd());
   // 共享转发：spawn 一个真实子进程，stdout/stderr 累积后写入 Lifo 命令上下文流；
   // 超时/中断（Lifo shell 的 signal）时子进程一并杀掉。
   // V1 H1-2：把 Lifo 混合链拉起的 node/npm/npx 真实子进程登记进 host 进程表（host-procs.ts），
@@ -211,7 +248,7 @@ function registerRealBinaryCommands(
   for (const name of ['node', 'npm', 'npx']) {
     sandbox.commands.register(name, async (ctx) => {
       const realCwd = lifoSpawnCwd(ctx.cwd);
-      const child = spawn(name, ctx.args, { cwd: realCwd, env: mergedEnv() });
+      const child = spawn(name, ctx.args, { cwd: realCwd, env: mergedEnv(currentInstanceId) });
       return forward(ctx, child, [name, ...ctx.args].join(' '), realCwd);
     });
   }
@@ -260,6 +297,8 @@ interface CommandRequest {
   id: number;
   cmd: string;
   opts?: Record<string, unknown>;
+  /** 实例上下文（M2/M3，additive）：可选，缺失 = 默认实例 'default'（旧行为不变）。 */
+  instanceId?: string;
 }
 
 function writeResult(id: number, payload: Record<string, unknown>): void {
@@ -286,11 +325,9 @@ function pruneStaleResults(): void {
 // 解析该文件并合并进 env 选项，使 node/npm/npx 子进程能读到配置的变量。
 // TASK24 双根修复：浏览器 wc.fs 写 `/etc/succinix.env` == host 视角 `process.cwd()/etc/succinix.env`；
 // 若仍读 node 虚拟系统根 `/etc/succinix.env` 会读不到 → env 合并从未生效。统一 process.cwd() 拼接。
-const ENV_FILE = `${process.cwd()}/etc/succinix.env`;
-
-function loadEnvFile(): Record<string, string> {
+function loadEnvFile(instanceId: string): Record<string, string> {
   try {
-    const text = fs.readFileSync(ENV_FILE, 'utf8');
+    const text = fs.readFileSync(instanceStateFile(instanceId, process.cwd(), 'etc/succinix.env'), 'utf8');
     const env: Record<string, string> = {};
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim();
@@ -305,20 +342,30 @@ function loadEnvFile(): Record<string, string> {
   }
 }
 
-// 子进程环境 = host 自身环境 + env 文件覆盖（文件是配置的权威来源）。
-function mergedEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, ...loadEnvFile() };
+// 子进程环境 = host 自身环境 + 该实例 env 文件覆盖（文件是配置的权威来源；M2 按实例分键）。
+function mergedEnv(instanceId: string): NodeJS.ProcessEnv {
+  return { ...process.env, ...loadEnvFile(instanceId) };
+}
+
+// 当前在途请求的实例（M2）：单 host 串行处理 /cmd.json，handleCommand 期间恒为请求所属
+// 实例；Lifo 混合链转发 / spawn / cd 同步据此解析 cwd 与环境。处理完毕下一请求覆盖。
+let currentInstanceId = DEFAULT_INSTANCE_ID;
+
+// 请求的实例归一化：缺失 / 空串 = 默认实例（additive，旧客户端零改动）。
+function instanceOf(req: CommandRequest): string {
+  return normalizeInstanceId(req.instanceId);
 }
 
 // 统一命令入口：各分支自行写 result-<id>.json。
 // node 子进程的 run 会立即返回（结果异步写回），保证 ps/kill 在长命令期间仍可用。
 async function handleCommand(req: CommandRequest): Promise<void> {
+  currentInstanceId = instanceOf(req);
   switch (req.cmd) {
     case 'ping':
       writeResult(req.id, { ok: true, kind: 'pong' });
       return;
     case 'cwd':
-      writeResult(req.id, { ok: true, kind: 'cwd', cwd: sessionCwd });
+      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(instanceOf(req)) });
       return;
     case 'setCwd':
       dispatchSetCwd(req);
@@ -390,7 +437,7 @@ function tryTokenize(command: string): { ok: true; tokens: string[] } | { ok: fa
   }
 }
 
-// 真 Node 子进程：命令串 → 简单分词 → spawn(prog, args, { cwd: spawnCwd() })。
+// 真 Node 子进程：命令串 → 简单分词 → spawn(prog, args, { cwd: spawnCwd(currentInstanceId) })。
 // 结果带 runtime: 'node'。进程登记进进程表，可被 ps / kill 管理。
 function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: number): void {
   const t = tryTokenize(command);
@@ -426,7 +473,7 @@ async function runPython(command: string, opts: Record<string, unknown> | undefi
   const [, ...rawArgs] = t.tokens; // 丢弃 python/python3/pip/pip3 前缀
   const args = PIP_PREFIX_RE.test(command) ? ['-m', 'pip', ...rawArgs] : pythonRuntimeArgs(rawArgs, process.cwd());
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : PYTHON_TIMEOUT_MS;
-  const r = await pythonDaemon.exec(args, spawnCwd(), timeoutMs);
+  const r = await pythonDaemon.exec(args, spawnCwd(currentInstanceId), timeoutMs);
   writeResult(reqId, {
     ok: r.exitCode === 0,
     exitCode: r.exitCode,
@@ -478,7 +525,7 @@ function spawnTracked(
   args: string[],
   opts: { cwd: string; mode: OutputMode }
 ): { pid: number; child: ReturnType<typeof spawn>; out: ReturnType<typeof attachOutputCollector> } {
-  const child = spawn(prog, args, { cwd: opts.cwd, env: mergedEnv() });
+  const child = spawn(prog, args, { cwd: opts.cwd, env: mergedEnv(currentInstanceId) });
   const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd);
   const out = attachOutputCollector(child, pid, opts.mode);
   return { pid, child, out };
@@ -494,7 +541,7 @@ function spawnChild(
   reqId: number,
   label: string
 ): void {
-  const realCwd = spawnCwd();
+  const realCwd = spawnCwd(currentInstanceId);
   const { pid, child, out } = spawnTracked(prog, args, { cwd: realCwd, mode: 'accumulate' });
   // P5-15：登记为当前前台 run（Ctrl+C 中断目标）；settle 时清除。
   currentRunPid = pid;
@@ -562,7 +609,7 @@ function dispatchSpawn(req: CommandRequest): void {
     return;
   }
   const [prog, ...args] = t.tokens;
-  const realCwd = spawnCwd();
+  const realCwd = spawnCwd(currentInstanceId);
   // 后台进程输出只追加进程表 outputTail（不截断累积）；TASK-CISOL 登记 cwd 供归属判定。
   const { pid, child } = spawnTracked(prog, args, { cwd: realCwd, mode: 'append' });
   let settled = false;
@@ -615,10 +662,9 @@ async function runLifo(command: string, opts: Record<string, unknown> | undefine
       // isUnderWorkspace('/') 为 false、会话 cwd 不更新，"回到根目录"不可达。决策见 host-route.ts）。
       const effectiveCwd = lifoCwdToSessionCwd(lifoCwd);
       if (effectiveCwd !== null) {
-        sessionCwd = effectiveCwd;
-        persistSessionCwd();
+        setSessionCwd(currentInstanceId, effectiveCwd);
         // 结果带会话 cwd 字段（新增可选协议字段，向后兼容）。
-        payload.cwd = sessionCwd;
+        payload.cwd = effectiveCwd;
       }
     }
     writeResult(reqId, payload);
@@ -676,9 +722,8 @@ function dispatchSetCwd(req: CommandRequest): void {
     writeResult(req.id, { ok: false, error: `setCwd: not a directory: ${raw}` });
     return;
   }
-  sessionCwd = raw;
-  persistSessionCwd();
-  writeResult(req.id, { ok: true, kind: 'cwd', cwd: sessionCwd });
+  setSessionCwd(currentInstanceId, raw);
+  writeResult(req.id, { ok: true, kind: 'cwd', cwd: raw });
 }
 
 // kill 协议支持 { cmd: 'kill', opts: { pid } }，也兼容 "kill 1234" 字符串形式。

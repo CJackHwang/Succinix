@@ -414,8 +414,27 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
   return { save, load, clear, meta, force };
 }
 
+// ─── 实例持久化上下文注册表（M2：config/motd/services 的 force 落盘按实例取用）───
+// 非默认实例默认用 storeKey `instance:<id>`（同库不同 key，互不覆盖）；宿主可经
+// createSuccinixInstance({ persistence }) 传入自定义 dbName/storeKey（M5）。
+export function instancePersistKey(instanceId: string): string {
+  return instanceId === 'default' ? 'current' : `instance:${instanceId}`;
+}
+
+const persistContexts = new Map<string, PersistContext>();
+
+/** 取实例持久化上下文（惰性创建并缓存；缺省 = 模块级默认实例，行为全等现状）。 */
+export function getPersist(instanceId = 'default'): PersistContext {
+  let ctx = persistContexts.get(instanceId);
+  if (!ctx) {
+    ctx = createPersist(instanceId === 'default' ? {} : { storeKey: instancePersistKey(instanceId) });
+    persistContexts.set(instanceId, ctx);
+  }
+  return ctx;
+}
+
 // ─── 默认实例（单实例路径 = 现状 succinix-persist/current，行为全等）───
-const defaultPersist = createPersist();
+const defaultPersist = getPersist();
 
 // 向后兼容导出：既有调用方（boot/main/commands/config/services/motd/tests）不改。
 export function saveSnapshot(fs: FileSystemAPI, force = false): Promise<SaveResult> {

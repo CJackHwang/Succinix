@@ -3,11 +3,20 @@
 // 随快照持久化（persist.ts 遍历 / 时天然收录，重启保留）。
 // 解析要健壮：空行 / # 注释跳过；值可含 =（按第一个 = 切分）；读取失败一律按空处理。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { forcePersist } from './persist.js';
+import { getPersist } from './persist.js';
 import { ensureParentDir } from './util.js';
+import { DEFAULT_INSTANCE_ID, statePath } from './instance/paths.js';
 
-export const ENV_FILE = '/etc/succinix.env';
-export const SETTINGS_FILE = '/etc/succinix.settings';
+export const ENV_FILE = statePath(DEFAULT_INSTANCE_ID, 'etc/succinix.env');
+export const SETTINGS_FILE = statePath(DEFAULT_INSTANCE_ID, 'etc/succinix.settings');
+
+// M2：实例化状态文件路径（缺省实例 = /etc 现状；实例 = <stateRoot>/etc/<name>）。
+export function envFilePath(instanceId = DEFAULT_INSTANCE_ID): string {
+  return statePath(instanceId, 'etc/succinix.env');
+}
+export function settingsFilePath(instanceId = DEFAULT_INSTANCE_ID): string {
+  return statePath(instanceId, 'etc/succinix.settings');
+}
 
 // 工作区名白名单（TASK7 原有规则，移入共享模块供 settings 校验 default-workspace 复用）：
 // 字母/数字开头，后续可含 . _ -（拒绝空、路径分隔、隐藏名）。
@@ -46,37 +55,37 @@ export function serializeKeyValue(map: Map<string, string>): string {
 
 // ─── env 文件 ───
 
-export async function readEnvFile(fs: FileSystemAPI): Promise<Map<string, string>> {
+export async function readEnvFile(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID): Promise<Map<string, string>> {
   try {
-    return parseKeyValue(await fs.readFile(ENV_FILE, 'utf8'));
+    return parseKeyValue(await fs.readFile(envFilePath(instanceId), 'utf8'));
   } catch {
     return new Map(); // 文件不存在 / 不可读 → 空（首次使用）
   }
 }
 
-export async function writeEnvFile(fs: FileSystemAPI, map: Map<string, string>): Promise<void> {
-  await ensureParentDir(fs, ENV_FILE);
-  await fs.writeFile(ENV_FILE, serializeKeyValue(map));
+export async function writeEnvFile(fs: FileSystemAPI, map: Map<string, string>, instanceId = DEFAULT_INSTANCE_ID): Promise<void> {
+  await ensureParentDir(fs, envFilePath(instanceId));
+  await fs.writeFile(envFilePath(instanceId), serializeKeyValue(map));
 }
 
-export async function getEnvVar(fs: FileSystemAPI, key: string): Promise<string | undefined> {
-  return (await readEnvFile(fs)).get(key);
+export async function getEnvVar(fs: FileSystemAPI, key: string, instanceId = DEFAULT_INSTANCE_ID): Promise<string | undefined> {
+  return (await readEnvFile(fs, instanceId)).get(key);
 }
 
-export async function setEnvVar(fs: FileSystemAPI, key: string, value: string): Promise<void> {
-  const map = await readEnvFile(fs);
+export async function setEnvVar(fs: FileSystemAPI, key: string, value: string, instanceId = DEFAULT_INSTANCE_ID): Promise<void> {
+  const map = await readEnvFile(fs, instanceId);
   map.set(key, value);
-  await writeEnvFile(fs, map);
-  await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1：等长修改也要持久）
+  await writeEnvFile(fs, map, instanceId);
+  await getPersist(instanceId).force(fs, 'config'); // 写盘成功后强制落盘（H1：等长修改也要持久）
 }
 
 // 删除变量；返回是否原本存在（供输出 removed / not set）。
-export async function unsetEnvVar(fs: FileSystemAPI, key: string): Promise<boolean> {
-  const map = await readEnvFile(fs);
+export async function unsetEnvVar(fs: FileSystemAPI, key: string, instanceId = DEFAULT_INSTANCE_ID): Promise<boolean> {
+  const map = await readEnvFile(fs, instanceId);
   const had = map.delete(key);
   if (had) {
-    await writeEnvFile(fs, map);
-    await forcePersist(fs, 'config'); // 门控回归：删除是内容变更（等长/结构不变），自动快照目录签名捕捉不到，写盘后强制落盘
+    await writeEnvFile(fs, map, instanceId);
+    await getPersist(instanceId).force(fs, 'config'); // 门控回归：删除是内容变更（等长/结构不变），自动快照目录签名捕捉不到，写盘后强制落盘
   }
   return had;
 }
@@ -92,39 +101,39 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   'font-size': '14', // xterm 字号（运行时生效，boot 亦应用）
 };
 
-export async function readSettingsFile(fs: FileSystemAPI): Promise<Map<string, string>> {
+export async function readSettingsFile(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID): Promise<Map<string, string>> {
   try {
-    return parseKeyValue(await fs.readFile(SETTINGS_FILE, 'utf8'));
+    return parseKeyValue(await fs.readFile(settingsFilePath(instanceId), 'utf8'));
   } catch {
     return new Map();
   }
 }
 
-export async function writeSettingsFile(fs: FileSystemAPI, map: Map<string, string>): Promise<void> {
-  await ensureParentDir(fs, SETTINGS_FILE);
-  await fs.writeFile(SETTINGS_FILE, serializeKeyValue(map));
+export async function writeSettingsFile(fs: FileSystemAPI, map: Map<string, string>, instanceId = DEFAULT_INSTANCE_ID): Promise<void> {
+  await ensureParentDir(fs, settingsFilePath(instanceId));
+  await fs.writeFile(settingsFilePath(instanceId), serializeKeyValue(map));
 }
 
 // 读取生效值：未设置回退默认。
-export async function getSetting(fs: FileSystemAPI, key: string): Promise<string> {
-  const map = await readSettingsFile(fs);
+export async function getSetting(fs: FileSystemAPI, key: string, instanceId = DEFAULT_INSTANCE_ID): Promise<string> {
+  const map = await readSettingsFile(fs, instanceId);
   return map.get(key) ?? DEFAULT_SETTINGS[key] ?? '';
 }
 
-export async function setSetting(fs: FileSystemAPI, key: string, value: string): Promise<void> {
-  const map = await readSettingsFile(fs);
+export async function setSetting(fs: FileSystemAPI, key: string, value: string, instanceId = DEFAULT_INSTANCE_ID): Promise<void> {
+  const map = await readSettingsFile(fs, instanceId);
   map.set(key, value);
-  await writeSettingsFile(fs, map);
-  await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1）
+  await writeSettingsFile(fs, map, instanceId);
+  await getPersist(instanceId).force(fs, 'config'); // 写盘成功后强制落盘（H1）
 }
 
 // 恢复默认 = 删除存储值；返回是否原本存在自定义值。
-export async function resetSetting(fs: FileSystemAPI, key: string): Promise<boolean> {
-  const map = await readSettingsFile(fs);
+export async function resetSetting(fs: FileSystemAPI, key: string, instanceId = DEFAULT_INSTANCE_ID): Promise<boolean> {
+  const map = await readSettingsFile(fs, instanceId);
   const had = map.delete(key);
   if (had) {
-    await writeSettingsFile(fs, map);
-    await forcePersist(fs, 'config'); // 写盘成功后强制落盘（H1）
+    await writeSettingsFile(fs, map, instanceId);
+    await getPersist(instanceId).force(fs, 'config'); // 写盘成功后强制落盘（H1）
   }
   return had;
 }
@@ -136,8 +145,8 @@ export interface SettingEntry {
 }
 
 // 列出全部设置：按 SETTING_KEYS 顺序，附是否默认值标记。
-export async function listSettings(fs: FileSystemAPI): Promise<SettingEntry[]> {
-  const map = await readSettingsFile(fs);
+export async function listSettings(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID): Promise<SettingEntry[]> {
+  const map = await readSettingsFile(fs, instanceId);
   return SETTING_KEYS.map((key) => ({
     key,
     value: map.get(key) ?? DEFAULT_SETTINGS[key] ?? '',

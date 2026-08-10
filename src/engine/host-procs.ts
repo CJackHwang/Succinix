@@ -55,10 +55,16 @@ const SYSTEM_PROCESS_PATTERNS: ReadonlyArray<RegExp> = [
   /\/usr\/lib\/succinix\//,
 ];
 
-// 容器根路径段：agent/用户终端命令带 `cd /workspace/c-<id> &&` 前缀执行，子进程 spawn cwd 落在
-// 容器根（VFS `/workspace/c-<id>` 或映射后的 host 真实路径，如 `/home/workspace/c-<id>`），
-// 从 cwd 解析出 c-<id> 即容器归属。取路径中**首个** c-<id> 段（容器根在挂载点下第一位）。
-const CONTAINER_SEGMENT_PATTERN = /(?:^|\/)(c-[A-Za-z0-9_-]+)(?:\/|$)/;
+// 容器/实例根路径段（M2 / DM-12，两命名空间共存）：
+//   1) c-<id>（CISOL 既有）：agent/用户终端命令带 `cd /workspace/c-<id> &&` 前缀执行，
+//      子进程 spawn cwd 落在容器根（VFS `/workspace/c-<id>` 或 host 真实路径），
+//      从 cwd 解析出 c-<id> 即容器归属；
+//   2) .succinix-<id>（实例状态根）：同页/多实例模式的实例根 `/workspace/.succinix-<id>`，
+//      spawn cwd 落在其下即归该实例（与 c-<id> 共存，不冲突）。
+// 取路径中**首个**命中段（根在挂载点下第一位）。
+const CONTAINER_SEGMENT_PATTERN = /(?:^|\/)((?:c-[A-Za-z0-9_-]+)|(?:\.succinix-[A-Za-z0-9_-]+))(?:\/|$)/;
+// 实例状态根段（单独模式：优先匹配 .succinix-<id>，M3 ps 过滤 / M4 service 归属以 stateRoot 为准）。
+const STATE_ROOT_SEGMENT_PATTERN = /(?:^|\/)\.succinix-([A-Za-z0-9_-]+)(?:\/|$)/;
 
 /**
  * 判定一个进程的归属。cmd 命中系统模式 → system；否则 cwd 含容器根段 → container（带 containerId）；
@@ -73,6 +79,19 @@ export function classifyProcess(cmd: string, cwd?: string): { scope: ProcessScop
     if (match) return { scope: 'container', containerId: match[1]! };
   }
   return { scope: 'unknown' };
+}
+
+/**
+ * 从 spawn cwd 解析实例归属（M2，供 ps 过滤 / kill 越权 / service 归属）：
+ * 优先 .succinix-<id> 状态根段（返回裸 id，如 'c-1'），回落 c-<id> 容器段（CISOL 兼容）。
+ * 无法判定 → undefined。启发式（同 scope 判定），非安全边界。
+ */
+export function instanceIdFromPath(cwd?: string): string | undefined {
+  if (!cwd) return undefined;
+  const stateRoot = STATE_ROOT_SEGMENT_PATTERN.exec(cwd);
+  if (stateRoot) return stateRoot[1]!;
+  const legacy = CONTAINER_SEGMENT_PATTERN.exec(cwd);
+  return legacy ? legacy[1]! : undefined;
 }
 
 // 登记一个刚 spawn 的子进程；进程退出时自动把状态更新为 exited。

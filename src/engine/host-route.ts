@@ -164,3 +164,27 @@ export function shouldRemoveCmdFile(processedId: number, currentJson: string | n
     return false; // 内容损坏 / 不可读：不删（下轮重读；解析错误由读取路径兜底）
   }
 }
+
+// ─── 实例状态路径（M2，host 侧；纯函数，供 host.ts 与单测）───
+// 浏览器 /workspace/.succinix-<id>（wc.fs 视角）== host 真实路径 root/workspace/.succinix-<id>
+// （root = process.cwd()）。缺省实例状态根 = root（/etc 即 root/etc，现状语义全等）。
+// 本模块被终端 SDK bundle（dist/terminal.js）引用 —— 不引入 node: 依赖，纯字符串拼接。
+
+export const DEFAULT_INSTANCE_ID = 'default';
+
+/** 协议请求的 instanceId 归一化：缺失/空串 → 'default'（additive 向后兼容）。 */
+export function normalizeInstanceId(raw: unknown): string {
+  return typeof raw === 'string' && raw.length > 0 ? raw : DEFAULT_INSTANCE_ID;
+}
+
+/** host 侧实例状态根（DM-12：/workspace/.succinix-<id> 的 host 真实路径视图）。 */
+export function instanceStateRootFor(instanceId: string, root: string): string {
+  if (instanceId === DEFAULT_INSTANCE_ID) return root;
+  return `${root}/workspace/.succinix-${instanceId}`;
+}
+
+/** 实例化状态文件路径（host 侧）：instanceStateFile('c-1', root, 'etc/succinix.env')。 */
+export function instanceStateFile(instanceId: string, root: string, name: string): string {
+  const clean = name.replace(/^\/+/, '');
+  return `${instanceStateRootFor(instanceId, root)}/${clean}`;
+}

@@ -7,7 +7,20 @@ import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI, WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { TerminalClient } from './engine/index.js';
 import { detectSystemInfo } from './boot.js';
-import { saveSnapshot, clearSnapshot, getSnapshotMeta, forcePersist } from './persist.js';
+import {
+  saveSnapshot,
+  loadSnapshot,
+  clearSnapshot,
+  getSnapshotMeta,
+  forcePersist,
+  type PersistContext,
+  type SnapshotMeta,
+} from './persist.js';
+
+// M2：snapshot 命令缺省适配（单实例 = 模块级默认实例行为全等）。
+async function loadSnapshotDefault(fs: FileSystemAPI): Promise<SnapshotMeta | null> {
+  return loadSnapshot(fs);
+}
 import {
   isValidWorkspaceName,
   readEnvFile,
@@ -58,6 +71,10 @@ export interface CommandContext {
   fit: () => void;
   /** 当前 host 进程句柄（main.ts 的 host 重启路径 kill 用；自检构造的假 context 可缺省） */
   hostProc?: WebContainerProcess;
+  /** 实例上下文（M2/M5，additive）：本地命令的状态文件/持久化按实例解析；缺省 = 默认实例 */
+  instanceId?: string;
+  /** 实例持久化上下文（M2/M5，additive）：snapshot 命令按实例存取；缺省 = 模块级默认实例 */
+  persist?: PersistContext;
 }
 
 const VERSION = `Succinix ${SUCCINIX_VERSION} (browser-native Linux)`;
@@ -330,8 +347,8 @@ function formatKB(n: number): string {
   return `${Math.round(n / 1024)} KB`;
 }
 
-async function snapshotStatus(term: Terminal): Promise<void> {
-  const meta = await getSnapshotMeta();
+async function snapshotStatus(term: Terminal, persist: PersistContext): Promise<void> {
+  const meta = await persist.meta();
   if (!meta || meta.savedAt === 0) {
     term.writeln('Persistent storage: no snapshot yet (fresh workspace)');
     return;
@@ -344,13 +361,15 @@ async function snapshotStatus(term: Terminal): Promise<void> {
 
 async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term } = ctx;
+  // M2：按实例持久化上下文存取（缺省 = 模块级默认实例，行为全等现状）。
+  const persist = ctx.persist ?? { save: saveSnapshot, load: loadSnapshotDefault, clear: clearSnapshot, meta: getSnapshotMeta, force: forcePersist };
   const sub = args[0] ?? '';
   if (sub === '') {
-    await snapshotStatus(term);
+    await snapshotStatus(term, persist);
     return;
   }
   if (sub === 'now') {
-    const { meta, skipped } = await saveSnapshot(ctx.wc.fs, true);
+    const { meta, skipped } = await persist.save(ctx.wc.fs, true);
     if (skipped) {
       // 超过 50MB 上限：persist 跳过本次写，明确输出 skipped，不伪装成成功。
       term.writeln('Snapshot skipped (over 50MB limit)');
@@ -367,7 +386,7 @@ async function snapshotCmd(ctx: CommandContext, args: string[]): Promise<void> {
       term.writeln('Confirm with: snapshot clear --yes');
       return;
     }
-    await clearSnapshot();
+    await persist.clear();
     term.writeln('Snapshot cleared; next boot will initialize a fresh workspace.');
     void log('WARN', 'snapshot cleared: next boot initializes a fresh workspace');
     return;

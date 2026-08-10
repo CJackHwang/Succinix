@@ -1,7 +1,7 @@
 // host-procs.ts 单元测试（TASK-CISOL R1）：进程归属判定 + 登记时记录 cwd → ps() 附加 scope/containerId。
 import type { ChildProcess } from 'node:child_process';
 import { describe, it, expect, vi } from 'vitest';
-import { classifyProcess, registerProcess, listProcesses } from '../src/engine/host-procs.js';
+import { classifyProcess, registerProcess, listProcesses, instanceIdFromPath } from '../src/engine/host-procs.js';
 
 /** 最小 ChildProcess 替身（registerProcess 只依赖 pid / on / kill）。 */
 function fakeChild(pid: number): ChildProcess {
@@ -84,5 +84,29 @@ describe('registerProcess + listProcesses（登记记录 cwd → ps 附带归属
     expect(view?.exitCode).toBe(0);
     expect(view?.scope).toBe('container');
     expect(view?.containerId).toBe('c-7');
+  });
+});
+
+// M2（DM-12）：实例状态根 /workspace/.succinix-<id> 的进程归属 —— 与 c-<id> 命名空间共存。
+describe('classifyProcess + instanceIdFromPath（M2 实例状态根归属）', () => {
+  it('classifies processes spawned under a .succinix-<id> state root', () => {
+    expect(classifyProcess('node server.js', '/workspace/.succinix-c-1')).toEqual({ scope: 'container', containerId: '.succinix-c-1' });
+    expect(classifyProcess('node server.js', '/home/workspace/workspace/.succinix-c-1')).toEqual({ scope: 'container', containerId: '.succinix-c-1' });
+    // 实例内子目录（如状态根下的 project）仍归该实例（取首个命中段）。
+    expect(classifyProcess('npm test', '/home/workspace/workspace/.succinix-c-2/project')).toEqual({ scope: 'container', containerId: '.succinix-c-2' });
+  });
+
+  it('keeps the legacy c-<id> namespace working alongside the state root namespace', () => {
+    expect(classifyProcess('node app.js', '/workspace/c-1')).toEqual({ scope: 'container', containerId: 'c-1' });
+    expect(classifyProcess('node app.js', '/home/workspace/workspace/.succinix-c-1')).toEqual({ scope: 'container', containerId: '.succinix-c-1' });
+  });
+
+  it('instanceIdFromPath prefers the state root segment and falls back to c-<id>', () => {
+    expect(instanceIdFromPath('/workspace/.succinix-c-1')).toBe('c-1');
+    expect(instanceIdFromPath('/home/workspace/workspace/.succinix-c-1/project')).toBe('c-1');
+    expect(instanceIdFromPath('/workspace/c-1')).toBe('c-1');
+    expect(instanceIdFromPath('/home/workspace/c-2/project')).toBe('c-2');
+    expect(instanceIdFromPath('/workspace')).toBeUndefined();
+    expect(instanceIdFromPath(undefined)).toBeUndefined();
   });
 });

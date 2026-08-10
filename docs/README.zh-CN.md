@@ -272,20 +272,25 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 ```
 src/
-  main.ts            # 入口：xterm 终端、REPL、boot 编排
+  main.ts            # 兼容 shim → app/（O2 拆分；xterm 装配、REPL、boot 编排）
   boot.ts            # 启动序列、系统信息检测、环境预检
   boot-ui.ts         # 居中 DOM 启动覆盖层渲染器（splash/日志/环境失败页）
-  commands.ts        # 浏览器侧命令（help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...）
+  commands.ts        # 兼容 shim → commands/（O1 拆分）
+  app/               # xterm 装配、输出、本地命令、日志、自动快照、看门狗、dev hooks
+  commands/          # 浏览器侧命令（help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...）
   config.ts          # 系统配置：/etc/succinix.env + /etc/succinix.settings 读写与默认值
   motd.ts            # 登录横幅：/etc/succinix.motd 读写与默认
   services.ts        # 服务管理：/etc/succinix.services + /etc/succinix.autostart 读写、状态/启动/停止
   log.ts             # journald 风格系统日志：/var/log/succinix.log 追加/读取/清空/BOOT 过滤
   pkg.ts             # 包管理：pkg list/search/install/remove/info（lifo + npm 双通道）
-  tests.ts           # 自检套件（?test=1）
+  persist.ts         # 兼容 shim → persist/（O4 拆分）
+  persist/           # 快照持久化：排除规则/收集/签名/IndexedDB
+  tests.ts           # 兼容 shim → selftest/（O5 拆分）
+  selftest/          # 自检套件（?test=1）：runner + 各域测试（kernel/filesystem/persistence/config/services/packages/process/network/info/languages/smoke）
   engine/            # TerminalExecutor 引擎——已解耦、可复用（见生态）
     index.ts         # 公开 API：createTerminalExecutor / bootEngineHost / waitForHostReady + 类型
     client.ts        # 文件 RPC 客户端，TerminalClient（原 terminal-client.ts）
-    host.ts          # TerminalExecutor 守护进程，运行于 WebContainer 内（原 host.ts）
+    host/            # host 守护进程域：config/rpc/run/spawn/ps-kill/main（O3 拆分）
     host-route.ts    # host 纯逻辑：路由 / 路径映射 / 按实例过滤 + kill 授权
     host-procs.ts    # 统一进程注册表（原 host-procs.ts）
     lifo-core.ts     # 懒加载 @lifo-sh/core 内核入口（打包为 public/lifo-core.js）

@@ -6,6 +6,7 @@
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 import type { ProcInfo } from './host-procs.js';
+import { DEFAULT_INSTANCE_ID, instanceStateFile } from './host-route.js';
 import { sleep } from './sleep.js';
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
@@ -53,6 +54,8 @@ export interface TerminalExecutor {
   /** 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
    *  cmd.json），重新注入资产并等待就绪。返回后 host 可立即接受命令。 */
   respawn(): Promise<void>;
+  /** 当前 host 进程句柄（宿主重启路径 / M5 实例聚合返回用）；未 boot / 已 dispose 返回 null */
+  getHostProc(): WebContainerProcess | null;
   /** 释放资源（kill host 进程、清引用）。幂等 */
   dispose(): Promise<void>;
 }
@@ -70,6 +73,9 @@ export interface EngineBootHooks extends TerminalExecutorOptions {
   onSpawned?: () => void;
   /** 命令执行采集点（引擎只产生条目，宿主决定过滤与落盘） */
   onCommand?: (entry: CommandLogEntry) => void;
+  /** 实例上下文（M5，additive）：客户端请求写入 /cmd.json 时回带 instanceId（host 按实例
+   *  路由）；host 引擎配置（resultTtlMs）按实例状态根落盘。缺省 = 默认实例（现状全等）。 */
+  instanceId?: string;
 }
 
 // M1：端口事件（server-ready / port）只对同一 wc 实例注册一次。R3.2 重试会再次调用
@@ -88,10 +94,14 @@ export async function bootEngineHost(
 ): Promise<WebContainerProcess> {
   // 引擎配置（仅显式传 resultTtlMs 时写）：host 启动读取 /etc/succinix.engine.json 覆盖默认 TTL。
   // 默认不写 —— 全新工作区零额外文件，行为不变。
+  // M2/M5：多实例下 host 按请求 instanceId 解析自身配置路径（全局单份 /etc 配置会串扰），
+  // 这里落到该实例的 <stateRoot>/etc/succinix.engine.json（缺省实例 = /etc，现状全等）。
   if (hooks.resultTtlMs !== undefined) {
+    const cfgPath = instanceStateFile(hooks.instanceId ?? DEFAULT_INSTANCE_ID, '', 'etc/succinix.engine.json');
     try {
-      await wc.fs.mkdir('/etc', { recursive: true });
-      await wc.fs.writeFile('/etc/succinix.engine.json', JSON.stringify({ resultTtlMs: hooks.resultTtlMs }));
+      const parent = cfgPath.slice(0, cfgPath.lastIndexOf('/')) || '/';
+      await wc.fs.mkdir(parent, { recursive: true });
+      await wc.fs.writeFile(cfgPath, JSON.stringify({ resultTtlMs: hooks.resultTtlMs }));
     } catch {
       /* 写失败不影响：host 回落默认 TTL */
     }
@@ -158,7 +168,11 @@ class TerminalExecutorImpl implements TerminalExecutor {
     const hooks = opts;
     const hostSrc = hooks.hostSrc ?? (await fetch(opts.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
     const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(opts.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
-    this.client = new TerminalClient(wc, { onCommand: hooks.onCommand });
+    // M5：已 seed 的 client 复用（实例工厂先建带 instanceId 的 client 再 boot，避免双客户端）；
+    // 未 seed 时自建（缺省 = 现状，instanceId 经 hooks 透传）。
+    if (!this.client) {
+      this.client = new TerminalClient(wc, { onCommand: hooks.onCommand, instanceId: hooks.instanceId });
+    }
     this.hostProc = await bootEngineHost(wc, this.client, { ...hooks, hostSrc, lifoCoreSrc });
     await waitForHostReady(this.client);
   }

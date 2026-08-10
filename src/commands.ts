@@ -75,6 +75,8 @@ export interface CommandContext {
   hostProc?: WebContainerProcess;
   /** 实例上下文（M2/M5，additive）：本地命令的状态文件/持久化按实例解析；缺省 = 默认实例 */
   instanceId?: string;
+  /** 状态根前缀覆盖（M5，additive）：缺省 = DM-12 内置前缀 */
+  statePrefix?: string;
   /** 实例持久化上下文（M2/M5，additive）：snapshot 命令按实例存取；缺省 = 模块级默认实例 */
   persist?: PersistContext;
   /** 实例级重置回调（M4/M5，additive）：多实例模式 reboot = 清该实例状态并重 boot，不刷新宿主页面；
@@ -205,8 +207,8 @@ async function findRunningProcForInstance(ctx: CommandContext, needle: string): 
 }
 
 // db 端口：读 settings preview-port（M4 按实例 settings），缺省 3001；值被手改非法时回落默认。
-async function resolveDbPort(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID): Promise<number> {
-  const raw = await getSetting(fs, 'preview-port', instanceId);
+async function resolveDbPort(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID, statePrefix?: string): Promise<number> {
+  const raw = await getSetting(fs, 'preview-port', instanceId, statePrefix);
   const n = Number(raw);
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : DB_PORT_DEFAULT;
 }
@@ -215,7 +217,7 @@ async function resolveDbPort(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID
 async function dbStart(ctx: CommandContext): Promise<void> {
   const { client, term, wc } = ctx;
   const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
-  const port = await resolveDbPort(wc.fs, inst);
+  const port = await resolveDbPort(wc.fs, inst, ctx.statePrefix);
   dbActivePortByInstance.set(inst, port); // 记录本次启动端口（M1：status/stop 用记录值）
   const view = instancePorts.portsFor(inst, ctx.ports);
   term.writeln('Checking whether tinbase is installed in the container...');
@@ -284,6 +286,16 @@ async function dbStart(ctx: CommandContext): Promise<void> {
   //    M4：非默认实例显式 --data-dir <stateRoot>/tinbase，实例间数据隔离
   //    （缺省实例不传 flag = 现状 /workspace/.tinbase，行为全等）。
   const dataDir = instanceStateRoot(inst) ? tinbaseDataDir(inst) : null;
+  // M5：data-dir 是浏览器视角绝对路径（wc.fs /workspace/.succinix-<id>/tinbase），
+  // host 侧按浏览器视角映射到 process.cwd() 下（mapDataDirArgs）；spawn 前先由浏览器
+  // 建好目录，避免状态根刚被 reboot 清空后父目录缺失（tinbase 只建叶子目录）。
+  if (dataDir) {
+    try {
+      await wc.fs.mkdir(dataDir, { recursive: true });
+    } catch (e) {
+      term.writeln(`${RED}tinbase: data dir prepare failed: ${String(e).slice(0, 160)}${RESET}`);
+    }
+  }
   const startCmd = `npx tinbase start --port ${port} --engine wasm${dataDir ? ` --data-dir ${dataDir}` : ''}`;
   term.writeln(`Starting ${startCmd} (background process)...`);
   let pid: number | undefined;
@@ -339,7 +351,7 @@ async function dbStart(ctx: CommandContext): Promise<void> {
 async function dbStatus(ctx: CommandContext): Promise<void> {
   const { client, term, wc } = ctx;
   const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;
-  const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst));
+  const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst, ctx.statePrefix));
   const view = instancePorts.portsFor(inst, ctx.ports);
   const url = view.get(port);
   term.writeln(url ? `Port ${port}: in ready list -> ${url}` : `Port ${port}: not in ready list (not running)`);
@@ -381,7 +393,7 @@ async function dbStop(ctx: CommandContext): Promise<void> {
   if (k.ok && k.killed) {
     term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
     // 用记录端口清理注册表（运行中改 settings 不影响 stop 的正确端口）
-    const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst));
+    const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst, ctx.statePrefix));
     instancePorts.release(inst, port); // M4：释放实例期望端口
     if (inst === DEFAULT_INSTANCE_ID) ctx.ports.delete(port); // 默认实例清理页面级注册表（现状）
     dbActivePortByInstance.delete(inst);
@@ -740,8 +752,10 @@ async function workspaceCmd(ctx: CommandContext, args: string[]): Promise<void> 
 //   env -u <key>     删除
 async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term, wc } = ctx;
+  const inst = ctx.instanceId;
+  const prefix = ctx.statePrefix;
   if (args.length === 0) {
-    const map = await readEnvFile(wc.fs);
+    const map = await readEnvFile(wc.fs, inst, prefix);
     if (map.size === 0) {
       term.writeln('(no environment variables set)');
       return;
@@ -760,14 +774,14 @@ async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
       term.writeln('usage: env -u <key>');
       return;
     }
-    const removed = await unsetEnvVar(wc.fs, key);
+    const removed = await unsetEnvVar(wc.fs, key, inst, prefix);
     term.writeln(removed ? `unset ${key}` : `${key} is not set`);
     return;
   }
   const eq = arg.indexOf('=');
   if (eq === -1) {
     // 查看单个
-    const value = await getEnvVar(wc.fs, arg);
+    const value = await getEnvVar(wc.fs, arg, inst, prefix);
     term.writeln(value !== undefined ? `${arg}=${value}` : `${arg} is not set`);
     return;
   }
@@ -781,7 +795,7 @@ async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
     term.writeln(`${RED}env: invalid variable name '${key}'${RESET}`);
     return;
   }
-  await setEnvVar(wc.fs, key, value);
+  await setEnvVar(wc.fs, key, value, inst, prefix);
   term.writeln(`set ${key}=${value}`);
 }
 
@@ -792,8 +806,10 @@ async function envCmd(ctx: CommandContext, args: string[]): Promise<void> {
 //   settings reset <key>   恢复默认
 async function settingsCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term, wc } = ctx;
+  const inst = ctx.instanceId;
+  const prefix = ctx.statePrefix;
   if (args.length === 0) {
-    const entries = await listSettings(wc.fs);
+    const entries = await listSettings(wc.fs, inst, prefix);
     const width = Math.max(...entries.map((e) => e.key.length), 1);
     for (const e of entries) {
       const marker = e.isDefault ? `${GRAY}(default)${RESET}` : '';
@@ -811,7 +827,7 @@ async function settingsCmd(ctx: CommandContext, args: string[]): Promise<void> {
       term.writeln(`${RED}unknown setting: ${key}${RESET}`);
       return;
     }
-    const removed = await resetSetting(wc.fs, key);
+    const removed = await resetSetting(wc.fs, key, inst, prefix);
     const def = DEFAULT_SETTINGS[key];
     term.writeln(removed ? `reset ${key} to default (${def})` : `${key} is already at default (${def})`);
     applySettingRuntime(ctx, key, def);
@@ -824,7 +840,7 @@ async function settingsCmd(ctx: CommandContext, args: string[]): Promise<void> {
     return;
   }
   if (args.length === 1) {
-    const value = await getSetting(wc.fs, key);
+    const value = await getSetting(wc.fs, key, inst, prefix);
     const def = DEFAULT_SETTINGS[key];
     term.writeln(`${key}=${value}${value === def ? ' (default)' : ''}`);
     return;
@@ -835,7 +851,7 @@ async function settingsCmd(ctx: CommandContext, args: string[]): Promise<void> {
     term.writeln(`${RED}settings: ${err}${RESET}`);
     return;
   }
-  await setSetting(wc.fs, key, value);
+  await setSetting(wc.fs, key, value, inst, prefix);
   term.writeln(`set ${key}=${value}`);
   applySettingRuntime(ctx, key, value);
 }
@@ -858,7 +874,7 @@ function applySettingRuntime(ctx: CommandContext, key: string, value: string): v
 // 单个服务详情：state + pid + port/url（未匹配显示 unknown service）。
 async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: string): Promise<void> {
   const { term } = ctx;
-  const defs = await readServices(ctx.wc.fs);
+  const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
   const def = defs.find((d) => d.name === name);
   if (!def) {
     term.writeln(`${RED}unknown service: ${name}${RESET}`);
@@ -873,7 +889,7 @@ async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: 
 
 async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term } = ctx;
-  const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports };
+  const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix };
   const sub = args[0] ?? '';
 
   if (sub === '') {
@@ -934,12 +950,12 @@ async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
       term.writeln('usage: service enable <name>');
       return;
     }
-    const defs = await readServices(ctx.wc.fs);
+    const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
     if (!defs.some((d) => d.name === name)) {
       term.writeln(`${RED}unknown service: ${name}${RESET}`);
       return;
     }
-    const added = await enableAutostart(ctx.wc.fs, name);
+    const added = await enableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
     term.writeln(added ? `service '${name}' enabled (will start on boot)` : `service '${name}' is already enabled`);
     return;
   }
@@ -950,7 +966,7 @@ async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
       term.writeln('usage: service disable <name>');
       return;
     }
-    const removed = await disableAutostart(ctx.wc.fs, name);
+    const removed = await disableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
     term.writeln(removed ? `service '${name}' disabled` : `service '${name}' is not enabled`);
     return;
   }
@@ -1333,19 +1349,21 @@ function unameCmd(term: Terminal, args: string[]): void {
 //   motd reset    恢复默认
 async function motdCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term, wc } = ctx;
+  const inst = ctx.instanceId;
+  const prefix = ctx.statePrefix;
   const sub = args[0] ?? '';
   if (sub === '') {
-    const text = await readMotd(wc.fs);
+    const text = await readMotd(wc.fs, inst, prefix);
     term.writeln(text ?? '(no motd set)');
     return;
   }
   if (sub === 'reset') {
-    await resetMotd(wc.fs);
+    await resetMotd(wc.fs, inst, prefix);
     term.writeln('motd reset to default');
     return;
   }
   const text = args.join(' ');
-  await writeMotd(wc.fs, text);
+  await writeMotd(wc.fs, text, inst, prefix);
   term.writeln(`motd set: ${text}`);
 }
 

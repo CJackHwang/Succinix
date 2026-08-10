@@ -58,14 +58,38 @@ export function spawnCwdFor(sessionCwd: string, root: string): string {
   return vfsToReal(sessionCwd, root);
 }
 
-// 浏览器视角绝对路径 → host 真实路径。wc.fs 的 `/` 与 Lifo 的 /workspace 都映射到 root，
-// 所以 `/foo` 和 `/workspace/foo` 的真实位置都是 root/foo。node/python 子进程收到这类
-// 绝对路径参数（如 `python /script.py`）时若原样传给真实容器根 `/`（bin/dev/etc...）会
-// 找不到文件；映射后脚本可读。相对路径由 spawn cwd（真实路径）解析，原样返回。
+// 终端用户视角绝对路径 → host 真实路径（Lifo 视图：Lifo 的 /workspace 挂载到 root，
+// 所以 Lifo `/workspace/foo` 的真实位置是 root/foo）。node/python 子进程收到这类绝对
+// 路径参数（如 `python /script.py`）时若原样传给真实容器根 `/`（bin/dev/etc...）会找不到
+// 文件；映射后脚本可读。相对路径由 spawn cwd（真实路径）解析，原样返回。
+// 注意：浏览器 wc.fs 的 `/workspace` 是 root/workspace（真实子目录），与 Lifo 视图不同；
+// 浏览器侧计算出的路径（statePath/tinbaseDataDir 等）不经本函数，见 mapDataDirArgs。
 export function resolveBrowserPath(p: string, root: string): string {
   if (!p.startsWith('/')) return p;
   const rel = p === WORKSPACE_MOUNT ? '/' : p.startsWith(WORKSPACE_MOUNT + '/') ? p.slice(WORKSPACE_MOUNT.length) : p;
   return root + rel;
+}
+
+// M5 修复（2026-08 实测确认的 FS 模型）：node 子进程看到的是容器真实根
+// （bin/dev/etc/home/...，其中没有 /workspace）；浏览器 wc.fs 的 `/` == host
+// process.cwd()（/home/<wc-id>），浏览器 `/workspace` == cwd/workspace（真实子目录）。
+// 因此浏览器侧计算出的绝对路径（实例状态根 `/workspace/.succinix-<id>/...` 等）必须
+// 映射到 host 真实路径 `root + p` 才能被 node 进程访问（否则 ENOENT，实例模式
+// `db start` 失败）。映射 `--data-dir <path>` 与 `--data-dir=<path>` 两种写法；
+// 相对路径由 spawn cwd 解析，原样返回。
+export function mapDataDirArgs(tokens: string[], root: string): string[] {
+  const out = tokens.slice();
+  for (let i = 0; i < out.length; i++) {
+    const tok = out[i];
+    if (tok === '--data-dir' && i + 1 < out.length) {
+      const p = out[i + 1];
+      if (p.startsWith('/')) out[i + 1] = root + p;
+    } else if (tok.startsWith('--data-dir=')) {
+      const p = tok.slice('--data-dir='.length);
+      out[i] = `--data-dir=${p.startsWith('/') ? root + p : p}`;
+    }
+  }
+  return out;
 }
 
 // python 运行时参数：脚本模式（第一个参数是文件路径，非 -c/--version）的绝对路径映射到 host

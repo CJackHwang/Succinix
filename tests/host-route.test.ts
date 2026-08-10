@@ -9,6 +9,7 @@ import {
   spawnCwdFor,
   resolveBrowserPath,
   pythonRuntimeArgs,
+  mapDataDirArgs,
   lifoSpawndCwd,
   lifoCwdToSessionCwd,
   sessionCwdToBrowserPath,
@@ -97,6 +98,26 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(pythonRuntimeArgs(['-c', 'print(1)'], ROOT)).toEqual(['-c', 'print(1)']);
     expect(pythonRuntimeArgs(['--version'], ROOT)).toEqual(['--version']);
     expect(pythonRuntimeArgs(['script.py'], ROOT)).toEqual(['script.py']); // 相对路径不映射
+  });
+
+  it('mapDataDirArgs：--data-dir 浏览器视角绝对路径映射到 host 真实根（node 容器根无 /workspace）', () => {
+    // 双写法：`--data-dir <path>` 与 `--data-dir=<path>`。
+    expect(mapDataDirArgs(['start', '--port', '3001', '--data-dir', '/workspace/.succinix-c-1/tinbase'], ROOT)).toEqual([
+      'start',
+      '--port',
+      '3001',
+      '--data-dir',
+      `${ROOT}/workspace/.succinix-c-1/tinbase`,
+    ]);
+    expect(mapDataDirArgs(['start', '--data-dir=/workspace/.succinix-c-1/tinbase'], ROOT)).toEqual([
+      'start',
+      `--data-dir=${ROOT}/workspace/.succinix-c-1/tinbase`,
+    ]);
+    // /workspace 根本身 → root/workspace；浏览器绝对路径一律 root+p；相对路径原样。
+    expect(mapDataDirArgs(['--data-dir', '/workspace'], ROOT)).toEqual(['--data-dir', `${ROOT}/workspace`]);
+    expect(mapDataDirArgs(['--data-dir', '/tmp/tb'], ROOT)).toEqual(['--data-dir', `${ROOT}/tmp/tb`]);
+    expect(mapDataDirArgs(['--data-dir', 'rel/tb'], ROOT)).toEqual(['--data-dir', 'rel/tb']);
+    expect(mapDataDirArgs(['start', '--port', '3001'], ROOT)).toEqual(['start', '--port', '3001']);
   });
 
   it('lifoSpawndCwd：Lifo VFS cwd → host 真实路径，非 /workspace 回落会话 cwd', () => {

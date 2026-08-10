@@ -35,6 +35,8 @@ interface ProcEntry extends Omit<ProcInfo, 'scope' | 'containerId'> {
   child: ChildProcess;
   /** 启动时工作目录（host 真实路径，spawn 的 cwd 选项）；归属判定的依据 */
   cwd?: string;
+  /** M5：RPC 请求显式携带的实例 id（非默认实例时登记）；归属判定的权威依据 */
+  instanceId?: string;
 }
 
 const table = new Map<number, ProcEntry>();
@@ -97,9 +99,9 @@ export function instanceIdFromPath(cwd?: string): string | undefined {
 // 登记一个刚 spawn 的子进程；进程退出时自动把状态更新为 exited。
 // cwd 为 spawn 时的启动工作目录（host 真实路径），供归属判定（R5：Lifo 链等 cwd 不可解析时
 // 归 unknown 并如实标注）。缺省不传时按 unknown 归属。
-export function registerProcess(cmd: string, child: ChildProcess, cwd?: string): number {
+export function registerProcess(cmd: string, child: ChildProcess, cwd?: string, instanceId?: string): number {
   const pid = child.pid ?? -1;
-  const entry: ProcEntry = { pid, cmd, status: 'running', startTime: Date.now(), cwd, child };
+  const entry: ProcEntry = { pid, cmd, status: 'running', startTime: Date.now(), cwd, child, ...(instanceId ? { instanceId } : {}) };
   table.set(pid, entry);
   child.on('close', (code) => {
     entry.status = 'exited';
@@ -123,6 +125,22 @@ function prune(): void {
 // 供 ps 使用：返回进程表的只读快照（不含 child 引用），并附加归属字段（scope/containerId）。
 export function listProcesses(): ProcInfo[] {
   return [...table.values()].map((e) => {
+    // M5：显式实例归属优先于 cwd 启发式 —— 实例会话 cwd 是容器 home（/workspace 根），
+    // 不含 `.succinix-<id>` 段；仅靠 cwd 判定会把实例进程判为 unknown，实例 ps 视图
+    // 会漏掉自己的进程（service start 误报 exited）。请求带 instanceId 即权威归属。
+    // 默认实例不标（现状全等：default 视图不过滤，标了反而被 processBelongsToInstance 排除）。
+    if (e.instanceId && e.instanceId !== 'default') {
+      return {
+        pid: e.pid,
+        cmd: e.cmd,
+        status: e.status,
+        startTime: e.startTime,
+        exitCode: e.exitCode,
+        scope: 'container' as const,
+        containerId: `.succinix-${e.instanceId}`,
+        ...(e.outputTail !== undefined ? { outputTail: e.outputTail } : {}),
+      };
+    }
     const { scope, containerId } = classifyProcess(e.cmd, e.cwd);
     return {
       pid: e.pid,

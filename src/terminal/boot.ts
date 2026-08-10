@@ -288,6 +288,104 @@ export async function waitForHostReadyWithRetry(
   );
 }
 
+// ─── 应用级 bootsteps（M5：默认路径与 ?instance= demo 共用，避免两套 boot 逻辑分叉）───
+// createTerminalBoot.boot() 在 host 注入/spawn 之后调用；demo（实例工厂路径）在
+// createSuccinixInstance（引擎级 boot 已完成）之后调用。两路径共用同一套
+// config / workspace / env / services / motd / 自检文件 / 探活重试 / autostart 步骤。
+// 缺省实例（不传 instanceId）= 现状 /etc 语义全等。
+export interface AppBootStepsContext {
+  wc: WebContainer;
+  client: TerminalClient;
+  ports: Map<number, string>;
+  /** 实例上下文（M5，additive）：settings/services/autostart/motd 按实例解析；缺省 = 默认实例 */
+  instanceId?: string;
+  /** 状态根前缀覆盖（M5，additive）：缺省 = DM-12 内置前缀 */
+  statePrefix?: string;
+  /** 跳过探活与 'TerminalExecutor ready' 步（demo：工厂已 waitForHostReady） */
+  skipHostReady?: boolean;
+  /** 探活重试参数（默认路径传；R3.2 kill-before-spawn，返回最终 host 句柄） */
+  hostReadyRetry?: {
+    ui: BootUI;
+    hostProc: WebContainerProcess;
+    hostHooks: EngineBootHooks;
+    deadlineMs?: number;
+  };
+}
+
+export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootStepsContext): Promise<WebContainerProcess | null> {
+  const { wc, client, ports } = ctx;
+  let hostProc = ctx.hostReadyRetry?.hostProc ?? null;
+
+  // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。在快照恢复之后调用，
+  // 恢复写回的旧日志不再与新日志写竞争；此后的 boot/命令/快照事件全部落盘。
+  initLogger(wc.fs);
+
+  // 系统配置（TASK10）：settings 决定全新系统的默认工作区名；env 文件统计加载数。
+  // 读取失败 / 值被手改非法时全部回退默认，不阻断 boot。
+  let defaultWorkspace = 'main';
+  let envCount = 0;
+  try {
+    const wsRaw = await getSetting(wc.fs, 'default-workspace', ctx.instanceId, ctx.statePrefix);
+    if (isValidWorkspaceName(wsRaw)) defaultWorkspace = wsRaw;
+    envCount = (await readEnvFile(wc.fs, ctx.instanceId, ctx.statePrefix)).size;
+  } catch (e) {
+    boot.noteOnly(`Config load failed (${String(e).slice(0, 80)}); using defaults`);
+  }
+
+  // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
+  // 全新系统则用配置的默认工作区名初始化。
+  await initWorkspace(boot, wc.fs, defaultWorkspace);
+  boot.ok(`Loaded ${envCount} environment variables`);
+
+  // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
+  try {
+    await ensureServicesFiles(wc.fs, ctx.instanceId, ctx.statePrefix);
+  } catch (e) {
+    boot.noteOnly(`Service files init failed (${String(e).slice(0, 80)})`);
+  }
+
+  // 登录横幅（TASK15）：确保 /etc/succinix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
+  try {
+    await ensureMotd(wc.fs, ctx.instanceId, ctx.statePrefix);
+  } catch (e) {
+    boot.noteOnly(`Motd init failed (${String(e).slice(0, 80)})`);
+  }
+
+  // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
+  // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
+  await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
+  bootPhase('config-done');
+
+  // 探活：命令轮询循环就绪，TerminalExecutor 可用（host 预热已与配置读取重叠完成）。
+  // TASK18：waitForHostReady 已确认 pong；删去其后的冗余 ping（在延迟预热窗口内，
+  // 多余 ping 会被 Sandbox.create 的同步前缀阻塞，白白拖慢 boot）。
+  // R3.2：探活失败自动重试（最多 3 次，含首次），返回最终存活 host 句柄。
+  if (!ctx.skipHostReady) {
+    const r = ctx.hostReadyRetry;
+    if (r) {
+      hostProc = await waitForHostReadyWithRetry(r.ui, wc, client, hostProc ?? r.hostProc, r.hostHooks, r.deadlineMs);
+    }
+    bootPhase('host-ready');
+    boot.ok();
+  }
+
+  // 服务自启（TASK11）：声明式重启 —— boot 后按 autostart 逐个拉起（M5：按实例）。
+  // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
+  try {
+    const autostart = await readAutostart(wc.fs, ctx.instanceId, ctx.statePrefix);
+    for (const name of autostart) {
+      const r = await startService({ wc, client, ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix }, name);
+      if (r.ok) boot.ok(`Started service '${name}' (autostart)`);
+      else boot.failStep(`service '${name}' failed to start`);
+    }
+  } catch (e) {
+    boot.noteOnly(`Autostart skipped (${String(e).slice(0, 80)})`);
+  }
+
+  void log('BOOT', 'boot complete');
+  return hostProc;
+}
+
 // ─── 工厂：createTerminalBoot ───
 
 export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): TerminalBoot {
@@ -430,68 +528,16 @@ export function createTerminalBoot(ui: BootUI, opts: TerminalBootOptions): Termi
       let hostProc = await bootEngineHost(wc, client, hostHooks);
       bootPhase('host-spawned');
 
-      // TASK12：日志系统初始化（WebContainer 就绪后注入 FS）。在快照恢复之后调用，
-      // 恢复写回的旧日志不再与新日志写竞争；此后的 boot/命令/快照事件全部落盘。
-      initLogger(wc.fs);
-
-      // 系统配置（TASK10）：settings 决定全新系统的默认工作区名；env 文件统计加载数。
-      // 读取失败 / 值被手改非法时全部回退默认，不阻断 boot。
-      let defaultWorkspace = 'main';
-      let envCount = 0;
-      try {
-        const wsRaw = await getSetting(wc.fs, 'default-workspace');
-        if (isValidWorkspaceName(wsRaw)) defaultWorkspace = wsRaw;
-        envCount = (await readEnvFile(wc.fs)).size;
-      } catch (e) {
-        noteOnly(`Config load failed (${String(e).slice(0, 80)}); using defaults`);
-      }
-
-      // 工作区状态：快照恢复后 /ws/.current 应已存在（随快照持久）；
-      // 全新系统则用配置的默认工作区名初始化。
-      await initWorkspace(boot, wc.fs, defaultWorkspace);
-      ok(`Loaded ${envCount} environment variables`);
-
-      // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
-      try {
-        await ensureServicesFiles(wc.fs);
-      } catch (e) {
-        noteOnly(`Service files init failed (${String(e).slice(0, 80)})`);
-      }
-
-      // 登录横幅（TASK15）：确保 /etc/succinix.motd 存在（缺失时落默认内容，用户可随后 motd 编辑）。
-      try {
-        await ensureMotd(wc.fs);
-      } catch (e) {
-        noteOnly(`Motd init failed (${String(e).slice(0, 80)})`);
-      }
-
-      // 浏览器先写一个"项目文件"，证明共享文件系统双向可用（host 挂载点即 /workspace）。
-      // 注意：内容与测试套件的字节数断言（TE5=74）绑定，不要随意改动。
-      await wc.fs.writeFile('/browser-wrote.txt', 'hello from browser — lifo should see this\nsecond line with LIFO keyword\n');
-      bootPhase('config-done');
-
-      // 探活：命令轮询循环就绪，TerminalExecutor 可用（host 预热已与配置读取重叠完成）。
-      // TASK18：waitForHostReady 已确认 pong；删去其后的冗余 ping（在延迟预热窗口内，
-      // 多余 ping 会被 Sandbox.create 的同步前缀阻塞，白白拖慢 boot）。
-      // R3.2：探活失败自动重试（最多 3 次，含首次），返回最终存活 host 句柄。
-      hostProc = await waitForHostReadyWithRetry(ui, wc, client, hostProc, hostHooks, opts.hostReadyDeadlineMs);
-      bootPhase('host-ready');
-      ok();
-
-      // 服务自启（TASK11）：声明式重启 —— boot 后按 /etc/succinix.autostart 逐个拉起。
-      // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
-      try {
-        const autostart = await readAutostart(wc.fs);
-        for (const name of autostart) {
-          const r = await startService({ wc, client, ports }, name);
-          if (r.ok) ok(`Started service '${name}' (autostart)`);
-          else failStep(`service '${name}' failed to start`);
-        }
-      } catch (e) {
-        noteOnly(`Autostart skipped (${String(e).slice(0, 80)})`);
-      }
-
-      void log('BOOT', 'boot complete');
+      // 应用级 bootsteps（config / workspace / env / services / motd / 自检文件 / 探活 /
+      // autostart）—— 与 ?instance= demo 共用同一实现（runApplicationBootSteps），防两套
+      // boot 逻辑漂移。不传 instanceId = 默认实例 /etc 语义，行为全等现状。
+      hostProc =
+        (await runApplicationBootSteps(boot, {
+          wc,
+          client,
+          ports,
+          hostReadyRetry: { ui, hostProc, hostHooks, deadlineMs: opts.hostReadyDeadlineMs },
+        })) ?? hostProc;
       bootPhase('boot-done');
       return { wc, client, ports, hostProc };
     },

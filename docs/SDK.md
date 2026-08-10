@@ -243,6 +243,92 @@ await session.boot(); // unlock input gate + first prompt
 - The host owns one executor per page (single host invariant); create multiple
   sessions over the same RPC channel when you need several terminal views.
 
+## Multi-instance embedding (0.4.0)
+
+Since 0.4.0 the package exposes `@succinix/engine/instance` — an aggregate factory
+that assembles a full per-instance stack in one call: booted executor, terminal
+session, snapshot persistence and service views.
+
+```ts
+import { createSuccinixInstance } from '@succinix/engine/instance';
+import type { WebContainer } from '@webcontainer/api';
+
+const wc = await WebContainer.boot();
+const inst = await createSuccinixInstance({
+  wc,
+  instanceId: 'alice', // user/tenant id; 'default' (or '') = standalone behavior
+  output: { write: (d) => term.write(d), clear: () => term.clear() }, // required
+});
+term.onData((d) => inst.terminal.handleData(d));
+await inst.terminal.boot();
+
+await inst.executor.exec('node -v');      // imperative channel, routed per instance
+await inst.snapshot.save();               // per-instance persistence key
+const states = await inst.services.list(); // per-instance service view
+await inst.restart();                     // instance-level reset (clear state + rebuild session)
+await inst.dispose();                     // releases session + executor (shared host untouched)
+```
+
+`SuccinixInstance` exposes `instanceId`, `client` (the per-instance RPC client),
+`terminal` (session; `restart()` swaps in a fresh one), `executor`, `persist`,
+`ports` (port → preview URL view), `snapshot {save, restore}`, `services
+{list, start, stop}`, `restart()` and `dispose()`.
+
+### Isolation model (DM-11)
+
+Organizational isolation only — **not a security boundary**. One shared host
+daemon per page; instances split directories, state, snapshots and process views.
+
+| Dimension | Cross-container (two tabs/pages) | Same-page (multiple instances) |
+| --- | --- | --- |
+| Runtime (host, Node, Lifo) | fully separate | shared single host |
+| Filesystem / interactive cwd | fully separate | shared (Lifo cwd is page-level) |
+| Persistent state / snapshots | fully separate | per-instance keys |
+| Services + port previews | fully separate | per-instance expected-port registry |
+| Process table (`ps`) / `kill` | fully separate | filtered by `instanceId` (host routing) |
+| RPC channel / watchdog | one per page | one shared per page |
+
+### Sharing rules (same page)
+
+- **One RPC channel per WebContainer** — `/cmd.json` is a single-slot mailbox.
+  Create one `TerminalClient` per instance (each stamped with its own
+  `instanceId`); the channel (queue, request ids, write timing) is shared
+  automatically per `wc`. Never boot several hosts on one page.
+- **One watchdog per page, host-level** — `createSuccinixInstance` never creates a
+  watchdog; wire it once per page (e.g. `startHostWatchdog`) and let all
+  instances share it.
+- **`rpc` option** — pass the page's already-booted client to reuse its host;
+  when omitted the factory boots its own host (single-instance pages, or each tab
+  of a multi-tab demo — identical to the standalone app).
+
+### Host-style wiring (one instance per container / per user)
+
+Recommended embedding: one WebContainer per user session, one instance per
+container — each user gets full runtime isolation from the aggregate API:
+
+```ts
+async function userSession(userId: string) {
+  const wc = await WebContainer.boot();
+  const inst = await createSuccinixInstance({ wc, instanceId: userId, output: render(userId) });
+  startHostWatchdog(inst.executor, wc); // once per page
+  return inst;
+}
+```
+
+Same-page multi-instance is supported (each instance needs its own client with
+its own `instanceId` and its own `output`), but per DM-11 the shared runtime
+means interactive Lifo cwd and long-running processes are page-level, not
+per-instance.
+
+### statePrefix caveat
+
+`statePrefix` overrides where browser-side state files live (default
+`/workspace/.succinix-<id>`; default instance = `/etc`). Host-side attribution
+(process filtering, kill authorization, `ps`) uses the built-in
+`.succinix-<id>` prefix, so when you override the prefix keep `instanceId` naming
+aligned with it (e.g. `instanceId: 'users/alice'` maps host-side to
+`/workspace/.succinix-users/alice`).
+
 ## Version strategy (TASK-S1/S2 decision)
 
 - **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0`, continuity with WebUnix history).

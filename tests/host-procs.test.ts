@@ -85,6 +85,22 @@ describe('registerProcess + listProcesses（登记记录 cwd → ps 附带归属
     expect(view?.scope).toBe('container');
     expect(view?.containerId).toBe('c-7');
   });
+
+  // M5：RPC 请求带 instanceId 时显式归属 —— 实例会话 cwd 是容器 home（/workspace 根，
+  // 无 .succinix-<id> 段），启发式会判 unknown，实例 ps 视图/服务状态会漏掉自己的进程。
+  it('explicit instance attribution wins over the cwd heuristic (instance session cwd = container home)', () => {
+    registerProcess('npx tinbase start', fakeChild(1005), '/home/wc-1', 'c-1');
+    const view = listProcesses().find((entry) => entry.pid === 1005);
+    expect(view?.scope).toBe('container');
+    expect(view?.containerId).toBe('.succinix-c-1');
+  });
+
+  it('default instance processes stay unstamped (heuristic, identical to pre-M5 behavior)', () => {
+    registerProcess('npx tinbase start', fakeChild(1006), '/home/wc-1', 'default');
+    const view = listProcesses().find((entry) => entry.pid === 1006);
+    expect(view?.scope).toBe('unknown');
+    expect(view?.containerId).toBeUndefined();
+  });
 });
 
 // M2（DM-12）：实例状态根 /workspace/.succinix-<id> 的进程归属 —— 与 c-<id> 命名空间共存。

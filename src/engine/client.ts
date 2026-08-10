@@ -2,6 +2,7 @@
 // 通道与 host 保持一致：/cmd.json {id,cmd,opts} → /result-<id>.json（每请求独立结果文件）。
 import type { WebContainer } from '@webcontainer/api';
 import { sleep } from './sleep.js';
+import { DEFAULT_INSTANCE_ID } from './host-route.js';
 
 // host 响应统一形状；具体字段依 cmd 而定（run/ps/kill/spawn/cwd/ping/exit）。
 export interface ExecResult {
@@ -32,6 +33,10 @@ export interface CommandLogEntry {
 export interface TerminalClientOptions {
   /** 命令执行采集点：terminal/spawn 完成后回调（宿主负责过滤与落盘；缺省不记录） */
   onCommand?: (entry: CommandLogEntry) => void;
+  /** 实例上下文（M3/M5，additive）：请求写入 /cmd.json 时回带 instanceId，host 按实例路由。
+   *  缺省 = 默认实例（不写字段，旧行为不变）。同页多实例共享单 host 时每个实例一个 client，
+   *  各带自己的 instanceId；client 按 wc 共享底层通道（见 channelFor），不会互相覆盖。 */
+  instanceId?: string;
 }
 
 // 只读/幂等协议命令：RPC 传输失败时允许重试 1 次（TASK16 稳定性）。
@@ -42,25 +47,51 @@ const READONLY_PROTO = new Set(['ping', 'ps', 'cwd']);
 // 覆盖的不是 host"尚未读取"的在途请求：距上次写 /cmd.json 超过该余量才允许覆盖。
 const HOST_POLL_MARGIN_MS = 250;
 
+// ─── 同页共享 RPC 通道（M5）───
+// /cmd.json 是单槽信箱：同一页面的多个 TerminalClient（同页多实例，DM-11）若各有独立
+// 互斥队列，并发写会互相覆盖（后写吞先写，先发请求等不到结果、30s 超时）。通道按
+// WebContainer 实例去重 —— 同 wc 的所有 client 共享同一队列 / 请求 id / 写时序判定
+// （看门狗 pingDirect 与 Ctrl+C interruptDirect 的覆盖安全窗口也共享，跨实例不误判）。
+// 单 client 时行为与独立队列完全一致（同一通道，无竞争者）。
+interface Channel {
+  id: number;
+  chain: Promise<unknown>;
+  pending: number;
+  active: number;
+  lastCmdWrite: number;
+}
+
+const channels = new WeakMap<WebContainer, Channel>();
+
+function channelFor(wc: WebContainer): Channel {
+  let ch = channels.get(wc);
+  if (!ch) {
+    ch = { id: 0, chain: Promise.resolve(), pending: 0, active: 0, lastCmdWrite: 0 };
+    channels.set(wc, ch);
+  }
+  return ch;
+}
+
 export class TerminalClient {
-  private id = 0;
   private options: TerminalClientOptions;
-  // 请求互斥队列（TASK16）：/cmd.json 是单槽通道，host 一次只处理一个请求，
-  // 并行调用会让后写覆盖先写的 cmd.json、先发请求等不到结果。所有 exec 串行化
-  // —— host 本就串行处理，浏览器侧排队不损失吞吐，只让失败变得确定。
-  private chain: Promise<unknown> = Promise.resolve();
-  /** 已入队未完成请求数（含在途）——看门狗直接探活判断通道是否可能被下一拍覆盖 */
-  private pending = 0;
-  /** 在途 doExec 数（已开始轮询结果，cmd.json 已写入） */
-  private active = 0;
-  /** 最近一次写 /cmd.json 的时间戳（看门狗覆盖安全窗口判断） */
-  private lastCmdWrite = 0;
+  // 同页共享通道（M5）：请求互斥队列 / id / pending / active / 写时序全部在通道上，
+  // 同一 wc 的多个 client（多实例）共享一份 —— 互斥队列语义与单 client 完全一致。
+  private readonly ch: Channel;
 
   constructor(
     private wc: WebContainer,
     options: TerminalClientOptions = {}
   ) {
     this.options = options;
+    this.ch = channelFor(wc);
+  }
+
+  // 请求携带实例上下文（M3/M5）：非默认实例写入 instanceId 字段（additive，旧 host 忽略）。
+  private stamp(payload: Record<string, unknown>): Record<string, unknown> {
+    if (this.options.instanceId && this.options.instanceId !== DEFAULT_INSTANCE_ID) {
+      payload.instanceId = this.options.instanceId;
+    }
+    return payload;
   }
 
   // 统一终端入口：协议命令（ps / kill <pid> / cwd / ping / exit）直接命中；
@@ -122,15 +153,16 @@ export class TerminalClient {
 
   // 排队执行：同一时刻只有一个在途请求（前一个完成或超时才轮到下一个）。
   private enqueue(cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
-    this.pending++;
-    const run = this.chain.then(() => this.doExec(++this.id, cmd, opts, timeoutMs));
+    const ch = this.ch;
+    ch.pending++;
+    const run = ch.chain.then(() => this.doExec(++ch.id, cmd, opts, timeoutMs));
     // 请求 settle（成功或失败）后释放 pending 计数；链不中断（单个请求失败不影响后续排队）。
-    this.chain = run.then(
+    ch.chain = run.then(
       () => {
-        this.pending--;
+        ch.pending--;
       },
       () => {
-        this.pending--;
+        ch.pending--;
       }
     );
     return run;
@@ -139,10 +171,11 @@ export class TerminalClient {
   // 单次 RPC：写 /cmd.json，轮询 /result-<id>.json，读到即删。
   // TASK21：请求带 protocol 版本字段（向后兼容 —— host 忽略缺失/未知字段，按 v1 处理）。
   private async doExec(id: number, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
-    this.active++;
+    const ch = this.ch;
+    ch.active++;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd, opts }));
-      this.lastCmdWrite = Date.now();
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd, opts })));
+      ch.lastCmdWrite = Date.now();
       const resultFile = `/result-${id}.json`;
       const start = Date.now();
       // TASK18 自适应轮询：快命令（echo / ls / ps）密集轮询尽快拿到结果（往返减半）；
@@ -167,7 +200,7 @@ export class TerminalClient {
         delay = Math.min(delay * 2, 150);
       }
     } finally {
-      this.active--;
+      ch.active--;
     }
   }
 
@@ -176,13 +209,14 @@ export class TerminalClient {
   // 安全前提：不覆盖 host 可能还没读取的在途 /cmd.json；不与被吞结果的 ping 浪费时间。
   // 返回：true=host 存活（pong）；false=超时（host 无响应）；null=通道忙，本轮跳过（中性）。
   async pingDirect(timeoutMs = 30000): Promise<boolean | null> {
+    const ch = this.ch;
     // 队列里还有未开始的请求：下一拍 doExec 会写 /cmd.json 覆盖本 ping → 必然被吞，跳过。
-    if (this.pending > this.active) return null;
+    if (ch.pending > ch.active) return null;
     // 刚写过 /cmd.json（host 轮询周期内可能还没读取）：覆盖会吞掉在途请求 → 跳过。
-    if (Date.now() - this.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
-    const id = ++this.id;
+    if (Date.now() - ch.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
+    const id = ++ch.id;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd: 'ping' }));
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd: 'ping' })));
     } catch {
       return false; // FS 不可写：按 host 不可达处理
     }
@@ -214,11 +248,12 @@ export class TerminalClient {
   // 返回：ExecResult（pid 为数字 = 已向该进程发 kill；pid 为 null = 无当前 run 可中断）；
   // null = 通道忙 / 无法发送（浏览器侧如实提示，不假装成功）。
   async interruptDirect(timeoutMs = 2000): Promise<ExecResult | null> {
-    if (this.pending > this.active) return null;
-    if (Date.now() - this.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
-    const id = ++this.id;
+    const ch = this.ch;
+    if (ch.pending > ch.active) return null;
+    if (Date.now() - ch.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
+    const id = ++ch.id;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify({ protocol: 1, id, cmd: 'interrupt' }));
+      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd: 'interrupt' })));
     } catch {
       return null; // FS 不可写：按无法发送处理
     }

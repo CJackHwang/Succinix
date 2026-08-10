@@ -7,13 +7,13 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/700.css';
-import { makeClientLogger, type SuccinixServices } from './boot.js';
+import { bootSuccinix, makeClientLogger, type SuccinixServices } from './boot.js';
 import { createBootUI } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
 import { log } from './log.js';
 import { runTests, type TestResult } from './tests.js';
-import { saveSnapshot } from './persist.js';
+import { saveSnapshot, type PersistContext } from './persist.js';
 import { getSetting } from './config.js';
 import { readMotd } from './motd.js';
 import { AMBER, RED, GRAY, RESET } from './theme.js';
@@ -188,12 +188,14 @@ async function scenarioRun(
 const AUTO_SNAPSHOT_BASE_MS = 2500;
 const AUTO_SNAPSHOT_MAX_MS = 15000;
 
-function startAutoSnapshot(fs: SuccinixServices['wc']['fs']): void {
+// M5：持久化主循环按实例键（demo 传 instance.persist；缺省 = 模块级默认实例，现状全等）。
+function startAutoSnapshot(fs: SuccinixServices['wc']['fs'], persist?: Pick<PersistContext, 'save'>): void {
+  const save = persist ? (force?: boolean) => persist.save(fs, force) : (force?: boolean) => saveSnapshot(fs, force);
   let interval = AUTO_SNAPSHOT_BASE_MS;
   let idleTicks = 0;
   const tick = async () => {
     try {
-      const r = await saveSnapshot(fs);
+      const r = await save();
       if (r.reason === 'changed') {
         idleTicks = 0;
         interval = AUTO_SNAPSHOT_BASE_MS;
@@ -208,10 +210,33 @@ function startAutoSnapshot(fs: SuccinixServices['wc']['fs']): void {
   };
   setTimeout(tick, AUTO_SNAPSHOT_BASE_MS);
   const flush = () => {
-    void saveSnapshot(fs, true).catch(() => {});
+    void save(true).catch(() => {});
   };
   window.addEventListener('pagehide', flush);
   window.addEventListener('beforeunload', flush);
+}
+
+// TASK16：自检结果进终端（complete() 之后、motd 横幅之前）。默认路径与 ?instance= demo 共用。
+function printTestResult(term: Terminal, testResult: TestResult | null, testCrashed: string): void {
+  if (testResult) {
+    const summary = `Self-test result: ${testResult.pass} passed, ${testResult.fail} failed, ${testResult.skip} skipped`;
+    if (testResult.fail > 0) {
+      term.writeln(`${RED}${summary}${RESET}`);
+      for (const f of testResult.failures) {
+        term.writeln(`${RED}  [ FAIL ] ${f}${RESET}`);
+      }
+    } else {
+      term.writeln(`${AMBER}${summary}${RESET}`);
+    }
+    (window as unknown as { __succinixResult?: { passed: number; failed: number; skipped: number; fails: string[] } }).__succinixResult = {
+      passed: testResult.pass,
+      failed: testResult.fail,
+      skipped: testResult.skip,
+      fails: testResult.failures,
+    };
+  } else if (testCrashed) {
+    term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
+  }
 }
 
 // ─── host 看门狗（每 30s ping，连续 2 次失败 → executor.respawn 重启 host）───
@@ -277,10 +302,18 @@ async function restartHost(executor: ReturnType<typeof createTerminalExecutor>, 
 async function main(): Promise<void> {
   const ui = createBootUI(term);
   const logger = makeSessionLogger();
+  const params = new URLSearchParams(location.search);
+  // M5 demo：?instance=<id> 走实例工厂（引擎级 boot + 应用级 bootsteps + 聚合对象）。
+  // 缺省路径（无 ?instance / ?instance=default）= 现状行为全等。
+  const instanceParam = params.get('instance');
+  if (instanceParam && instanceParam !== 'default') {
+    await mainDemoInstance(ui, logger, instanceParam);
+    return;
+  }
   try {
     const boot = createTerminalBoot(ui, {
       steps: [...DEFAULT_BOOT_STEPS],
-      testMode: new URLSearchParams(location.search).get('test') === '1',
+      testMode: params.get('test') === '1',
       onCommand: makeClientLogger(),
     });
     const services = await boot.boot();
@@ -360,25 +393,7 @@ async function main(): Promise<void> {
     fitAddon.fit();
 
     // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）。
-    if (testResult) {
-      const summary = `Self-test result: ${testResult.pass} passed, ${testResult.fail} failed, ${testResult.skip} skipped`;
-      if (testResult.fail > 0) {
-        term.writeln(`${RED}${summary}${RESET}`);
-        for (const f of testResult.failures) {
-          term.writeln(`${RED}  [ FAIL ] ${f}${RESET}`);
-        }
-      } else {
-        term.writeln(`${AMBER}${summary}${RESET}`);
-      }
-      (window as unknown as { __succinixResult?: { passed: number; failed: number; skipped: number; fails: string[] } }).__succinixResult = {
-        passed: testResult.pass,
-        failed: testResult.fail,
-        skipped: testResult.skip,
-        fails: testResult.failures,
-      };
-    } else if (testCrashed) {
-      term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
-    }
+    printTestResult(term, testResult, testCrashed);
 
     // 提示符准确性：boot 后取一次真实会话 cwd（host 启动已恢复 /etc/succinix.cwd 的持久值）。
     try {
@@ -401,6 +416,130 @@ async function main(): Promise<void> {
     // 持久化主循环 + host 看门狗 + 服务就绪预览提示。
     startAutoSnapshot(wc.fs);
     startHostWatchdog(executor, wc);
+    wc.on('server-ready', (port, url) => {
+      term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
+    });
+  } catch (e) {
+    // 启动期异常（host 未就绪等）：在覆盖层内显示错误页并停留。
+    ui.fail([`Startup failed: ${String(e)}`], {
+      header: 'Startup failed',
+      footer: 'Check the browser console for the underlying error.',
+    });
+  }
+}
+
+// ─── M5 demo：?instance=<id> ───
+// 组装走 bootSuccinix 的 demo 分支（createSuccinixInstance 引擎级 boot + 应用级 bootsteps）。
+// 会话来自实例聚合对象（instance.terminal，restart 后自动指向新会话）；本地命令 ctx 注入
+// instanceId / persist / restart / dispose —— snapshot/env/settings/service/motd 按实例解析。
+async function mainDemoInstance(
+  ui: ReturnType<typeof createBootUI>,
+  logger: ReturnType<typeof makeSessionLogger>,
+  instanceId: string
+): Promise<void> {
+  let ctx: CommandContext;
+  const getCtx = () => ctx;
+  try {
+    const services = await bootSuccinix(ui, {
+      output,
+      terminal: {
+        localHandlers: makeLocalHandlers(getCtx),
+        beforeRpc: async (cmd) => {
+          // python/pip 命令（含链中段）首用前懒注入运行时资产（注入幂等，~13MB 仅一次）。
+          if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
+            await ensurePythonRuntime(getCtx().wc);
+          }
+        },
+        onCommand: logger.onCommand,
+        onCommandError: logger.onCommandError,
+        onPrompt: benchMarkPrompt,
+        colors: { red: (s) => RED + s + RESET, gray: (s) => GRAY + s + RESET, amber: (s) => AMBER + s + RESET },
+      },
+    });
+    if (!services || !services.instance) return;
+    const instance = services.instance;
+    const { wc, client, ports } = services;
+
+    ctx = {
+      wc,
+      client,
+      ports,
+      term,
+      fit: () => fitAddon.fit(),
+      instanceId,
+      persist: instance.persist,
+      onInstanceReset: () => instance.restart(),
+      onInstanceStop: () => void instance.dispose(),
+    };
+    term.onData((d) => instance.terminal.handleData(d));
+
+    // TASK18：?bench=1 时暴露内部句柄（RPC 客户端 / 容器 FS / 终端 / 快照，按实例键）。
+    if (benchMode) {
+      (window as unknown as { __succinixBench?: unknown }).__succinixBench = {
+        client,
+        wc,
+        term,
+        saveSnapshot: (force?: boolean) => instance.persist.save(wc.fs, force),
+      };
+    }
+
+    // TASK19：?scenario=1 时暴露场景驱动句柄。
+    if (scenarioMode) {
+      (window as unknown as { __succinixScenario?: unknown }).__succinixScenario = {
+        booted: true,
+        client,
+        wc,
+        ports,
+        term,
+        saveSnapshot: (force?: boolean) => instance.persist.save(wc.fs, force),
+        run: (cmd: string, timeoutMs?: number) => scenarioRun(instance.terminal, services, cmd, timeoutMs),
+      };
+    }
+
+    // 应用持久化设置（TASK10）：font-size 按实例 settings 解析。
+    const fontSizeNum = Number(await getSetting(wc.fs, 'font-size', instanceId));
+    if (Number.isInteger(fontSizeNum) && fontSizeNum >= 8 && fontSizeNum <= 72) {
+      term.options.fontSize = fontSizeNum;
+    }
+
+    // 自检（?test=1）：demo 模式仍跑默认实例自检（M5 保留项，hooks 不降）。
+    let testResult: TestResult | null = null;
+    let testCrashed = '';
+    if (new URLSearchParams(location.search).get('test') === '1') {
+      try {
+        testResult = await runTests({ wc, client, ports, term });
+      } catch (e) {
+        testCrashed = String(e);
+        term.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
+      }
+    }
+
+    // boot（及可选自检）完成：移除错误页 DOM（终端全程可见）。
+    await ui.complete();
+    fitAddon.fit();
+    printTestResult(term, testResult, testCrashed);
+
+    // 提示符准确性：boot 后取一次真实会话 cwd（host 已按实例恢复 succinix.cwd 的持久值）。
+    try {
+      const cwdRes = await client.exec('cwd', undefined, 2000);
+      if (cwdRes.cwd) instance.terminal.setCwd(String(cwdRes.cwd));
+    } catch {
+      /* host cwd 不可得：保持 /workspace */
+    }
+
+    const motdText = await readMotd(wc.fs, instanceId);
+    if (motdText) {
+      for (const line of motdText.split(/\r?\n/)) term.writeln(line);
+    } else {
+      term.writeln(WELCOME_BANNER);
+    }
+
+    // R1：解锁输入（session.boot 写首提示符；置于 motd 之后）。
+    await instance.terminal.boot();
+
+    // 持久化主循环（按实例键）+ host 看门狗（per-host，每页一个）+ 服务就绪预览提示。
+    startAutoSnapshot(wc.fs, instance.persist);
+    startHostWatchdog(instance.executor, wc);
     wc.on('server-ready', (port, url) => {
       term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
     });

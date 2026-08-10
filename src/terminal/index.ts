@@ -17,4 +17,6 @@ export {
   type TerminalBoot,
   type TerminalBootOptions,
   type TerminalBootResult,
+  type AppBootStepsContext,
+  runApplicationBootSteps,
 } from './boot.js';

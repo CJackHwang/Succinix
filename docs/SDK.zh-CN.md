@@ -204,3 +204,81 @@ await session.boot(); // 解锁输入门禁 + 首提示符
   peer 依赖）。`grep "node:" dist/terminal.js` 为空 —— 与引擎一致，纯浏览器层。
 - 宿主每页一个 executor（单 host 不变量）；需要多个终端视图时在同一 RPC 通道上创建多个
   session。
+
+## 多实例嵌入（0.4.0）
+
+自 0.4.0 起包暴露 `@succinix/engine/instance` —— 聚合工厂：一次调用组装完整的
+按实例栈：已 boot 的 executor、终端会话、快照持久化与服务视图。
+
+```ts
+import { createSuccinixInstance } from '@succinix/engine/instance';
+import type { WebContainer } from '@webcontainer/api';
+
+const wc = await WebContainer.boot();
+const inst = await createSuccinixInstance({
+  wc,
+  instanceId: 'alice', // 用户/租户 id；'default'（或 ''）= 独立应用行为
+  output: { write: (d) => term.write(d), clear: () => term.clear() }, // 必填
+});
+term.onData((d) => inst.terminal.handleData(d));
+await inst.terminal.boot();
+
+await inst.executor.exec('node -v');       // 命令式通道，按实例路由
+await inst.snapshot.save();                // 每实例持久化键
+const states = await inst.services.list(); // 每实例服务视图
+await inst.restart();                      // 实例级重置（清状态 + 重建会话）
+await inst.dispose();                      // 释放会话 + executor（共享 host 不动）
+```
+
+`SuccinixInstance` 暴露 `instanceId`、`client`（每实例 RPC 客户端）、`terminal`
+（会话；`restart()` 换新）、`executor`、`persist`、`ports`（port → 预览 URL 视图）、
+`snapshot {save, restore}`、`services {list, start, stop}`、`restart()` 与
+`dispose()`。
+
+### 隔离模型（DM-11）
+
+**组织性隔离，不是安全边界**。每页一个共享 host daemon；实例按目录 / 状态 / 快照 /
+进程视图分割。
+
+| 维度 | 跨容器（双 tab / 双页） | 同页（多实例） |
+| --- | --- | --- |
+| 运行时（host / Node / Lifo） | 完全独立 | 共享单 host |
+| 文件系统 / 交互 cwd | 完全独立 | 共享（Lifo cwd 页面级） |
+| 持久化状态 / 快照 | 完全独立 | 每实例键 |
+| 服务 + 端口预览 | 完全独立 | 每实例期望端口注册表 |
+| 进程表（`ps`）/ `kill` | 完全独立 | 按 `instanceId` 过滤（host 路由） |
+| RPC 通道 / 看门狗 | 每页一个 | 每页共享一个 |
+
+### 同页共享规则
+
+- **每个 WebContainer 一个 RPC 通道** —— `/cmd.json` 是单槽信箱。每实例建一个
+  `TerminalClient`（各自带自己的 `instanceId`）；通道（队列 / 请求 id / 写时序）
+  按 `wc` 自动共享。同页**绝不**起第二个 host。
+- **每页一个看门狗（host 级）** —— `createSuccinixInstance` 不内置看门狗；宿主
+  在页面级接一个（如 `startHostWatchdog`），所有实例共享。
+- **`rpc` 选项** —— 传宿主已 boot 的 client 即复用其 host；缺省时工厂自建
+  （单实例页面，或多 tab demo 的每个 tab —— 与独立应用行为一致）。
+
+### 宿主风格接线（每容器 / 每用户一个实例）
+
+推荐形态：每个用户会话一个 WebContainer、每容器一个实例 —— 每个用户从聚合 API
+获得完整运行时隔离：
+
+```ts
+async function userSession(userId: string) {
+  const wc = await WebContainer.boot();
+  const inst = await createSuccinixInstance({ wc, instanceId: userId, output: render(userId) });
+  startHostWatchdog(inst.executor, wc); // 每页一次
+  return inst;
+}
+```
+
+同页多实例受支持（每实例需自己的 client、自己的 `instanceId` 与自己的 `output`），
+但按 DM-11，共享运行时意味着交互式 Lifo cwd 与长驻进程是页面级，不是实例级。
+
+### statePrefix 注意
+
+`statePrefix` 覆盖浏览器侧状态文件的落盘位置（缺省 `/workspace/.succinix-<id>`；
+默认实例 = `/etc`）。host 侧归属（进程过滤 / kill 越权 / `ps`）以内置
+`.succinix-<id>` 前缀为准，覆盖前缀时请保持 `instanceId` 命名与其对齐
+（如 `instanceId: 'users/alice'` 在 host 侧对应 `/workspace/.succinix-users/alice`）。

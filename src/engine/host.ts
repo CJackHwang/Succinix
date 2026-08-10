@@ -28,6 +28,7 @@ import {
   vfsToReal,
   spawnCwdFor,
   pythonRuntimeArgs,
+  mapDataDirArgs,
   lifoSpawndCwd,
   lifoCwdToSessionCwd,
   capOutput,
@@ -227,7 +228,8 @@ function registerRealBinaryCommands(
     cmd: string,
     realCwd: string
   ): Promise<number> => {
-    const pid = registerProcess(cmd, child, realCwd);
+    // M5：Lifo 混合链转发进程同样按请求实例显式归属（cwd 可能是容器 home，无状态根段）。
+    const pid = registerProcess(cmd, child, realCwd, currentInstanceId);
     // both：既累积（写 ctx 流）也追加进程表（ps/kill 可见）。
     const out = attachOutputCollector(child, pid, 'both');
     const onAbort = () => child.kill();
@@ -451,7 +453,10 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
     writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, instanceId);
     return;
   }
-  const [prog, ...args] = t.tokens;
+  // M5：绝对路径数据目录参数（tinbase --data-dir）按浏览器视角映射到 host 真实根
+  // （实测：node 进程的容器根没有 /workspace，浏览器 wc.fs `/` == process.cwd()，
+  // 浏览器 `/workspace/x` 的真实位置是 process.cwd()/workspace/x），见 host-route.mapDataDirArgs。
+  const [prog, ...args] = mapDataDirArgs(t.tokens, process.cwd());
   spawnChild(prog, args, opts, reqId, 'node', instanceId);
 }
 
@@ -532,7 +537,9 @@ function spawnTracked(
   opts: { cwd: string; mode: OutputMode }
 ): { pid: number; child: ReturnType<typeof spawn>; out: ReturnType<typeof attachOutputCollector> } {
   const child = spawn(prog, args, { cwd: opts.cwd, env: mergedEnv(currentInstanceId) });
-  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd);
+  // M5：登记时带请求实例 id —— 实例会话 cwd 是容器 home（无状态根段），显式归属保证
+  // 实例 ps 视图 / service 状态能看到自己的进程（默认实例不标，行为全等）。
+  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd, currentInstanceId);
   const out = attachOutputCollector(child, pid, opts.mode);
   return { pid, child, out };
 }
@@ -616,7 +623,7 @@ function dispatchSpawn(req: CommandRequest): void {
     writeResult(req.id, { ok: false, error: t.error, runtime: 'node' }, inst);
     return;
   }
-  const [prog, ...args] = t.tokens;
+  const [prog, ...args] = mapDataDirArgs(t.tokens, process.cwd());
   const realCwd = spawnCwd(currentInstanceId);
   // 后台进程输出只追加进程表 outputTail（不截断累积）；TASK-CISOL 登记 cwd 供归属判定。
   const { pid, child } = spawnTracked(prog, args, { cwd: realCwd, mode: 'append' });

@@ -13,11 +13,11 @@ import { getSetting } from '../config.js';
 import { readMotd } from '../motd.js';
 import { AMBER, RED, GRAY, RESET } from '../theme.js';
 import { SUCCINIX_VERSION } from '../version.js';
-import { SuccinixTerminalSession, createTerminalBoot, DEFAULT_BOOT_STEPS, type TerminalRpc } from '../terminal/index.js';
+import { SuccinixTerminalSession, type TerminalRpc } from '../terminal/index.js';
 import { term, fitAddon } from './xterm.js';
 import { output } from './output.js';
 import { makeLocalHandlers } from './local-commands.js';
-import { makeSessionLogger, makeClientLogger } from './logging.js';
+import { makeSessionLogger } from './logging.js';
 import { startAutoSnapshot } from './auto-snapshot.js';
 import { startHostWatchdog } from './watchdog.js';
 import { benchMode, scenarioMode, benchMarkPrompt, scenarioRun, printTestResult, installDevHooks } from './dev-hooks.js';
@@ -42,12 +42,7 @@ async function main(): Promise<void> {
     return;
   }
   try {
-    const boot = createTerminalBoot(ui, {
-      steps: [...DEFAULT_BOOT_STEPS],
-      testMode: params.get('test') === '1',
-      onCommand: makeClientLogger(),
-    });
-    const services = await boot.boot();
+    const services = await bootSuccinix(ui);
     // 环境不适配：错误页已在覆盖层内显示，不进终端、不淡出。
     if (!services) return;
     const { wc, client, ports, hostProc } = services;
@@ -104,12 +99,11 @@ async function main(): Promise<void> {
 
     let testResult: TestResult | null = null;
     let testCrashed = '';
-    if (boot.testMode) {
+    if (params.get('test') === '1') {
       try {
         testResult = await runTests({ wc, client, ports, term });
       } catch (e) {
         testCrashed = String(e);
-        term.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
       }
     }
 
@@ -228,7 +222,6 @@ async function mainDemoInstance(
         testResult = await runTests({ wc, client, ports, term });
       } catch (e) {
         testCrashed = String(e);
-        term.writeln(`${RED}[ FAIL ] self-test crashed: ${String(e)}${RESET}`);
       }
     }
 

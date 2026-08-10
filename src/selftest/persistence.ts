@@ -12,7 +12,7 @@ export async function runPersistence(ctx: TestContext): Promise<void> {
   verdict(term, 'Persistence', 'snapshot saved', pers1.meta.fileCount > 0, `${pers1.meta.fileCount} files`);
 
   const pers2 = await loadSnapshot(wc.fs);
-  const restoredText = pers2 ? await wc.fs.readFile('/browser-wrote.txt', 'utf8') : '';
+  const restoredText = pers2 ? await wc.fs.readFile('/browser-wrote.txt', 'utf8').catch(() => '') : '';
   const loadable = !!pers2 && pers2.fileCount === pers1.meta.fileCount && restoredText.includes('hello from browser');
   verdict(term, 'Persistence', 'snapshot loadable', loadable, pers2 ? `restored ${pers2.fileCount} files` : 'no snapshot to restore');
 

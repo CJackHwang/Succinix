@@ -82,6 +82,14 @@ export function printTestResult(term: Terminal, testResult: TestResult | null, t
     };
   } else if (testCrashed) {
     term.writeln(`${RED}[ FAIL ] self-test crashed: ${testCrashed}${RESET}`);
+    // 崩溃也要落到 __succinixResult：verify-deploy 等门禁靠该句柄判定完成，
+    // 否则崩溃会被当成 300s 挂起超时，掩盖真实失败（fast-fail 语义）。
+    (window as unknown as { __succinixResult?: { passed: number; failed: number; skipped: number; fails: string[] } }).__succinixResult = {
+      passed: 0,
+      failed: 1,
+      skipped: 0,
+      fails: [`self-test crashed: ${testCrashed}`],
+    };
   }
 }
 

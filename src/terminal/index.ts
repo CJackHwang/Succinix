@@ -8,3 +8,13 @@ export {
   type LocalCommandHandler,
   type DirEntry,
 } from './session.js';
+export {
+  createTerminalBoot,
+  DEFAULT_BOOT_STEPS,
+  BOOT_BASE_STEPS,
+  MAX_BOOT_ATTEMPTS,
+  MAX_HOST_READY_ATTEMPTS,
+  type TerminalBoot,
+  type TerminalBootOptions,
+  type TerminalBootResult,
+} from './boot.js';

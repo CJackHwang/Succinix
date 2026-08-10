@@ -11,6 +11,7 @@ import {
   pythonRuntimeArgs,
   lifoSpawndCwd,
   sessionCwdToBrowserPath,
+  sessionCwdPromptLabel,
   capOutput,
   MAX_OUTPUT_BYTES,
   withEaccesHint,
@@ -113,6 +114,16 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(sessionCwdToBrowserPath('/home/wc-123')).toBe('/');
     expect(sessionCwdToBrowserPath('/tmp')).toBe('/');
     expect(sessionCwdToBrowserPath('/')).toBe('/');
+  });
+
+  it('sessionCwdPromptLabel：cd 后提示符随目录更新（~ = /workspace）', () => {
+    // ~ = /workspace（工作区根，提示符初始 ~ 所指）
+    expect(sessionCwdPromptLabel('/workspace')).toBe('~');
+    expect(sessionCwdPromptLabel('/workspace/proj')).toBe('~/proj');
+    expect(sessionCwdPromptLabel('/workspace/a/b')).toBe('~/a/b');
+    // host 真实路径（初始 cwd，即工作区根的真实路径视图）→ 回落 ~
+    expect(sessionCwdPromptLabel('/home/wc-123')).toBe('~');
+    expect(sessionCwdPromptLabel('/workspacex')).toBe('~'); // 前缀误判防护
   });
 });
 

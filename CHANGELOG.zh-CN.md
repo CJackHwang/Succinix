@@ -53,6 +53,7 @@
 
 ### Fixed
 
+- **提示符随会话 cwd 更新（cd 现在会改提示符）** —— REPL 提示符原硬编码 `guest@succinix:~$`，`cd` 后不反映目录。浏览器现在跟踪会话 cwd（boot 后从 host `cwd` 协议取一次初值，刷新后持久化的 `/etc/succinix.cwd` 不再退化；成功的 `cd` run 结果带 `cwd` 字段时更新），并渲染目录：`/workspace` → `~`、`/workspace/proj` → `~/proj`（`sessionCwdPromptLabel`，已单测）。`cd /workspace/proj` 后提示符变为 `guest@succinix:~/proj$`。
 - **P0-1 跟进：快照恢复后 30s 年龄强制不再重新武装** —— 新页面 `lastFullSaveAt` 为 0，恢复快照后空闲一直 dedup 又永不更新，`isAgeForced` 整个会话恒为 false，刷新后的等长 shell 编辑丢失窗口变成无界。`loadSnapshot` 现在把时钟归零到 `Date.now()`（回归测试直接向 IndexedDB 种子快照，断言间隔后 `reason=age` 触发）。
 - **P0-2 跟进：处理后删除 `/cmd.json` 可能吞掉直接探活** —— `finally` 盲目删除文件内容；看门狗 `pingDirect` / Ctrl+C `interruptDirect`（绕过队列）在 host 忙于长 Lifo/Python 命令时写入的请求被删而非处理，看门狗可能误计失败（连续 2 次即误重启 host）。现在只在文件仍持有刚处理请求 id 时删除（`shouldRemoveCmdFile`，已单测）；更新的带外请求留给下一轮轮询。
 - TASK24 复审（re-review fixes；自检门禁 67 → **71**）：四个新自检检查 ——

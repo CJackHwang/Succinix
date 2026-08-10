@@ -16,7 +16,7 @@
 ## 特性
 
 - **全屏终端体验** — 居中的 DOM 启动画面（boot splash）带系统自检与环境不适配优雅退出（显示专业错误页而非降级），随后进入交互式 Shell（`guest@succinix:~$`）。
-- **交互终端按键（REPL）** — **Ctrl+C** 中断当前运行命令并丢弃排队命令（`node`/`npm`/`npx` run 经 `interrupt` 协议被 kill；纯 Lifo 命令与后台服务不受影响）、**上下箭头**浏览命令历史（会话内存）、**Tab** 补全内置命令名与文件路径（多候选列出）、**Ctrl+L** 清屏。
+- **交互终端按键（REPL）** — **Ctrl+C** 中断当前运行命令并丢弃排队命令（`node`/`npm`/`npx` run 经 `interrupt` 协议被 kill；纯 Lifo 命令与后台服务不受影响）、**上下箭头**浏览命令历史（会话内存）、**Tab** 补全内置命令名与文件路径（多候选列出）、**Ctrl+L** 清屏。提示符随会话 cwd 更新：`cd /workspace/proj` 后 `guest@succinix:~$` 变为 `guest@succinix:~/proj$`（`~` = 工作区根）。
 - **统一命令执行** — 单一终端入口：
   - `node`、`npm`、`npx` 及项目二进制运行在**真实 Node.js 进程**上（WebContainer）。
   - `python` / `python3` / `pip` / `pip3` 运行在**内置 Pyodide 运行时**（Python 3.14.2，Pyodide 314.0.4）——常驻 daemon 作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；`pip` 映射到 Pyodide 的 **micropip**（纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在）；交互式 REPL 不支持（WebContainer stdin 边界）。

@@ -9,7 +9,7 @@ import { bootSuccinix } from './boot.js';
 import { createBootUI } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
-import { sessionCwdToBrowserPath } from './engine/host-route.js';
+import { sessionCwdToBrowserPath, sessionCwdPromptLabel } from './engine/host-route.js';
 import { log } from './log.js';
 import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
@@ -69,7 +69,14 @@ fitAddon.fit();
 window.addEventListener('resize', () => fitAddon.fit());
 
 // ─── REPL 状态 ───
-const promptStr = 'guest@succinix:~$ ';
+// 提示符前缀；目录段随会话 cwd 动态渲染（cd 后提示符跟随，~ = /workspace）。
+const promptPrefix = 'guest@succinix:';
+// 浏览器侧缓存的会话 cwd（Lifo 视图）：初始 /workspace（即提示符初始 `~` 所指），
+// cd 成功后由 run 结果的 cwd 字段更新，boot 后取一次真实值（支持刷新后持久化的 cwd）。
+let sessionCwd = '/workspace';
+function promptStr(): string {
+  return `${promptPrefix}${sessionCwdPromptLabel(sessionCwd)}$ `;
+}
 let line = '';
 let busy = false;
 const queue: string[] = [];
@@ -99,7 +106,7 @@ function benchMarkPrompt(): void {
 }
 
 function prompt(): void {
-  term.write('\r\n' + promptStr);
+  term.write('\r\n' + promptStr());
   line = '';
   benchMarkPrompt();
 }
@@ -148,7 +155,7 @@ function handleData(data: string): void {
       }
       if (!trimmed) {
         // 空命令：只换到下一行提示符，不发 host（否则 host 会回一个 "empty command" 错误）。
-        term.write(promptStr);
+        term.write(promptStr());
         return;
       }
       void runCommand(cmd);
@@ -175,7 +182,7 @@ function handleData(data: string): void {
     }
     if (ch === '\u000c') {
       term.clear();
-      term.write(promptStr + line);
+      term.write(promptStr() + line);
       continue;
     }
     // 单个 Tab 已在循环前整体处理（补全）。粘贴内容里的嵌入式 tab（0x09 < ' '）由下方
@@ -196,7 +203,7 @@ function historyNavigate(dir: -1 | 1): void {
   if (next < 0 || next > history.length) return; // 越界忽略
   historyIdx = next;
   const entry = historyIdx < history.length ? history[historyIdx] ?? '' : '';
-  term.write(`\r${promptStr}${' '.repeat(line.length)}\r${promptStr}`);
+  term.write(`\r${promptStr()}${' '.repeat(line.length)}\r${promptStr()}`);
   line = entry;
   term.write(entry);
 }
@@ -269,7 +276,7 @@ async function handleTab(): Promise<void> {
     return;
   }
   // 多候选且无共同前缀：列出候选并重绘提示符。
-  term.write(`\r\n${matches.join('  ')}\r\n${promptStr}${line}`);
+  term.write(`\r\n${matches.join('  ')}\r\n${promptStr()}${line}`);
 }
 
 // 协议命令（ps/cwd/kill/spawn...）没有 stdout，直接呈现字段。
@@ -353,6 +360,9 @@ async function execute(cmd: string): Promise<void> {
     return;
   }
   const res = rpc.res;
+  // 提示符跟随：成功的 cd（run 结果带 cwd 字段，Lifo 视图）同步浏览器缓存，
+  // 下一次 prompt() 即显示新目录（如 guest@succinix:~/proj$）。仅 exitCode===0 的 cd 带 cwd。
+  if (typeof res.cwd === 'string') sessionCwd = res.cwd;
 
   // 协议命令响应直接呈现
   if (Array.isArray(res.processes) || typeof res.pid === 'number' || res.cwd || res.message || res.kind) {
@@ -672,6 +682,16 @@ async function main(): Promise<void> {
     // R1：boot（及可选自检）完成，解锁输入。置于 motd + 提示符输出之前：
     // ?test=1 模式下在自检结果输出后、motd 前；失败路径（catch → ui.fail）不置位。
     booted = true;
+
+    // 提示符准确性：boot 后取一次真实会话 cwd（host 启动已恢复 /etc/succinix.cwd 的持久值），
+    // 刷新后提示符不再退化成初始 ~。exec 不经 onCommand，不产生命令日志；短超时避免万一
+    // host 此刻无响应时把首提示符推迟到 30s（host 已在 waitForHostReady 确认就绪，正常必快）。
+    try {
+      const cwdRes = await ctx.client.exec('cwd', undefined, 2000);
+      if (cwdRes.cwd) sessionCwd = String(cwdRes.cwd);
+    } catch {
+      /* host cwd 不可得：保持 /workspace（提示符仍显示 ~） */
+    }
 
     const motdText = await readMotd(services.wc.fs);
     if (motdText) {

@@ -98,6 +98,17 @@ export function sessionCwdToBrowserPath(cwd: string): string {
   return '/';
 }
 
+// 提示符目录标签（cd 后提示符随目录更新）：~ = /workspace（工作区根，即提示符的 `~` 所指，
+// 也是浏览器根的 Lifo 视图）。/workspace → `~`，/workspace/proj → `~/proj`；其余（如初始的
+// host 真实路径 /home/<wc-id>，它正是工作区根的真实路径视图；以及 REPL 内不可达的其他路径）
+// 一律回落 `~` —— REPL 里 sessionCwd 只可能是工作区根或其下（cd 同步仅对 /workspace 下生效）。
+export function sessionCwdPromptLabel(cwd: string): string {
+  if (cwd === WORKSPACE_MOUNT || cwd.startsWith(WORKSPACE_MOUNT + '/')) {
+    return '~' + cwd.slice(WORKSPACE_MOUNT.length);
+  }
+  return '~';
+}
+
 // ─── 输出截断 / EACCES 提示 ───
 
 // TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。正常命令

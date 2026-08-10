@@ -689,6 +689,7 @@ busy 时连续输入的命令排进 `queue`，**没有任何方式丢弃它们**
 | P1-5 | **README 进程管理小节缺 scope 启发式标注**（完成记录称"README 标注"，实际只改了 host-procs.ts + PROTOCOL.md 且 PROTOCOL 缺「非安全边界」）。 | README / PROTOCOL（中英）补「启发式、非安全边界、仅 UI 展示与查询过滤」。 |
 | P4-14 | **README 缺日志读改写 backlog 标注**（完成记录称"已在 README 标注"，实际 README 未提）。 | README Known Boundaries（中英）补 O(n) 读改写说明。 |
 | P5-15/16/17 | **新交互特性未入文档**：README 特性清单与 `help` 输出都没提 Ctrl+C 中断 / 历史 / Tab 补全。 | README（中英）特性清单 + `help` 输出补 terminal keys 段。 |
+| P5-16 复审 | **Tab 补全不随会话 cwd**：无斜杠 token 一律读根目录，`cd /workspace/proj` 之后 `cat fi<Tab>` 补的是根条目而非当前目录。 | `handleTab` 无斜杠 token 经 `client.exec('cwd')`（不经 onCommand，无日志噪音）取会话 cwd，`sessionCwdToBrowserPath`（host-route.ts 纯函数，双根映射 + 3 断言）映射到浏览器可读路径；busy 时回落根目录。顺带删除 `handleData` 里冗余的 `if (ch === '\t') continue;`（单个 Tab 已在循环前处理，嵌入式 tab 由 `ch >= ' '` 守卫一并丢弃）。 |
 | 文档同步 | **中文文档滞后**：`docs/README.zh-CN.md`、`docs/PROTOCOL.zh-CN.md`、`docs/SDK.zh-CN.md` 均未同步批次改动（提交只改了英文）。 | 中英双语文档全部对齐（含测试钩子 P6-19、CSP P6-18、两个执行面 P1-3、快照边界 P0-1）。 |
 | CHANGELOG | **批次未记入 CHANGELOG**（提交文件列表无 CHANGELOG）。 | `CHANGELOG.md` + `CHANGELOG.zh-CN.md` [Unreleased] 补 19 项批次 + 本附录 2 个修复。 |
 | 陈旧注释 | vitest.config「6 个文件」→ 8 个；main.ts 退避「5s/8s/15s」→ 实际 5s/10s/15s。 | 已修正。 |

@@ -88,6 +88,16 @@ export function lifoSpawndCwd(vfsCwd: string, sessionCwd: string, root: string):
   return spawnCwdFor(sessionCwd, root);
 }
 
+// P5-16 复审：会话 cwd（Lifo 视图）→ 浏览器 wc.fs 可读路径。浏览器 `/` == host 进程
+// process.cwd() == Lifo `/workspace` 挂载点，因此 /workspace → `/`、/workspace/proj → `/proj`；
+// 其余回落根 `/`（host 真实路径如 /home/<wc-id> 的浏览器视图即根 `/`，Lifo 私有路径在
+// 浏览器 FS 不可读也回落根）。Tab 补全按此定位「当前目录」。
+export function sessionCwdToBrowserPath(cwd: string): string {
+  if (cwd === WORKSPACE_MOUNT) return '/';
+  if (cwd.startsWith(WORKSPACE_MOUNT + '/')) return cwd.slice(WORKSPACE_MOUNT.length);
+  return '/';
+}
+
 // ─── 输出截断 / EACCES 提示 ───
 
 // TASK18：单命令 stdout/stderr 各自最多保留的字符数（防超大输出 OOM）。正常命令

@@ -10,6 +10,7 @@ import {
   resolveBrowserPath,
   pythonRuntimeArgs,
   lifoSpawndCwd,
+  sessionCwdToBrowserPath,
   capOutput,
   MAX_OUTPUT_BYTES,
   withEaccesHint,
@@ -101,6 +102,17 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(lifoSpawndCwd('/workspace/sub', '/workspace', ROOT)).toBe(`${ROOT}/sub`);
     expect(lifoSpawndCwd('/tmp', '/workspace', ROOT)).toBe(spawnCwdFor('/workspace', ROOT)); // 回落会话 cwd
     expect(lifoSpawndCwd('/tmp', '/workspace/x', ROOT)).toBe(spawnCwdFor('/workspace/x', ROOT));
+  });
+
+  it('sessionCwdToBrowserPath：会话 cwd（Lifo 视图）→ 浏览器可读路径（P5-16 复审，Tab 补全用）', () => {
+    // 浏览器 `/` == host process.cwd() == Lifo /workspace 挂载点
+    expect(sessionCwdToBrowserPath('/workspace')).toBe('/');
+    expect(sessionCwdToBrowserPath('/workspace/proj')).toBe('/proj');
+    expect(sessionCwdToBrowserPath('/workspace/a/b')).toBe('/a/b');
+    // host 真实路径（未 cd 的初始 cwd，浏览器视图即根）与 Lifo 私有路径 → 回落根
+    expect(sessionCwdToBrowserPath('/home/wc-123')).toBe('/');
+    expect(sessionCwdToBrowserPath('/tmp')).toBe('/');
+    expect(sessionCwdToBrowserPath('/')).toBe('/');
   });
 });
 

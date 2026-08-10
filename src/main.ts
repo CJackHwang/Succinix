@@ -9,6 +9,7 @@ import { bootSuccinix } from './boot.js';
 import { createBootUI } from './boot-ui.js';
 import { tryHandleLocalCommand, type CommandContext } from './commands.js';
 import { tokenize } from './engine/tokenize.js';
+import { sessionCwdToBrowserPath } from './engine/host-route.js';
 import { log } from './log.js';
 import { runTests, type TestResult } from './tests.js';
 import { saveSnapshot } from './persist.js';
@@ -177,7 +178,8 @@ function handleData(data: string): void {
       term.write(promptStr + line);
       continue;
     }
-    if (ch === '\t') continue; // 暂不支持补全
+    // 单个 Tab 已在循环前整体处理（补全）。粘贴内容里的嵌入式 tab（0x09 < ' '）由下方
+    // `ch >= ' '` 守卫一并丢弃，不进入命令行 —— 无需单独分支。
     if (ch >= ' ') {
       line += ch;
       term.write(ch);
@@ -216,7 +218,7 @@ function commonPrefix(xs: string[]): string {
 }
 
 // P5-16：Tab 补全 —— 首 token 补内置命令名；含 / 的 token 按目录 readdir 补文件路径；
-// 无 / 的 token 补根目录条目。唯一命中直接补全，多命中列出 + 共同前缀。
+// 无 / 的 token 按**会话 cwd**（host cwd 协议取得）补当前目录条目。唯一命中直接补全，多命中列出 + 共同前缀。
 async function handleTab(): Promise<void> {
   const tokens = line.split(/\s+/);
   const token = tokens[tokens.length - 1] ?? '';
@@ -226,11 +228,26 @@ async function handleTab(): Promise<void> {
   }
   try {
     const hasSlash = token.includes('/');
-    const dir = hasSlash ? token.slice(0, token.lastIndexOf('/') + 1) || '/' : '/';
+    // P5-16 复审：无斜杠 token 按会话 cwd 补全（cd /workspace/proj 之后 cat fi<Tab> 补当前目录，
+    // 而非根目录）。经 host cwd 协议取会话 cwd —— client.exec 不经 onCommand，不产生命令日志；
+    // 会话 cwd 是 Lifo 视图，经 sessionCwdToBrowserPath 映射到浏览器可读路径。busy 时跳过 RPC 回落根目录。
+    let dir = '/';
+    if (hasSlash) {
+      dir = token.slice(0, token.lastIndexOf('/') + 1) || '/';
+    } else if (!busy) {
+      try {
+        const r = await ctx.client.exec('cwd');
+        if (r.cwd) dir = sessionCwdToBrowserPath(String(r.cwd));
+      } catch {
+        /* cwd 不可得：回落根目录 */
+      }
+    }
     const entries = await ctx.wc.fs.readdir(dir, { withFileTypes: true });
     for (const e of entries) {
       const name = String(e.name);
       const isDir = typeof e.isDirectory === 'function' && e.isDirectory();
+      // 无斜杠 token：候选是「当前目录下的条目名」（相对），补全后命令在会话 cwd 里执行；
+      // 含 / 的 token：候选是 dir + 名称（绝对路径）。
       candidates.add((hasSlash ? dir : '') + name + (isDir ? '/' : ''));
     }
   } catch {

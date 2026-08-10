@@ -32,17 +32,17 @@
 | 任务 | 状态 | 证据/缺口 |
 | --- | --- | --- |
 | E1 终端会话提取 | 已完成 | `src/terminal/session.ts` + 单测 |
-| E2 boot 参数化 | 部分完成 | `src/terminal/boot.ts` 存在，但违反分层边界，见 D1 |
+| E2 boot 参数化 | 已完成 | `src/terminal/boot.ts` SDK 化，应用 boot 步骤注入 `src/boot-steps.ts`（D1 已修复） |
 | E3 main.ts 组装层 | 已完成 | `src/main.ts` 已瘦身到 560 行 |
 | E4 engine 打包 | 部分完成 | 本地 `build:engine-package` 通过；版本仍是 0.1.3 |
-| M1 persist key 注入 | 已完成 | `src/persist.ts` 多 key 单测通过；共享 FS 内容隔离缺失，见 D4 |
-| M2 状态文件路径参数化 | 部分完成 | 浏览器侧已参数化；db 的 `statePrefix` 未透传，见 D6 |
+| M1 persist key 注入 | 已完成 | `src/persist/` 多 key 单测通过；同页快照按实例 scope 隔离（D4 已修复） |
+| M2 状态文件路径参数化 | 已完成 | 浏览器侧参数化 + db start 透传 `statePrefix` 到 tinbase `--data-dir`（D6 已修复） |
 | M3 协议 instanceId | 已完成 | 协议单测覆盖；同页 e2e 仍是盲区 |
-| M4 service/ports/db 实例化 | 部分完成 | 跨容器 e2e 通过；同页端口分发缺失，见 D2 |
-| M5 聚合 API | 部分完成 | API 已实现；`restart()` 非真正重 boot，见 D3 |
+| M4 service/ports/db 实例化 | 已完成 | 跨容器 e2e 通过；同页端口按实例分发（D2 已修复） |
+| M5 聚合 API | 已完成 | reset-instance 协议实现真实实例级重 boot（D3 已修复） |
 | U1 多用户语义 | 已完成 | `?user=` 双 tab 27 项断言通过 |
 | F1 文档定稿 | 已完成 | CHANGELOG/SDK/PROTOCOL/FEATURES 已更新 |
-| F2 文档扫尾 | 部分完成 | 仍有 `>=57`、`0.3.0` 等陈旧数字，见 D7 |
+| F2 文档扫尾 | 已完成 | README/FEATURES 门禁数字统一为 `>=71`、实测 76（D7 已修复） |
 | F3 CI 全绿 | 未验证 | 有 workflow，无 `gh run` 结果证据 |
 | F4 最终验收 | 未完成 | 版本未 bump、未发布、未部署验证、§11 未勾选 |
 
@@ -313,21 +313,21 @@ scripts/lib/
 | --- | --- | --- | --- | --- | --- |
 | R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 未开始 |
 | R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始 |
-| R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 未开始 |
-| R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 未开始 |
-| D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 未开始 |
-| D2 | 功能 | P0 | 同页端口事件未分发 | `src/instance/index.ts`、`src/engine/index.ts` | 未开始 |
-| D3 | 功能 | P1 | restart 非真正重 boot | `src/instance/index.ts:208` | 未开始 |
-| D4 | 隔离 | P1 | 同页快照含其他实例内容 | `src/persist.ts:225` | 未开始 |
-| D5 | 性能/语义 | P2 | 实例 tinbase 未排除 | `src/persist.ts:98` | 未开始 |
-| D6 | 一致性 | P1 | db 忽略 statePrefix | `src/commands.ts:291` | 未开始 |
-| D7 | 文档 | P2 | README/FEATURES 陈旧数字 | `README.md`、`docs/FEATURES.md` | 未开始 |
-| O1 | 重构 | P2 | commands.ts 1520 行拆分 | `src/commands.ts` | 未开始 |
-| O2 | 重构 | P2 | main.ts 应用特性拆分 | `src/main.ts` | 未开始 |
-| O3 | 重构 | P2 | host.ts 831 行拆分 | `src/engine/host.ts` | 未开始 |
-| O4 | 重构 | P2 | persist.ts 454 行拆分 | `src/persist.ts` | 未开始 |
-| O5 | 重构 | P2 | tests.ts 923 行拆分 | `src/tests.ts` | 未开始 |
-| O6 | 重构 | P2 | 脚本 CDP 重复代码 | `scripts/*.mjs` | 未开始 |
+| R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
+| R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb） |
+| D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 已完成（7326bdb） |
+| D2 | 功能 | P0 | 同页端口事件未分发 | `src/instance/index.ts`、`src/engine/index.ts` | 已完成（7326bdb） |
+| D3 | 功能 | P1 | restart 非真正重 boot | `src/instance/index.ts:208` | 已完成（7326bdb） |
+| D4 | 隔离 | P1 | 同页快照含其他实例内容 | `src/persist.ts:225` | 已完成（7326bdb） |
+| D5 | 性能/语义 | P2 | 实例 tinbase 未排除 | `src/persist.ts:98` | 已完成（7326bdb） |
+| D6 | 一致性 | P1 | db 忽略 statePrefix | `src/commands.ts:291` | 已完成（7326bdb） |
+| D7 | 文档 | P2 | README/FEATURES 陈旧数字 | `README.md`、`docs/FEATURES.md` | 已完成（7326bdb） |
+| O1 | 重构 | P2 | commands.ts 1520 行拆分 | `src/commands.ts` | 已完成（0e4454b） |
+| O2 | 重构 | P2 | main.ts 应用特性拆分 | `src/main.ts` | 已完成（efcdfb5） |
+| O3 | 重构 | P2 | host.ts 831 行拆分 | `src/engine/host.ts` | 已完成（fb84492） |
+| O4 | 重构 | P2 | persist.ts 454 行拆分 | `src/persist.ts` | 已完成（95d21bd） |
+| O5 | 重构 | P2 | tests.ts 923 行拆分 | `src/tests.ts` | 已完成（37dab85） |
+| O6 | 重构 | P2 | 脚本 CDP 重复代码 | `scripts/*.mjs` | 已完成（工作区，含 bench 清理修复） |
 
 ## 9. 建议执行顺序
 
@@ -340,9 +340,9 @@ scripts/lib/
 
 ## 10. 残余风险
 
-- 同页多实例的端口分发、restart、快照边界只有代码审查结论，尚未被真实同页宿主 e2e 覆盖。
+- 同页多实例的端口分发、restart、快照边界已修复（D2/D3/D4），但同页宿主行为仍以协议级单测为主，双 tab e2e 已覆盖。
 - CI、Vercel 部署、npm 发布传播无法在本地完全验证。
-- `scripts/instance-demo.mjs` 本轮 27/27 通过，但它不是 push/CI 门禁的一部分，后续仍可能静默回归。
+- `scripts/instance-demo.mjs` 27/27 通过，已加入 `run-e2e` STEPS 与 nightly CI（R3），但 push 门禁不含场景套件，仍有静默回归可能。
 
 ---
 

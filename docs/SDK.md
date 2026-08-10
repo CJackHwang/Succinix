@@ -1,9 +1,11 @@
 # Succinix Engine — SDK Form Design (recommendation)
 
-> This is a **design document**, not a shipped package. It evaluates how to let *other*
-> frontend projects embed the Succinix engine as a sandbox, and recommends a path.
-> The in-repo decoupling is already done (`src/engine/`, see [PROTOCOL.md](./PROTOCOL.md)
-> for the wire contract); this document decides what the *distribution* should look like.
+> Status: **shipped** — `@succinix/engine` is published on npm (0.1.x line; **0.4.0** adds
+> the `./terminal` + `./instance` exports below, i.e. Terminal SDK, multi-instance and
+> multi-user in one release). This document started as the SDK form-design recommendation
+> (Form A: same-page npm embedding) and now doubles as the integration reference for
+> hosts. See [PROTOCOL.md](./PROTOCOL.md) for the wire contract and
+> [FEATURES.md](./FEATURES.md) for the capability matrix.
 
 ## Target scenario
 
@@ -65,9 +67,9 @@ The `TerminalExecutor` facade is the **complete ecosystem surface** (P1-3):
   sandbox + the host process model, not from a separate document/global. Untrusted
   *node* code runs as a real child process (WebContainer's own sandbox).
 - **Performance:** best — direct file-RPC on the shared filesystem, no serialization bridge.
-- **Bundle size:** engine client is tiny; the host daemon (`host.js`, ~5 KB) must be
-  served as a static asset (bundled or fetched from the package), and `lifo-core.js`
-  (~1 MB) loads lazily on first Lifo command.
+- **Bundle size:** engine client is tiny; the host daemon (`host.js`, ~15 KB as of 0.4.0 —
+  grew with per-instance/per-user host routing) must be served as a static asset (bundled or
+  fetched from the package), and `lifo-core.js` (~1 MB) loads lazily on first Lifo command.
 - **Maintenance:** one repo, one version; host and client ship together. Versioned by npm.
 
 ### Form B — iframe sandbox (Succinix as a deployed page)

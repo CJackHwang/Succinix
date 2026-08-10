@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-10
+
+### Added
+
+- **Terminal SDK (E1–E4)** — `SuccinixTerminalSession`, a UI-free terminal interaction core
+  (history, Tab completion, real Ctrl+C interrupt, command queue, cwd-following prompt) over the
+  narrow `TerminalRpc` / `TerminalOutput` contracts; `createTerminalBoot` parameterizes the boot
+  flow (steps / retry / testMode) with `BootUI` progress markers; the standalone app was rewritten
+  as a thin assembly layer over the SDK with no behavior change. New package export
+  `@succinix/engine/terminal` (self-contained, no `node:` references).
+- **Multi-instance (M1–M5)** — `@succinix/engine/instance` exports
+  `createSuccinixInstance({ wc, instanceId, ... })` aggregating executor + terminal session +
+  per-instance snapshot persistence, services and port views. Instance context is an **additive**
+  protocol field (`instanceId`): state files move under `/workspace/.succinix-<id>`, IndexedDB
+  snapshots split per-instance keys, `ps` filters per instance, `interrupt` keys per instance, and
+  `?instance=<id>` starts the standalone app as a named instance (dual-tab demo, e2e verified).
+- **Multi-user semantics (U1)** — `userId` and `instanceId` are the same field; `?user=<id>`
+  (alias of `?instance=<id>`) seeds a per-user home (`/workspace/users/<id>`): the session starts
+  in the home (prompt `~`, node/python spawns there), `whoami`/prompt show the user, and state,
+  snapshots and process views are per-user. Host-side `kill` authorization rejects cross-instance
+  kills (`permission denied: process <pid> is not owned by instance '<id>'`) and `system`
+  processes for non-default instances. Documented as **organizational isolation, not a security
+  boundary** (AGENTS.md / SDK.md / PROTOCOL.md).
+
+### Changed
+
+- `src/main.ts` and `src/boot.ts` now assemble the app over the terminal SDK and the instance
+  factory; boot steps / demo paths share one implementation (`runApplicationBootSteps`).
+- `?test=1` self-test suite grew to **76 passed, 0 failed, 5 skipped**; Vitest suite grew to
+  **320 tests** across 23 files (instance protocol/paths, multi-user kill authorization, user
+  home seeding, host routing).
+- `scripts/instance-demo.mjs` now covers both dual-tab `?instance=` and dual-user `?user=`
+  isolation (27/27 checks).
+
+### Fixed
+
+- TypeScript error in the U1 demo wiring (unused import / option type) caught by the tsc gate
+  before commit.
+
+### Performance (measured 2026-08-10, this machine)
+
+- `public/host.js` grew from ~5 KB (0.3.0) to **15,037 B** — per-instance/per-user routing
+  (cwd/env/state maps, `ps` filtering, `kill` authorization) lives in the host daemon;
+  `public/lifo-core.js` unchanged at **1,066,097 B** (lazy-loaded on first Lifo command).
+- `scripts/bench.mjs`: boot overlay → prompt **~6.1 s** (dominated by `WebContainer.boot`,
+  5.35 s — environment-dependent), command round-trip **Lifo p50 ≈ 79 ms / Node p50 ≈ 79 ms**
+  (0.3.0-era baseline ~80 ms — no regression), snapshot N=200 **13 ms**, N=1000 **193 ms**,
+  `seq 1 5000` render **79 ms**.
+
 ## [0.3.0] — 2026-08-10
 
 ### Changed

@@ -31,7 +31,7 @@ state persists in its `/etc/succinix.*` state file, all of which ride the worksp
 | ------- | ------------ | ------ |
 | `help` / `clear` | Command help / clear screen (`Ctrl+L`) | TASK1, TASK3 |
 | `sysinfo` | Browser-detected system information | TASK3 |
-| `version` / `whoami` | Version / current user (`guest`) | TASK3 |
+| `version` / `whoami` | Version / current user (`guest`; the user id in `?user=` mode) | TASK3, U1 |
 | `ports` | List ready service ports and preview URLs (from `server-ready` registry) | TASK2 |
 | `db start` / `db status` / `db stop` | tinbase (PGlite/WASM) lifecycle; auto-installs on first start | TASK2 |
 | `snapshot` | Persistence status / manual save (`snapshot now`) / reset (`snapshot clear --yes`) | TASK5 |
@@ -181,12 +181,30 @@ Key measured facts:
 - **Authoritative protocol**: `docs/PROTOCOL.md` is the file-RPC wire contract (version 1) —
   request/response shapes, command routing, process model, port events, timeouts; an ecosystem
   consumer can build an alternative client/host from it alone. | TASK21, PROTOCOL.md
-- **SDK form design** (`docs/SDK.md`): recommends **Form A — `@succinix/engine`** (npm package,
-  same-page embedding, shared filesystem, best UX) as the primary form; **Form B** (iframe sandbox
-  `@succinix/sandbox-page` + postMessage bridge) as the fallback for hard isolation; **Form C**
-  (`create-succinix-app` scaffold) as the onboarding lever (planned stages). | TASK21, TASK26
+- **Shipped package — `@succinix/engine`** (npm; Form A of the SDK form design — same-page
+  embedding, shared filesystem, best UX). Exports: `.` (`createTerminalExecutor`,
+  `TerminalClient`, `bootEngineHost`, `waitForHostReady`), `./host.js` + `./lifo-core.js`
+  (in-container assets), `./terminal` (UI-free session + boot orchestration, 0.4.0) and
+  `./instance` (aggregate factory, 0.4.0). Form B (iframe `@succinix/sandbox-page` + postMessage
+  bridge) remains the fallback for hard isolation; Form C (`create-succinix-app` scaffold) is a
+  planned onboarding stage. | TASK21, TASK26, E1–E4, M5
 - **TerminalExecutor facade**: `boot(wc, opts)` / `exec(command, opts)` / `spawn(command, opts)` /
-  `listProcesses()` / `kill(pid)` / `ping()` / `dispose()`. | TASK21
+  `listProcesses()` / `kill(pid)` / `ping()` / `pingDirect()` / `respawn()` / `dispose()`. | TASK21
+- **Terminal SDK (0.4.0)** — `SuccinixTerminalSession` is a UI-free terminal core (history, Tab
+  completion, real Ctrl+C interrupt, command queue, cwd-following prompt) over the narrow
+  `TerminalRpc`/`TerminalOutput` contracts; `createTerminalBoot` parameterizes the boot flow
+  (steps/retry/testMode). Local command handlers are injectable; no xterm dependency. | E1, E2
+- **Multi-instance (0.4.0)** — `createSuccinixInstance({ wc, instanceId })` assembles executor +
+  session + per-instance snapshot/services/ports in one call. `?instance=<id>` starts the app as a
+  named instance: state files (`/workspace/.succinix-<id>`), IndexedDB snapshot keys, env,
+  services/ports views and process views are per-instance; cross-instance `kill` is rejected.
+  Two tabs with different ids are fully isolated (separate hosts — e2e verified); same-page
+  shared-host routing (ps filtering / kill authorization) is protocol-level unit-tested.
+  | M1–M5, PROTOCOL.md
+- **Multi-user (0.4.0)** — `?user=<id>` (alias of `?instance=<id>`) seeds a per-user home
+  (`/workspace/users/<id>`): session starts in the home (prompt `~`, node/python spawns there),
+  `whoami`/prompt show the user, and state/snapshots/process views are per-user with `ps`
+  filtering + `kill` authorization (organizational only — not a security boundary). | U1, SDK.md
 
 ## 10. Honest boundaries
 
@@ -195,7 +213,7 @@ Accepted environment constraints — not bugs, and never simulated:
 | Boundary | Detail | Source |
 | -------- | ------ | ------ |
 | No real kernel / `apt` / native binaries | Physically impossible in the sandbox; Succinix is a browser-native Linux | README, AGENTS.md |
-| No multi-user / permission bits | Single-user browser sandbox; `guest` is the only user; `chmod` semantics are not faked | README, AGENTS.md |
+| Multi-user is organizational isolation only | Embed mode partitions directories/state/process views per instance/user (`?instance=`/`?user=`); **not a security boundary**; the standalone app stays `guest`-only and `chmod` semantics are not faked | AGENTS.md, SDK.md |
 | No inbound network | Ports are virtual previews; tunnels are outbound bridges, not real inbound | TASK14 |
 | No interactive REPL stdin | File-based RPC replaces stdin; `log -f` and REPL-style processes unsupported | TASK1, README |
 | No symlinks / hard links | Lifo VFS does not support them | README |
@@ -209,7 +227,7 @@ Accepted environment constraints — not bugs, and never simulated:
 
 ## 11. Self-test & testing
 
-- **`?test=1` self-test** — runs the full diagnostic suite in the browser: **75 passed, 0 failed,
+- **`?test=1` self-test** — runs the full diagnostic suite in the browser: **76 passed, 0 failed,
   5 skipped** (the 5 skips are documented known boundaries, not silent failures). | TASK1, TASK3,
   TASK20, TASK25
 - **Scenario suite** — `scripts/scenarios.mjs` (headless Chrome + CDP): 14 real workflows S1–S14

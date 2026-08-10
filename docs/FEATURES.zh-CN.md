@@ -29,7 +29,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | ------- | ------------ | ------ |
 | `help` / `clear` | 命令帮助 / 清屏（`Ctrl+L`） | TASK1, TASK3 |
 | `sysinfo` | 浏览器检测的系统信息 | TASK3 |
-| `version` / `whoami` | 版本 / 当前用户（`guest`） | TASK3 |
+| `version` / `whoami` | 版本 / 当前用户（`guest`；`?user=` 模式显示用户 id） | TASK3, U1 |
 | `ports` | 列出就绪服务端口与预览 URL（来自 `server-ready` 注册表） | TASK2 |
 | `db start` / `db status` / `db stop` | tinbase（PGlite/WASM）生命周期；首次启动自动安装 | TASK2 |
 | `snapshot` | 持久化状态 / 手动保存（`snapshot now`）/ 重置（`snapshot clear --yes`） | TASK5 |
@@ -166,12 +166,27 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
   （日志经 `onCommand` 注入）。 | TASK21
 - **权威协议**：`docs/PROTOCOL.md` 是文件 RPC 线上契约（版本 1）——请求/响应形态、命令路由、
   进程模型、端口事件、超时；生态使用方可仅凭它构建替代客户端/host。 | TASK21, PROTOCOL.md
-- **SDK 形态设计**（`docs/SDK.md`）：推荐 **形态 A —— `@succinix/engine`**（npm 包，同页内嵌、
-  共享文件系统、最佳 UX）为主形态；**形态 B**（iframe 沙箱 `@succinix/sandbox-page` +
-  postMessage 桥）为硬隔离回退；**形态 C**（`create-succinix-app` 脚手架）为上手杠杆（规划中
-  的阶段）。 | TASK21, TASK26
+- **已发布包 —— `@succinix/engine`**（npm；SDK 形态设计的形态 A —— 同页内嵌、共享文件系统、
+  最佳 UX）。导出：`.`（`createTerminalExecutor`、`TerminalClient`、`bootEngineHost`、
+  `waitForHostReady`）、`./host.js` + `./lifo-core.js`（容器内资产）、`./terminal`（无 UI 会话 +
+  boot 编排，0.4.0）与 `./instance`（聚合工厂，0.4.0）。形态 B（iframe `@succinix/sandbox-page`
+  + postMessage 桥）仍是硬隔离回退；形态 C（`create-succinix-app` 脚手架）为规划中的上手阶段。
+  | TASK21, TASK26, E1–E4, M5
 - **TerminalExecutor 门面**：`boot(wc, opts)` / `exec(command, opts)` / `spawn(command, opts)` /
-  `listProcesses()` / `kill(pid)` / `ping()` / `dispose()`。 | TASK21
+  `listProcesses()` / `kill(pid)` / `ping()` / `pingDirect()` / `respawn()` / `dispose()`。 | TASK21
+- **终端 SDK（0.4.0）** —— `SuccinixTerminalSession` 是无 UI 终端交互核心（历史 / Tab 补全 /
+  真 Ctrl+C 中断 / 命令队列 / cwd 跟随提示符），基于窄契约 `TerminalRpc`/`TerminalOutput`；
+  `createTerminalBoot` 参数化 boot 流程（步骤 / 重试 / testMode）。本地命令处理器可注入；
+  不依赖 xterm。 | E1, E2
+- **多实例（0.4.0）** —— `createSuccinixInstance({ wc, instanceId })` 一次调用组装 executor +
+  会话 + 每实例快照/服务/端口。`?instance=<id>` 以命名实例启动应用：状态文件
+  （`/workspace/.succinix-<id>`）、IndexedDB 快照键、env、服务/端口视图与进程视图均按实例；
+  跨实例 `kill` 拒绝。不同 id 的双 tab 完全隔离（独立 host —— 已 e2e 验证）；同页共享 host
+  路由（ps 过滤 / kill 授权）以协议级单测为证。 | M1–M5, PROTOCOL.md
+- **多用户（0.4.0）** —— `?user=<id>`（`?instance=<id>` 的别名）种子每用户 home
+  （`/workspace/users/<id>`）：会话在 home 内启动（提示符 `~`、node/python spawn 从 home 起步），
+  `whoami`/提示符显示用户；状态/快照/进程视图按用户，含 `ps` 过滤 + `kill` 授权（组织性隔离，
+  非安全边界）。 | U1, SDK.md
 
 ## 10. 诚实边界表
 
@@ -180,7 +195,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | 边界 | 详情 | 来源 |
 | -------- | ------ | ------ |
 | 无真实内核 / `apt` / 原生二进制 | 沙箱内物理不可行；Succinix 是浏览器原生 Linux | README, AGENTS.md |
-| 无多用户 / 权限位 | 单用户浏览器沙箱；`guest` 是唯一用户；不伪造 `chmod` 语义 | README, AGENTS.md |
+| 多用户仅为组织性隔离 | 嵌入模式按实例/用户分割目录·状态·进程视图（`?instance=`/`?user=`）；**非安全边界**；独立应用仍是 `guest` 单用户，不伪造 `chmod` 语义 | AGENTS.md, SDK.md |
 | 无入站网络 | 端口是虚拟 preview；隧道是出站桥接，不是真实入站 | TASK14 |
 | 无交互式 REPL stdin | 文件 RPC 替代 stdin；`log -f` 与 REPL 风格进程不支持 | TASK1, README |
 | 无符号链接 / 硬链接 | Lifo VFS 不支持 | README |
@@ -194,7 +209,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 ## 11. 自检与测试
 
-- **`?test=1` 自检** —— 浏览器内跑完整诊断套件：**75 passed, 0 failed, 5 skipped**（5 个 skip
+- **`?test=1` 自检** —— 浏览器内跑完整诊断套件：**76 passed, 0 failed, 5 skipped**（5 个 skip
   是已文档化的已知边界，绝非静默失败）。 | TASK1, TASK3, TASK20, TASK25
 - **场景套件** —— `scripts/scenarios.mjs`（headless Chrome + CDP）：14 个真实工作流 S1–S14
   （npm 开发循环、lifo-pkg-git 的 git、tinbase 生命周期、服务自启、工作区隔离、队列串行化、

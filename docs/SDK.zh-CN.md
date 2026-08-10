@@ -57,8 +57,9 @@ await term.dispose();
 - **隔离度：** 中——无 iframe 边界。命令隔离来自 Lifo 沙箱 + host 进程模型，而非独立的
   document/全局对象。不可信的 *node* 代码以真实子进程运行（WebContainer 自己的沙箱）。
 - **性能：** 最优——共享文件系统上的直接文件 RPC，无序列化桥。
-- **包体积：** engine 客户端极小；host daemon（`host.js`，约 5 KB）须作为静态资产提供
-  （随包打包或抓取），`lifo-core.js`（约 1 MB）在首个 Lifo 命令时懒加载。
+- **包体积：** engine 客户端极小；host daemon（`host.js`，0.4.0 起约 15 KB —— 随按实例/按用户
+  host 路由增长）须作为静态资产提供（随包打包或抓取），`lifo-core.js`（约 1 MB）在首个
+  Lifo 命令时懒加载。
 - **维护：** 一个仓库、一个版本；host 与客户端一起发布。经 npm 做版本管理。
 
 ### 形态 B —— iframe 沙箱（Succinix 作为独立部署页）

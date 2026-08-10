@@ -6,13 +6,13 @@
 // 复用 verify-deploy 的 CDP 最小客户端 + vite preview（COOP/COEP 头来自 vite.config.ts）。
 // 用法：node scripts/verify-bootgate.mjs [--port 7893] [--skip-build]
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { findChrome, launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { connectPageCDP } from './lib/cdp.mjs';
+import { run, sleep } from './lib/harness.mjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '..');
+const ROOT = join(import.meta.dirname, '..');
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
@@ -21,65 +21,11 @@ const PORT = pIdx >= 0 ? Number(args[pIdx + 1]) : 7893;
 const DEBUG_PORT = PORT + 1;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-const CHROME_CANDIDATES = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-];
-
 let failures = 0;
 function ok(msg) { console.log(`  [  OK  ] ${msg}`); }
 function fail(msg) { failures++; console.error(`  [ FAIL ] ${msg}`); }
 function check(cond, msg) { if (cond) ok(msg); else fail(msg); }
 function note(msg) { console.log(`[bootgate] ${msg}`); }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function run(cmd, cargs) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, cargs, { cwd: ROOT, stdio: 'inherit' });
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${cargs.join(' ')} exited ${code}`))));
-  });
-}
-
-// ─── 最小 CDP 客户端（同 verify-deploy.mjs，Node 22 全局 WebSocket）───
-class CDP {
-  constructor(url) { this.url = url; this.ws = null; this.id = 0; this.pending = new Map(); }
-  open() {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url);
-      this.ws = ws;
-      ws.onopen = () => resolve();
-      ws.onerror = (e) => reject(new Error(`CDP websocket error: ${e.message ?? e}`));
-      ws.onmessage = (ev) => {
-        const msg = JSON.parse(String(ev.data));
-        if (msg.id && this.pending.has(msg.id)) {
-          const { resolve: r, reject: j } = this.pending.get(msg.id);
-          this.pending.delete(msg.id);
-          if (msg.error) j(new Error(msg.error.message));
-          else r(msg.result);
-        }
-      };
-    });
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  close() { try { this.ws?.close(); } catch { /* ignore */ } }
-}
-
-async function findChrome() {
-  for (const p of CHROME_CANDIDATES) {
-    if (p && existsSync(p)) return p;
-  }
-  return null;
-}
 
 // 读 xterm 终端缓冲区全文（bench 模式暴露 window.__succinixBench.term）。
 // 返回 JSON 字符串（避免 Runtime.evaluate 对象被 String() 打回 [object Object]）。
@@ -120,7 +66,7 @@ async function main() {
 
   if (!SKIP_BUILD) {
     note('npm run build');
-    await run('npm', ['run', 'build']);
+    await run('npm', ['run', 'build'], { cwd: ROOT, stdio: 'inherit' });
   }
   if (!existsSync(join(ROOT, 'dist', 'index.html'))) {
     fail('dist/index.html missing — run npm run build first');
@@ -149,48 +95,13 @@ async function main() {
           r.headers.get('cross-origin-embedder-policy') === 'credentialless',
           `COOP/COEP headers on /`);
 
-    const chromePath = await findChrome();
+    const chromePath = findChrome();
     if (!chromePath) { fail('headless Chrome not found'); return; }
-    const profileDir = mkdtempSync(join(tmpdir(), 'succinix-bootgate-'));
-    const chrome = spawn(chromePath, [
-      '--headless=new',
-      `--remote-debugging-port=${DEBUG_PORT}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--window-size=1440,900',
-      'about:blank',
-    ], { stdio: 'ignore' });
+    const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'bootgate');
 
     let cdp = null;
     try {
-      // 等调试端口
-      let versionUrl = '';
-      const vd = Date.now() + 20000;
-      while (Date.now() < vd) {
-        try {
-          const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-          if (v.ok) { versionUrl = (await v.json()).webSocketDebuggerUrl; break; }
-        } catch { /* 未就绪 */ }
-        await sleep(300);
-      }
-      if (!versionUrl) { fail(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`); return; }
-
-      let pageUrl = '';
-      for (let i = 0; i < 20 && !pageUrl; i++) {
-        const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
-        pageUrl = (list.find((t) => t.type === 'page') || {}).webSocketDebuggerUrl || '';
-        if (!pageUrl) await sleep(200);
-      }
-      if (!pageUrl) { fail('no page target available'); return; }
-
-      cdp = new CDP(pageUrl);
-      await cdp.open();
-      await cdp.send('Page.enable');
-      await cdp.send('Runtime.enable');
+      cdp = await connectPageCDP(DEBUG_PORT);
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: BOOTTIMES_SHIM });
       await cdp.send('Page.navigate', { url: `${BASE}/?bench=1` });
 
@@ -291,8 +202,7 @@ async function main() {
       process.exitCode = failures === 0 ? 0 : 1;
     } finally {
       cdp?.close();
-      chrome.kill('SIGTERM');
-      try { rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      cleanupChrome(chrome, profileDir);
     }
   } finally {
     preview.kill('SIGTERM');

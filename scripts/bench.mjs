@@ -8,9 +8,11 @@
 //   （默认先 npm run build 再用 vite preview 托管 dist/；--skip-build 要求 dist/ 已是最新。）
 // 输出：JSON 单行到 stdout（CI 可复用）；进度日志走 stderr。
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { connectPageCDP, evalValue } from './lib/cdp.mjs';
+import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
@@ -18,81 +20,12 @@ const portIdx = args.indexOf('--port');
 const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7894;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function note(msg) {
   console.error(`[bench] ${msg}`);
 }
 function warn(msg) {
   console.error(`[bench] WARN: ${msg}`);
-}
-
-// ─── 子进程工具 ───
-function run(cmd, cmdArgs, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, cmdArgs, { stdio: opts.silent ? 'ignore' : 'inherit', ...opts.spawn });
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
-  });
-}
-
-async function waitForHttp(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return;
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) {
-      lastErr = e;
-    }
-    await sleep(300);
-  }
-  throw lastErr ?? new Error(`timeout waiting for ${url}`);
-}
-
-// ─── 最小 CDP 客户端（同 verify-deploy.mjs，无新依赖）───
-class CDP {
-  constructor(url) {
-    this.ws = new WebSocket(url);
-    this.id = 0;
-    this.pending = new Map();
-  }
-  async open() {
-    await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = () => reject(new Error('CDP websocket failed to open'));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
-      }
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  close() {
-    try {
-      this.ws.close();
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 // ─── 注入脚本：记录 boot 时间戳（覆盖层移除 / 提示符由 main.ts 的 bench 钩子记录）───
@@ -117,78 +50,6 @@ function percentile(sorted, p) {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
   return Math.round(sorted[idx] * 100) / 100;
-}
-
-async function findChrome() {
-  for (const p of CHROME_CANDIDATES) {
-    if (p && existsSync(p)) return p;
-  }
-  return null;
-}
-
-async function launchChrome() {
-  const chromePath = await findChrome();
-  if (!chromePath) throw new Error('headless Chrome not found');
-  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-bench-'));
-  const chrome = spawn(chromePath, [
-    '--headless=new',
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    '--remote-allow-origins=*',
-    `--user-data-dir=${profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-dev-shm-usage',
-    '--window-size=1440,900',
-    'about:blank',
-  ], { stdio: 'ignore' });
-  return { chrome, profileDir };
-}
-
-async function connectCDP() {
-  let versionUrl = '';
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try {
-      const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-      if (v.ok) {
-        versionUrl = (await v.json()).webSocketDebuggerUrl;
-        break;
-      }
-    } catch {
-      /* 尚未就绪 */
-    }
-    await sleep(300);
-  }
-  if (!versionUrl) throw new Error(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`);
-
-  let pageUrl = '';
-  for (let i = 0; i < 20 && !pageUrl; i++) {
-    const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
-    pageUrl = (list.find((t) => t.type === 'page') || {}).webSocketDebuggerUrl || '';
-    if (!pageUrl) await sleep(200);
-  }
-  if (!pageUrl) throw new Error('no page target available via CDP');
-
-  const cdp = new CDP(pageUrl);
-  await cdp.open();
-  await cdp.send('Page.enable');
-  await cdp.send('Runtime.enable');
-  return cdp;
-}
-
-// 在页面里跑一个 async 表达式并取回 by-value 结果。
-async function evalValue(cdp, expression) {
-  const res = await cdp.send('Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (res.exceptionDetails) {
-    const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'unknown';
-    throw new Error(`page eval failed: ${desc.slice(0, 400)}`);
-  }
-  return res.result.value;
 }
 
 // 等页面暴露 __succinixBench（boot 完成 + 提示符出现）。
@@ -324,8 +185,8 @@ async function main() {
     await waitForHttp(BASE, 20000);
     note(`preview reachable at ${BASE}`);
 
-    chrome = await launchChrome();
-    cdp = await connectCDP();
+    chrome = launchChrome(DEBUG_PORT, 'bench');
+    cdp = await connectPageCDP(DEBUG_PORT);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SCRIPT });
     await cdp.send('Page.navigate', { url: `${BASE}/?bench=1` });
 
@@ -368,14 +229,7 @@ async function main() {
     note('bench complete');
   } finally {
     cdp?.close();
-    chrome?.chrome?.kill('SIGTERM');
-    if (chrome?.profileDir) {
-      try {
-        rmSync(chrome.profileDir, { recursive: true, force: true });
-      } catch {
-        /* 临时目录清理失败不影响结果 */
-      }
-    }
+    cleanupChrome(chrome?.chrome, chrome?.profileDir);
     preview.kill('SIGTERM');
   }
 }

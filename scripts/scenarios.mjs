@@ -15,13 +15,13 @@
 // 页面驱动：?scenario=1 时 main.ts 暴露 window.__succinixScenario = { run, client, wc, ports, saveSnapshot }，
 // run(cmd) 走与真实终端 execute() 相同的分发路径（browser 拦截 → host RPC），输出结构化返回。
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { connectPageCDP, evalValue } from './lib/cdp.mjs';
+import { run, waitForHttp, sleep, makeHarness } from './lib/harness.mjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '..');
+const ROOT = join(import.meta.dirname, '..');
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
@@ -32,19 +32,10 @@ const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7895;
 const only = args.includes('--only') ? new Set((args[args.indexOf('--only') + 1] ?? '').split(',')) : null;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DEBUG_PORT = PORT + 1;
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
 
 // tinbase 固定开发 key（well-known Supabase 本地 demo keys，README 注明确定性）。
 const TINBASE_SERVICE_ROLE =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU';
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ─── 结果汇总 ───
 let globalPass = 0;
@@ -65,199 +56,6 @@ function printChecks(checks) {
     const color = c.ok ? '\x1b[33m' : '\x1b[31m';
     console.log(`  ${color}${mark}\x1b[0m ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
   }
-}
-
-// ─── 子进程工具 ───
-function run(cmd, cmdArgs, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, cmdArgs, { stdio: opts.silent ? 'ignore' : 'inherit', ...opts.spawn });
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
-  });
-}
-
-async function waitForHttp(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return;
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) {
-      lastErr = e;
-    }
-    await sleep(300);
-  }
-  throw lastErr ?? new Error(`timeout waiting for ${url}`);
-}
-
-// ─── 最小 CDP 客户端（同 verify-deploy.mjs，无新依赖）───
-class CDP {
-  constructor(url) {
-    this.ws = new WebSocket(url);
-    this.id = 0;
-    this.pending = new Map();
-  }
-  async open() {
-    await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = () => reject(new Error('CDP websocket failed to open'));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
-      }
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  close() {
-    try {
-      this.ws.close();
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-async function findChrome() {
-  for (const p of CHROME_CANDIDATES) {
-    if (p && existsSync(p)) return p;
-  }
-  return null;
-}
-
-async function launchChrome() {
-  const chromePath = await findChrome();
-  if (!chromePath) throw new Error('headless Chrome not found');
-  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-scenarios-'));
-  const chrome = spawn(chromePath, [
-    '--headless=new',
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    '--remote-allow-origins=*',
-    `--user-data-dir=${profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-dev-shm-usage',
-    '--window-size=1440,900',
-    'about:blank',
-  ], { stdio: 'ignore' });
-  return { chrome, profileDir };
-}
-
-async function connectCDP() {
-  let versionUrl = '';
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    try {
-      const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-      if (v.ok) {
-        versionUrl = (await v.json()).webSocketDebuggerUrl;
-        break;
-      }
-    } catch {
-      /* 尚未就绪 */
-    }
-    await sleep(300);
-  }
-  if (!versionUrl) throw new Error(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`);
-
-  let pageUrl = '';
-  for (let i = 0; i < 20 && !pageUrl; i++) {
-    const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
-    pageUrl = (list.find((t) => t.type === 'page') || {}).webSocketDebuggerUrl || '';
-    if (!pageUrl) await sleep(200);
-  }
-  if (!pageUrl) throw new Error('no page target available via CDP');
-
-  const cdp = new CDP(pageUrl);
-  await cdp.open();
-  await cdp.send('Page.enable');
-  await cdp.send('Runtime.enable');
-  return cdp;
-}
-
-// 在页面里跑一个 async 表达式并取回 by-value 结果。
-async function evalValue(cdp, expression) {
-  const res = await cdp.send('Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (res.exceptionDetails) {
-    const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'unknown';
-    throw new Error(`page eval failed: ${desc.slice(0, 400)}`);
-  }
-  return res.result.value;
-}
-
-// ─── 场景句柄（给每个场景的驱动器）───
-function makeHarness(cdp) {
-  const h = {
-    cdp,
-    // 在页面里执行表达式（awaitPromise），返回 by-value。
-    async evalValue(expression) {
-      return evalValue(cdp, expression);
-    },
-    // 跑一条真实命令：与终端 execute() 同分发路径（browser 拦截 → host RPC）。
-    async run(cmd, timeoutMs) {
-      const expr = `(async () => JSON.stringify(await window.__succinixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
-      return JSON.parse(await evalValue(cdp, expr));
-    },
-    // spawn 后台进程（真实 client.spawn 路径）。
-    async spawn(cmd) {
-      const expr = `(async () => JSON.stringify(await window.__succinixScenario.client.spawn(${JSON.stringify(cmd)})))()`;
-      return JSON.parse(await evalValue(cdp, expr));
-    },
-    // 轮询页面条件，满足返回真值；超时抛错。
-    async waitFor(condExpr, timeoutMs) {
-      const deadline = Date.now() + timeoutMs;
-      let last;
-      while (Date.now() < deadline) {
-        try {
-          const v = await evalValue(cdp, condExpr);
-          if (v) return v;
-          last = v;
-        } catch (e) {
-          last = e;
-        }
-        await sleep(300);
-      }
-      throw new Error(`waitFor timeout: ${condExpr} (last=${String(last).slice(0, 120)})`);
-    },
-    // 等场景句柄就绪（初次导航后 / 每次 reload 后）。句柄在 boot 完成时注册。
-    async waitForScenario(timeoutMs = 120000) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        try {
-          const v = await evalValue(cdp, '!!window.__succinixScenario && window.__succinixScenario.booted === true');
-          if (v) return;
-        } catch {
-          /* 导航期间上下文销毁：下一轮再试 */
-        }
-        await sleep(400);
-      }
-      throw new Error(`scenario handle did not become ready within ${timeoutMs}ms`);
-    },
-    // 刷新页面（保持 ?scenario=1），等重新 boot + 句柄就绪。
-    async reloadAndWait(timeoutMs = 120000) {
-      try {
-        await cdp.send('Page.reload', { ignoreCache: true });
-      } catch {
-        /* 导航中 */
-      }
-      await h.waitForScenario(timeoutMs);
-    },
-  };
-  return h;
 }
 
 // ─── S1：npm 项目开发闭环 ───
@@ -972,10 +770,10 @@ async function main() {
     await waitForHttp(BASE, 20000);
     note(`preview reachable at ${BASE}`);
 
-    const launched = await launchChrome();
+    const launched = launchChrome(DEBUG_PORT, 'scenarios');
     chrome = launched.chrome;
     profileDir = launched.profileDir;
-    cdp = await connectCDP();
+    cdp = await connectPageCDP(DEBUG_PORT);
     await cdp.send('Page.navigate', { url: `${BASE}/?scenario=1` });
     note('waiting for boot + scenario handle...');
     const h = makeHarness(cdp);
@@ -1029,14 +827,7 @@ async function main() {
     process.exitCode = globalFail === 0 && passedScenarios === SCENARIOS.length ? 0 : 1;
   } finally {
     cdp?.close();
-    chrome?.kill('SIGTERM');
-    if (profileDir) {
-      try {
-        rmSync(profileDir, { recursive: true, force: true });
-      } catch {
-        /* 临时目录清理失败不影响结果 */
-      }
-    }
+    cleanupChrome(chrome, profileDir);
     preview.kill('SIGTERM');
   }
 }

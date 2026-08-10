@@ -12,9 +12,10 @@
 // （ps 过滤 / kill 越权，含跨用户 kill 拒绝）不在此覆盖，以协议级单测为证：
 // 跨容器已 e2e、同页路由仅单测。
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { connectBrowserCDP, connectTargetCDP } from './lib/cdp.mjs';
+import { run, waitForHttp, sleep, makeTab } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
@@ -23,15 +24,6 @@ const PORT = 7893;
 const DEBUG_PORT = 7902;
 // vite preview 默认只监听 IPv6 localhost（::1）—— 探测/导航必须用 localhost，不能用 127.0.0.1。
 const BASE = `http://localhost:${PORT}`;
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let exitCode = 0;
 
 function note(msg) {
@@ -43,127 +35,11 @@ function check(checks, name, ok, detail = '') {
   console.log(`  ${ok ? '[  OK  ]' : '[ FAIL ]'} ${name}${detail ? ` (${detail.slice(0, 200)})` : ''}`);
 }
 
-function run(cmd, cmdArgs, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, cmdArgs, { cwd: opts.cwd, stdio: 'ignore' });
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${cmdArgs.join(' ')} exited ${code}`))));
-  });
-}
-
-async function waitForHttp(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return;
-    } catch {
-      /* not up yet */
-    }
-    await sleep(300);
-  }
-  throw new Error(`http wait timeout: ${url}`);
-}
-
-// ─── 最小 CDP 客户端（同 scenarios.mjs，无新依赖）───
-class CDP {
-  constructor(url) {
-    this.ws = new WebSocket(url);
-    this.id = 0;
-    this.pending = new Map();
-  }
-  async open() {
-    await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = () => reject(new Error('CDP websocket failed to open'));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
-      }
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  close() {
-    try {
-      this.ws.close();
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-async function evalValue(cdp, expression) {
-  const res = await cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (res.exceptionDetails) {
-    const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || 'unknown';
-    throw new Error(`page eval failed: ${desc.slice(0, 300)}`);
-  }
-  return res.result.value;
-}
-
-// 页面句柄：?instance=<id>&scenario=1 的 tab。
-function makeTab(cdp, id) {
-  const t = {
-    id,
-    cdp,
-    async eval(expression) {
-      return evalValue(cdp, expression);
-    },
-    async run(cmd, timeoutMs) {
-      const expr = `(async () => JSON.stringify(await window.__succinixScenario.run(${JSON.stringify(cmd)}, ${timeoutMs ?? 'undefined'})))()`;
-      return JSON.parse(await evalValue(cdp, expr));
-    },
-    async waitForScenario(timeoutMs = 180000) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        try {
-          const v = await evalValue(cdp, '!!window.__succinixScenario && window.__succinixScenario.booted === true');
-          if (v) return;
-        } catch {
-          /* 导航期间上下文销毁：下一轮再试 */
-        }
-        await sleep(400);
-      }
-      throw new Error(`tab ${id}: scenario handle did not become ready within ${timeoutMs}ms`);
-    },
-    async reloadAndWait(timeoutMs = 180000) {
-      try {
-        await cdp.send('Page.reload', { ignoreCache: true });
-      } catch {
-        /* 导航中 */
-      }
-      // 先等旧页面销毁（导航开始、句柄消失），再等新 boot 完成 —— 直接轮询句柄会
-      // 命中导航前残留的旧句柄而提前返回（页面随后进入 ~8s boot，句柄再次缺失）。
-      const goneDeadline = Date.now() + 30000;
-      while (Date.now() < goneDeadline) {
-        try {
-          const v = await evalValue(cdp, '!window.__succinixScenario');
-          if (v === true) break;
-        } catch {
-          /* 导航中上下文销毁：视为已消失 */
-          break;
-        }
-        await sleep(200);
-      }
-      await t.waitForScenario(timeoutMs);
-    },
-  };
-  return t;
-}
-
 async function main() {
   note(`dual-tab instance demo (ports ${PORT}/${DEBUG_PORT})`);
   if (!SKIP_BUILD) {
     note('production build...');
-    await run('npm', ['run', 'build']);
+    await run('npm', ['run', 'build'], { silent: true });
   }
   note('starting vite preview...');
   // 直接用仓库内 vite 二进制（不经 npx，避免 registry 探测）。
@@ -179,52 +55,11 @@ async function main() {
   try {
     await waitForHttp(BASE, 30000);
 
-    const chromePath = CHROME_CANDIDATES.find((p) => p && existsSync(p));
-    if (!chromePath) throw new Error('headless Chrome not found');
-    const profileDir = mkdtempSync(join(tmpdir(), 'succinix-instance-demo-'));
-    const chrome = spawn(chromePath, [
-      '--headless=new',
-      `--remote-debugging-port=${DEBUG_PORT}`,
-      '--remote-allow-origins=*',
-      `--user-data-dir=${profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--window-size=1440,900',
-      'about:blank',
-    ], { stdio: 'ignore' });
-
-    const cleanupChrome = () => {
-      try {
-        chrome.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
-      try {
-        rmSync(profileDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-    };
-    process.on('exit', cleanupChrome);
+    const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'instance-demo');
+    process.on('exit', () => cleanupChrome(chrome, profileDir));
 
     // 浏览器级 CDP：建两个 tab（各自独立容器 / 独立页面上下文）。
-    let browserWs = '';
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline && !browserWs) {
-      try {
-        const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-        if (v.ok) browserWs = (await v.json()).webSocketDebuggerUrl;
-      } catch {
-        /* not up */
-      }
-      if (!browserWs) await sleep(300);
-    }
-    if (!browserWs) throw new Error(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`);
-
-    const browserCdp = new CDP(browserWs);
-    await browserCdp.open();
+    const browserCdp = await connectBrowserCDP(DEBUG_PORT);
     const urls = {
       'c-1': `${BASE}/?instance=c-1&scenario=1`,
       'c-2': `${BASE}/?instance=c-2&scenario=1`,
@@ -246,10 +81,7 @@ async function main() {
         if (!wsUrl) await sleep(200);
       }
       if (!wsUrl) throw new Error(`tab ${id}: CDP target not found`);
-      const cdp = new CDP(wsUrl);
-      await cdp.open();
-      await cdp.send('Page.enable');
-      await cdp.send('Runtime.enable');
+      const cdp = await connectTargetCDP(wsUrl);
       tabs[id] = makeTab(cdp, id);
     }
 
@@ -366,10 +198,7 @@ async function main() {
         if (!wsUrl) await sleep(200);
       }
       if (!wsUrl) throw new Error(`user tab ${id}: CDP target not found`);
-      const cdp = new CDP(wsUrl);
-      await cdp.open();
-      await cdp.send('Page.enable');
-      await cdp.send('Runtime.enable');
+      const cdp = await connectTargetCDP(wsUrl);
       userTabs[id] = makeTab(cdp, id);
     }
     const UA = userTabs['a'];
@@ -427,7 +256,7 @@ async function main() {
 
     browserCdp.close();
     for (const id of Object.keys(tabs)) tabs[id].cdp.close();
-    cleanupChrome();
+    cleanupChrome(chrome, profileDir);
 
     const failed = checks.filter((c) => !c.ok);
     console.log(`\n=== INSTANCE DEMO SUMMARY ===`);

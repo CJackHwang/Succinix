@@ -16,9 +16,11 @@
 //   （CI 中可直接作为部署就绪 job；无 headless Chrome 时 ?test=1 自检 fail-closed 报 FAIL，
 //    不会静默降级 —— 与"部署就绪"门禁语义一致。）
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { findChrome, launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { connectPageCDP } from './lib/cdp.mjs';
+import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
@@ -27,15 +29,6 @@ const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7892;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口，避开 preview 端口
 const MIN_PASSED = 71; // TASK25 门禁：preview 模式下 ?test=1 必须 >=71 passed（0 failed）
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let exitCode = 0;
 function note(msg) {
@@ -51,66 +44,6 @@ function fail(msg) {
 function check(cond, msg) {
   if (cond) ok(msg);
   else fail(msg);
-}
-
-// ─── 子进程工具 ───
-function run(cmd, cmdArgs, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, cmdArgs, { stdio: opts.silent ? 'ignore' : 'inherit', ...opts.spawn });
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
-  });
-}
-
-async function waitForHttp(url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return;
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) {
-      lastErr = e;
-    }
-    await sleep(300);
-  }
-  throw lastErr ?? new Error(`timeout waiting for ${url}`);
-}
-
-// ─── 最小 CDP 客户端（无新依赖，Node 22 全局 WebSocket）───
-class CDP {
-  constructor(url) {
-    this.ws = new WebSocket(url);
-    this.id = 0;
-    this.pending = new Map();
-  }
-  async open() {
-    await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = () => reject(new Error('CDP websocket failed to open'));
-    });
-    this.ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
-      }
-    };
-  }
-  send(method, params = {}) {
-    const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-  }
-  close() {
-    try {
-      this.ws.close();
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 // 注入页面的观察脚本：把 ?test=1 自检汇总行与错误页状态记录到 window.__succinixResult / __succinixError。
@@ -141,70 +74,16 @@ const INJECT_SCRIPT = `(() => {
   else start();
 })();`;
 
-async function findChrome() {
-  for (const p of CHROME_CANDIDATES) {
-    if (p && existsSync(p)) return p;
-  }
-  return null;
-}
-
 async function runHeadlessSelfTest() {
-  const chromePath = await findChrome();
+  const chromePath = findChrome();
   if (!chromePath) {
     fail('headless Chrome not found — ?test=1 self-test must be run manually in a browser at ' + `${BASE}/?test=1`);
     return null;
   }
-  const profileDir = mkdtempSync(join(tmpdir(), 'succinix-verify-'));
-  const chrome = spawn(chromePath, [
-    '--headless=new',
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    '--remote-allow-origins=*',
-    `--user-data-dir=${profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    '--disable-dev-shm-usage',
-    '--window-size=1440,900',
-    'about:blank',
-  ], { stdio: 'ignore' });
-
+  const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'verify');
   let cdp = null;
   try {
-    // 等调试端口就绪
-    let versionUrl = '';
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
-      try {
-        const v = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-        if (v.ok) {
-          versionUrl = (await v.json()).webSocketDebuggerUrl;
-          break;
-        }
-      } catch {
-        /* 尚未就绪 */
-      }
-      await sleep(300);
-    }
-    if (!versionUrl) {
-      fail(`Chrome DevTools endpoint did not come up on :${DEBUG_PORT}`);
-      return null;
-    }
-    // 找一个 page target（新开一个空白页，避免复用可能存在的旧页面）
-    let pageUrl = '';
-    for (let i = 0; i < 20 && !pageUrl; i++) {
-      const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
-      pageUrl = (list.find((t) => t.type === 'page') || {}).webSocketDebuggerUrl || '';
-      if (!pageUrl) await sleep(200);
-    }
-    if (!pageUrl) {
-      fail('no page target available via CDP');
-      return null;
-    }
-
-    cdp = new CDP(pageUrl);
-    await cdp.open();
-    await cdp.send('Page.enable');
-    await cdp.send('Runtime.enable');
+    cdp = await connectPageCDP(DEBUG_PORT);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SCRIPT });
     await cdp.send('Page.navigate', { url: `${BASE}/?test=1` });
 
@@ -238,14 +117,12 @@ async function runHeadlessSelfTest() {
     }
     fail('self-test did not produce a summary within 300s (page hung)');
     return null;
+  } catch (e) {
+    fail(`headless self-test setup failed: ${String(e).slice(0, 200)}`);
+    return null;
   } finally {
     cdp?.close();
-    chrome.kill('SIGTERM');
-    try {
-      rmSync(profileDir, { recursive: true, force: true });
-    } catch {
-      /* 临时目录清理失败不影响结果 */
-    }
+    cleanupChrome(chrome, profileDir);
   }
 }
 

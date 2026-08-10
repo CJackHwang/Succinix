@@ -4,7 +4,7 @@
 // 环境检测 / 重试 / 工作区初始化 / 步骤计数等纯逻辑已迁移到 terminal 层；本文件只保留
 // 独立应用的步骤文案、命令日志采集与既有导出面（向后兼容，避免 main/tests/commands 改动）。
 import type { BootUI } from './boot-ui.js';
-import type { CommandLogEntry, TerminalClient } from './engine/index.js';
+import type { TerminalClient } from './engine/index.js';
 import type { WebContainer } from '@webcontainer/api';
 import {
   createTerminalBoot,
@@ -38,15 +38,9 @@ export interface SuccinixServices extends Omit<TerminalBootResult, 'hostProc'> {
   instance?: SuccinixInstance;
 }
 
-// 日志采集在这里接线：采集条目类型用引擎导出的 CommandLogEntry（结构性兼容），
-// 前端过滤纯轮询 ps（避免刷屏）并落盘 /var/log/succinix.log。
-export function makeClientLogger(): (entry: CommandLogEntry) => void {
-  return (entry) => {
-    if (entry.command.trim() !== 'ps') {
-      void log('INFO', `cmd: ${entry.command} exit=${entry.exit} runtime=${entry.runtime}`);
-    }
-  };
-}
+// 命令日志采集（host 命令采集）已下沉到 app/logging.ts；此处 re-export 保持既有导出面。
+import { makeClientLogger } from './app/logging.js';
+export { makeClientLogger };
 
 export interface BootSuccinixOptions {
   /** 终端输出（demo 模式必需；默认路径不使用） */

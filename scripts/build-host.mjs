@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 
 await build({
-  entryPoints: ['src/engine/host.ts'],
+  entryPoints: ['src/engine/host/main.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',

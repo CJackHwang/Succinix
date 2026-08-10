@@ -87,3 +87,12 @@ export function hasShellMetaToken(tokens: string[]): boolean {
     return /^(>>?|<<?|[0-9]+>>?|[0-9]+<<?|&>>?)/.test(tok) || tok.startsWith('$(');
   });
 }
+
+// 分词兜底：未闭合引号等语法错误给出明确报错，不静默截断、不抛到协议层（O3 拆分）。
+export function tryTokenize(command: string): { ok: true; tokens: string[] } | { ok: false; error: string } {
+  try {
+    return { ok: true, tokens: tokenize(command) };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}

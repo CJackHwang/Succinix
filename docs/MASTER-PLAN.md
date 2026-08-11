@@ -703,7 +703,10 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 - [x] CI 全绿（jobs conclusion 全 success）—— push 0f5c25b 触发 run 31459095383，
       check job 全绿（lint / tsc / vitest+coverage / build / verify-deploy ?test=1 ≥71），
       nightly-scenarios 按设计 skip（2026-08-11，gh run view 实测）
-- [ ] 部署站强刷显示最新版本；`?instance=`/`?user=` demo 线上可用 —— 需 Vercel 部署
+- [x] 部署站强刷显示最新版本；`?instance=`/`?user=` demo 线上可用 —— Vercel 自动部署已生效
+      （HTML asset hash 与本地最新构建一致，线上 motd 显示 Succinix 0.4.0）；
+      2026-08-11 headless Chrome 线上实测：`?instance=c-online` boot/状态根/命令执行 ✓，
+      `?user=u-online` boot/每用户 home/whoami/会话 cwd 从 home ✓
 - [ ] 技能沉淀：webunix-development 更新（宿主集成两层模型 + 多用户组织性隔离声明）
 
 ---

@@ -41,6 +41,11 @@ S8 起连续崩溃（`Cannot read properties of undefined (reading 'wc'/'run')`�
 job 级（非法键），GitHub 判定工作流无效。已把 e2e-full 拆为独立
 `.github/workflows/e2e-full.yml`，`paths` 回到 workflow 级 `on.<event>` 下，本地
 YAML 校验通过后重推验证。
+最终验证（全部绿）：`31474091916`（CI/check）与 `31474091939`（e2e-full）在
+`36319cb` 通过；代码审查修复（`2f005e8`：O7 错误提示去重、O8/O10 barrel 面收紧）
+后，`31475061746`（CI/check）与 `31475061703`（e2e-full）在最终提交上再次全绿；
+本地 `npm run check` 与全量 `node scripts/run-e2e.mjs`（14/14 场景、87 checks、
+verify-deploy/bench/lang-verify/instance-demo/instance-routing 全过）同样通过。
 
 ## 2. 统一门禁与执行原则
 

@@ -62,7 +62,7 @@ await build({
 //   - format: 'esm'：运行时 import './pyodide.mjs'（同目录 Pyodide 胶水），保留相对 import；
 //   - external ./pyodide.mjs：不把 Pyodide 胶水打进 daemon bundle（它是独立注入的资产文件）。
 await build({
-  entryPoints: ['src/engine/python-daemon.ts'],
+  entryPoints: ['src/engine/python-daemon/main.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',

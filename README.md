@@ -301,7 +301,7 @@ src/
     host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
     host-procs.ts    # unified process registry (was host-procs.ts)
     lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
-    python-daemon.ts     # resident Pyodide 314.0.4 daemon CLI (bundled to public/pyodide/python-daemon.js)
+    python-daemon/       # resident Pyodide 314.0.4 daemon CLI (loader/rpc/pip/main, bundled to public/pyodide/python-daemon.js)
     python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
     python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
   terminal/          # terminal SDK: UI-free session + parameterized boot (@succinix/engine/terminal)

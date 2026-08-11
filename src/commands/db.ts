@@ -123,18 +123,22 @@ export async function dbStart(ctx: CommandContext): Promise<void> {
   }
   const startCmd = `npx tinbase start --port ${port} --engine wasm${dataDir ? ` --data-dir ${dataDir}` : ''}`;
   term.writeln(`Starting ${startCmd} (background process)...`);
+  // M4：期望端口登记必须先于 spawn —— server-ready 事件按期望归属实例视图；
+  // 先 spawn 后 expect 时快速就绪的端口会漏进实例视图（db start 误报 30s 端口超时）。
+  instancePorts.expect(inst, port);
   let pid: number | undefined;
   try {
     const r = await client.spawn(startCmd, undefined, 8000);
     if (!r.ok || !r.pid) {
+      instancePorts.release(inst, port);
       fail(r.error || r.stderr || 'spawn returned failure');
       fail('check container compatibility.');
       return;
     }
     pid = r.pid;
-    instancePorts.expect(inst, port); // M4：登记实例期望端口（server-ready 归到该实例视图）
     term.writeln(`started in background (pid=${pid}); waiting for port ${port} to be ready...`);
   } catch (e) {
+    instancePorts.release(inst, port);
     fail(String(e));
     fail('check container network/compatibility.');
     return;

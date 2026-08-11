@@ -22,6 +22,7 @@ import {
   stopService,
   type ServiceContext,
 } from '../src/services.js';
+import { instancePorts } from '../src/instance/ports.js';
 import { clearSnapshot } from '../src/persist.js';
 
 const fs = () => new FakeFS() as unknown as FileSystemAPI;
@@ -277,6 +278,60 @@ describe('services start/stop lifecycle', () => {
     const res = await startService(makeCtx(fake, f, new Map([[3001, 'x']])), 'tinbase');
     expect(res.ok).toBe(false);
     expect(res.message).toContain('failed to start');
+  });
+
+  it('startService registers the instance port expectation before spawn and releases it on spawn failure', async () => {
+    const f = fs();
+    const fake = new FakeClient();
+    fake.whenTerminal('ps', { ok: true, processes: [] });
+    let sawExpectationAtSpawn = false;
+    fake.spawnHandler = () => {
+      // 期望登记必须先于 spawn：server-ready 事件到达时按期望归属实例视图，
+      // 快速绑定的服务若先 spawn 后 expect，端口会永远进不了实例视图。
+      sawExpectationAtSpawn = instancePorts.expects('c-2', 3001);
+      return { ok: false, error: 'spawn exploded' };
+    };
+    const ctx = { ...makeCtx(fake, f, new Map([[3001, 'https://c-2.preview']])), instanceId: 'c-2' };
+    const res = await startService(ctx, 'tinbase');
+    expect(res.ok).toBe(false);
+    expect(sawExpectationAtSpawn).toBe(true);
+    // spawn 失败必须释放期望，避免残留期望让后续无关端口误归本实例。
+    expect(instancePorts.expectedFor('c-2')).toEqual([]);
+  });
+
+  it('startService on a non-default instance sees a port that becomes ready after spawn', async () => {
+    const f = fs();
+    const ports = new Map<number, string>();
+    let spawned = false;
+    const fake = new FakeClient({
+      terminal: (cmd) => {
+        if (cmd === 'ps') {
+          // 进程表在 spawn 后返回该实例的 running 服务进程（端口就绪前的存活判定）。
+          return spawned
+            ? {
+                ok: true,
+                processes: [
+                  { pid: 42, cmd: 'npx tinbase start --port 3001 --engine wasm', status: 'running', containerId: '.succinix-c-2' },
+                ],
+              }
+            : { ok: true, processes: [] };
+        }
+        return { ok: true };
+      },
+    });
+    fake.spawnHandler = () => {
+      spawned = true;
+      // 端口在 spawn 之后才就绪（server-ready 晚于 spawn 返回的真实时序）。
+      setTimeout(() => ports.set(3001, 'https://c-2.preview'), 600);
+      return { ok: true, pid: 42, runtime: 'node' };
+    };
+    instancePorts.clear();
+    const ctx = { ...makeCtx(fake, f, ports), instanceId: 'c-2' };
+    const res = await startService(ctx, 'tinbase');
+    expect(res.ok).toBe(true);
+    expect(res.pid).toBe(42);
+    // 成功路径下期望保留（服务停止 / 端口关闭时才释放）。
+    expect(instancePorts.expectedFor('c-2')).toContain(3001);
   });
 
   it('stopService kills the matched process and reports success', async () => {

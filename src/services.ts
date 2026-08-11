@@ -402,16 +402,22 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   await ensureNpxPackage(ctx, command);
   // 新实例按当前 preview-port 解析（忽略旧记录），spawn 成功后记录实际端口。
   const effectivePort = await resolveEffectivePort(ctx, def, false);
+  // M4：登记实例期望端口必须在 spawn 之前 —— server-ready 事件到达时按期望归属实例视图；
+  // 快速绑定的服务（node -e 直启等）若先 spawn 后 expect，事件会落在期望登记之前，
+  // 该端口永远不会进入实例视图（service start 误报端口超时）。spawn 失败时释放期望。
+  if (effectivePort !== null) instancePorts.expect(ctx.instanceId ?? DEFAULT_INSTANCE_ID, effectivePort);
   let pid: number;
   try {
     const r = await ctx.client.spawn(command, undefined, 8000);
     if (!r.ok || !r.pid) {
       const why = r.error || r.stderr || 'spawn returned failure';
+      if (effectivePort !== null) instancePorts.release(ctx.instanceId ?? DEFAULT_INSTANCE_ID, effectivePort);
       void log('WARN', `service start failed: ${name} (${why})`);
       return { ok: false, message: `failed to start '${name}': ${why}` };
     }
     pid = Number(r.pid);
   } catch (e) {
+    if (effectivePort !== null) instancePorts.release(ctx.instanceId ?? DEFAULT_INSTANCE_ID, effectivePort);
     void log('WARN', `service start failed: ${name} (${String(e)})`);
     return { ok: false, message: `failed to start '${name}': ${String(e)}` };
   }
@@ -424,14 +430,13 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
   // 记录实际端口（M1 / M4 按实例）：preview-port 改动后服务监听的是启动时端口，就绪等待
   // 与后续 status/列表/URL 都用记录值，避免静态 def.port 误报。
   activePortsFor(ctx.instanceId ?? DEFAULT_INSTANCE_ID).set(name, effectivePort);
-  // M4：登记实例期望端口（server-ready 到达时归到该实例的 ports 视图）。
-  if (effectivePort !== null) instancePorts.expect(ctx.instanceId ?? DEFAULT_INSTANCE_ID, effectivePort);
 
   // 等端口就绪：进程还在且端口未就绪 → 继续等；进程提前退出 → 立即失败。
-  const view = portsView(ctx);
   const deadline = Date.now() + PORT_WAIT_MS;
   while (Date.now() < deadline) {
-    if (view.has(effectivePort)) {
+    // 每次循环重新取实例端口视图：非默认实例的 portsFor 返回新 Map 快照，
+    // 只在循环前取一次会永远看不到稍后就绪的端口（service start 误报 30s 超时）。
+    if (portsView(ctx).has(effectivePort)) {
       void log('INFO', `service start: ${name} pid=${pid} port=${effectivePort}`);
       return { ok: true, message: `service '${name}' started (pid=${pid}, port ${effectivePort})`, pid };
     }

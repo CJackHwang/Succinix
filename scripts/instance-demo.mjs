@@ -8,7 +8,7 @@
 // （双 tab 共享同一 origin 的 IndexedDB，快照键 instance:<id> 必须互不串扰）/
 // service start 只影响自己 / reboot 只重置自己（另一 tab 不受影响）。
 //
-// 盲区如实标注（MASTER-PLAN M3/U1）：双 tab 各自独立 host —— host 侧按实例路由
+// 盲区如实标注（MASTER-PLAN-NEXT R5）：双 tab 各自独立 host —— host 侧按实例路由
 // （ps 过滤 / kill 越权，含跨用户 kill 拒绝）不在此覆盖，以协议级单测为证：
 // 跨容器已 e2e、同页路由仅单测。
 import { spawn } from 'node:child_process';

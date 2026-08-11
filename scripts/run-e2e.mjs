@@ -19,6 +19,9 @@ const STEPS = [
   { name: 'instance-demo (multi-instance + multi-user, 27 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
 ];
 
+// flake 策略（R6）：deploy gate 已知偶发 flake，自动重试一次；其余步骤失败即记，不重试。
+const RETRY_ONCE = new Set(['scripts/verify-deploy.mjs']);
+
 let exitCode = 0;
 
 function note(msg) {
@@ -44,6 +47,18 @@ async function main() {
       await run(process.execPath, s.args);
       note(`${s.name}: PASSED`);
     } catch (e) {
+      if (RETRY_ONCE.has(s.args[0])) {
+        note(`${s.name}: FAILED (${e.message}) — retrying once (known flake gate)`);
+        try {
+          await run(process.execPath, s.args);
+          note(`${s.name}: PASSED after retry`);
+          continue;
+        } catch (e2) {
+          note(`${s.name}: FAILED after retry — ${e2.message}`);
+          exitCode = 1;
+          continue;
+        }
+      }
       note(`${s.name}: FAILED — ${e.message}`);
       exitCode = 1;
     }

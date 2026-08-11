@@ -5,6 +5,39 @@ import { evalValue } from './cdp.mjs';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ─── 场景断言工具（O11：场景套件拆分后跨套件共享）───
+// check 把断言推进传入的 checks 数组并累计全局计数；runner 末尾经 scenarioStats() 读取汇总。
+let scenarioPass = 0;
+let scenarioFail = 0;
+
+export function check(checks, name, ok, detail = '') {
+  checks.push({ name, ok, detail });
+  scenarioPass += ok ? 1 : 0;
+  scenarioFail += ok ? 0 : 1;
+}
+
+export function printChecks(checks) {
+  for (const c of checks) {
+    const mark = c.ok ? '[  OK  ]' : '[ FAIL ]';
+    const color = c.ok ? '\x1b[33m' : '\x1b[31m';
+    console.log(`  ${color}${mark}\x1b[0m ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+  }
+}
+
+export function scenarioStats() {
+  return { pass: scenarioPass, fail: scenarioFail };
+}
+
+export function resetScenarioStats() {
+  scenarioPass = 0;
+  scenarioFail = 0;
+}
+
+// 场景脚本提示（scenarios 套件专用前缀；与各脚本自带 note 区分）。
+export function note(msg) {
+  console.log(`[scenarios] ${msg}`);
+}
+
 // 子进程工具：exit 0 = 成功，否则 reject。
 export function run(cmd, cmdArgs, opts = {}) {
   return new Promise((resolve, reject) => {

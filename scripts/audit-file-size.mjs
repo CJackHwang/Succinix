@@ -2,8 +2,8 @@
 // 文件规模审计（O12）：输出 src/、scripts/ 前 20 大文件与行数阈值。
 //
 // 阈值（MASTER-PLAN-NEXT 基线）：src/**/*.ts <= 450 行，scripts/**/*.mjs <= 700 行。
-// 阶段策略：默认 warning 模式（O7-O11 拆分完成前只提示不 fail）；--fail 时超限即 fail
-// 门禁（O7-O11 完成后由 check/CI 以 --fail 调用）。
+// 阶段策略：O7-O11 拆分完成后，check/CI 以 --fail 调用（超限即 fail）；不带参数时为
+// 手动 inspection 模式（只提示不 fail）。O9 条件延后例外见 EXEMPTIONS。
 //
 // 用法：
 //   node scripts/audit-file-size.mjs [--fail]
@@ -14,6 +14,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = join(__dirname, '..');
 const FAIL = process.argv.includes('--fail');
+
+// O9 条件延后豁免：终端功能未扩展前不拆分 src/terminal/session.ts（486 行 > 450）。
+// 豁免原因见 docs/MASTER-PLAN-NEXT.md TASK-O9；执行 O9 时移除本条目并重新收口。
+const EXEMPTIONS = {
+  'terminal/session.ts': 'O9 deferred until terminal features are extended',
+};
 
 // ─── 收集树内目标文件（.ts / .mjs，跳过 .sh 等辅助文件）───
 function collectFiles(dir, ext, out = [], prefix = '') {
@@ -44,16 +50,20 @@ for (const { label, files, max } of LIMITS) {
   const sorted = [...files].sort((a, b) => b.lines - a.lines);
   console.log(`\n=== ${label} (${files.length} files, limit ${max} lines) ===`);
   for (const f of sorted.slice(0, 20)) {
-    const flag = f.lines > max ? (FAIL ? '[ FAIL ]' : '[ WARN ]') : '        ';
+    const exempt = EXEMPTIONS[f.rel];
+    const flag = f.lines > max ? (exempt ? '[EXEMPT]' : FAIL ? '[ FAIL ]' : '[ WARN ]') : '        ';
     console.log(`  ${flag} ${f.lines.toString().padStart(5)} ${f.rel}`);
   }
   for (const f of files) {
     total += f.lines;
-    if (f.lines > max) over.push({ ...f, max, label });
+    if (f.lines > max && !EXEMPTIONS[f.rel]) over.push({ ...f, max, label });
   }
 }
 
 console.log(`\nTotal lines: ${total}`);
+for (const [rel, reason] of Object.entries(EXEMPTIONS)) {
+  console.log(`  [EXEMPT] ${rel} (${reason})`);
+}
 if (over.length === 0) {
   console.log(`${FAIL ? '[  OK  ]' : '[  OK  ]'} no files over limit`);
   process.exit(0);

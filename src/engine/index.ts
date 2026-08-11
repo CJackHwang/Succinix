@@ -2,7 +2,7 @@
 // 前端（boot/main/commands/services/tests）与外部生态统一从本模块导入；目录边界即引擎边界。
 // 职责：文件型 RPC 客户端（TerminalClient）+ host 注入/拉起（bootEngineHost）+ 干净的命令式接口
 // （createTerminalExecutor，生态消费者用）。路由规则（node|npm|npx → 真 Node / 其余 → Lifo）
-// 在 host 侧实现（src/engine/host.ts），引擎是自包含模块：不依赖 persist/log/config 等系统层。
+// 在 host 侧实现（src/engine/host/），引擎是自包含模块：不依赖 persist/log/config 等系统层。
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 import type { ProcInfo } from './host-procs.js';

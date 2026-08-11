@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Succinix TASK20 e2e 编排：`npm run test:e2e` = build 一次 + 依次跑既有 CDP 脚本。
 //   verify-deploy.mjs（部署就绪 + ?test=1 自检）→ bench.mjs（性能）→ scenarios.mjs（场景套件）
-//   → lang-verify.mjs（语言生态验证，TASK25）
+//   → lang-verify.mjs（语言生态验证，TASK25）→ instance-demo.mjs（跨容器多实例）
+//   → instance-routing.mjs（同页多实例宿主行为，R5）
 // 各脚本默认各自 build；这里先 build 一次，再用 --skip-build 依次执行，避免重复构建。
 // 零新运行时依赖（复用现有 CDP 脚本 + vite preview）。
 import { spawn } from 'node:child_process';
@@ -17,6 +18,7 @@ const STEPS = [
   { name: 'scenarios (14 real-workflow scenarios)', args: ['scripts/scenarios.mjs', '--skip-build'] },
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },
   { name: 'instance-demo (multi-instance + multi-user, 27 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
+  { name: 'instance-routing (same-page instance routing, R5)', args: ['scripts/instance-routing.mjs', '--skip-build'] },
 ];
 
 // flake 策略（R6）：deploy gate 已知偶发 flake，自动重试一次；其余步骤失败即记，不重试。

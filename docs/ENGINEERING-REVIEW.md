@@ -1,6 +1,6 @@
 # Succinix Engineering Review & Unified Fix Plan
 
-> 审查日期：2026-08-10
+> 审查日期：2026-08-10；复验日期：2026-08-11
 > 审查对象：`docs/MASTER-PLAN.md` 计划完成情况、代码组织、大文件解耦
 > 结论：功能主线已完成并可通过本地质量门，但 0.4.0 发布/F4 尚未闭环；存在 1 个 SDK 分层缺陷、1 个同页端口分发缺陷、以及若干实例边界问题。
 
@@ -152,13 +152,13 @@
 
 ## 6. 代码组织与大文件分析
 
-### 6.1 当前规模
+### 6.1 审查时规模（2026-08-10 基线；O1-O6 拆分完成后部分文件已迁移，见 §8 状态与当前代码树）
 
 | 文件 | 行数 | 主要职责 |
 | --- | --- | --- |
 | `src/commands.ts` | 1520 | 25 个本地命令 + 工作区/netstat/uname 等纯函数 |
 | `src/tests.ts` | 923 | `?test=1` 自检全部断言，单函数 `runTests` |
-| `src/engine/host.ts` | 831 | host daemon：RPC 循环、node/lifo/python、spawn、ps/kill |
+| `src/engine/host.ts` | 831 | host daemon：RPC 循环、node/lifo/python、spawn、ps/kill（O3 后拆分至 `src/engine/host/`） |
 | `src/terminal/boot.ts` | 586 | boot 流程 + 应用级 bootsteps 混合 |
 | `src/engine/python-daemon.ts` | 578 | Pyodide daemon |
 | `src/main.ts` | 560 | xterm 装配、自动快照、看门狗、dev hooks、demo |
@@ -312,10 +312,10 @@ scripts/lib/
 
 | ID | 类型 | 优先级 | 问题 | 位置 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（本地 bump 0.4.0 + README/bench 版本同步；npm 发布/GitHub Release/Vercel 部署待用户执行） |
+| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（主项目本地 bump 0.4.0 + README/bench 版本同步；版本策略统一为 SDK.md 定稿：engine 独立 0.1.x 线、随 0.4.0 发布 0.1.3，见 5afac54；npm 发布/GitHub Release/Vercel 部署待用户执行） |
 | R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始（`gh` token 失效，需重新认证后跑 CI 并回填 `gh run view`） |
 | R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
-| R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb） |
+| R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb + 5afac54：MASTER-PLAN 7 处残留统一为 `>=71`） |
 | D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 已完成（7326bdb） |
 | D2 | 功能 | P0 | 同页端口事件未分发 | `src/instance/index.ts`、`src/engine/index.ts` | 已完成（7326bdb） |
 | D3 | 功能 | P1 | restart 非真正重 boot | `src/instance/index.ts:208` | 已完成（7326bdb） |
@@ -323,12 +323,14 @@ scripts/lib/
 | D5 | 性能/语义 | P2 | 实例 tinbase 未排除 | `src/persist.ts:98` | 已完成（7326bdb） |
 | D6 | 一致性 | P1 | db 忽略 statePrefix | `src/commands.ts:291` | 已完成（7326bdb） |
 | D7 | 文档 | P2 | README/FEATURES 陈旧数字 | `README.md`、`docs/FEATURES.md` | 已完成（7326bdb） |
+| D8 | 性能/架构 | P0 | O3 破坏 host.js 懒加载，lifo-core 被打进 host bundle | `scripts/build-host.mjs`、`src/engine/host/run.ts` | 已完成（5afac54：esbuild 插件把源码 `../lifo-core.js` 改写为 external `./lifo-core.js`；host.js 1,082,069 B → 15,675 B，懒加载保留，verify-deploy 76/0/5 通过） |
+| D9 | 文档 | P2 | O3 后文档仍引用已删除的 `src/engine/host.ts` | `docs/PROTOCOL*`、`docs/SDK*`、`docs/MASTER-PLAN.md` | 已完成（5afac54：改指 `src/engine/host/`；§6.1 标注为审查时基线） |
 | O1 | 重构 | P2 | commands.ts 1520 行拆分 | `src/commands.ts` | 已完成（0e4454b） |
 | O2 | 重构 | P2 | main.ts 应用特性拆分 | `src/main.ts` | 已完成（efcdfb5） |
-| O3 | 重构 | P2 | host.ts 831 行拆分 | `src/engine/host.ts` | 已完成（fb84492） |
+| O3 | 重构 | P2 | host.ts 831 行拆分 | `src/engine/host.ts` | 已完成（fb84492；懒加载回归由 5afac54 修复，见 D8） |
 | O4 | 重构 | P2 | persist.ts 454 行拆分 | `src/persist.ts` | 已完成（95d21bd） |
 | O5 | 重构 | P2 | tests.ts 923 行拆分 | `src/tests.ts` | 已完成（37dab85） |
-| O6 | 重构 | P2 | 脚本 CDP 重复代码 | `scripts/*.mjs` | 已完成（工作区，含 bench 清理修复） |
+| O6 | 重构 | P2 | 脚本 CDP 重复代码 | `scripts/*.mjs` | 已完成（9826a03） |
 
 ## 9. 建议执行顺序
 
@@ -344,6 +346,70 @@ scripts/lib/
 - 同页多实例的端口分发、restart、快照边界已修复（D2/D3/D4），但同页宿主行为仍以协议级单测为主，双 tab e2e 已覆盖。
 - CI、Vercel 部署、npm 发布传播无法在本地完全验证。
 - `scripts/instance-demo.mjs` 27/27 通过，已加入 `run-e2e` STEPS 与 nightly CI（R3），但 push 门禁不含场景套件，仍有静默回归可能。
+
+## 11. 2026-08-11 复验记录
+
+### 11.1 本轮实测门禁
+
+| 门禁 | 结果 |
+| --- | --- |
+| `npm run typecheck` | 0 errors |
+| `npm run lint` | pass |
+| `npm run test` | 334 passed / 26 files |
+| `npm run build` | pass（build:host + vite build） |
+| `npm run build:engine-package` | pass |
+| build-host 产物 | `public/host.js` 15,675 B（懒加载 `import("./lifo-core.js")` 保留）；`public/lifo-core.js` 1,066,097 B |
+| `node scripts/verify-deploy.mjs --skip-build` | `?test=1` 76 passed / 0 failed / 5 skipped |
+| `node scripts/instance-demo.mjs --skip-build` | 27/27 checks passed |
+| `node scripts/bench.mjs --skip-build` | 干净退出（7.2s），`"version":"0.4.0"` |
+
+### 11.2 结论
+
+- D1-D7、R3、R4 以及 O1-O6 全部闭环；`package.json` 已本地 bump 为 `0.4.0`，engine 版本策略统一为 SDK.md 定稿（独立 0.1.x 线，随 0.4.0 发布 0.1.3）。
+- 复验发现的 D8（host.js 懒加载回归）与 D9（文档引用）已由 5afac54 修复，全部质量门禁与浏览器自检重跑通过。
+- R1/R2 仍待外部状态闭环：npm 发布、远程 CI、Vercel 部署、`webunix-development` 技能更新需凭据/远程状态（见 §11.4）。
+
+### 11.3 新发现
+
+#### D8. O3 拆分破坏 host.js 懒加载（高）
+
+- `src/engine/host/run.ts` 的动态导入路径已从 `import('./lifo-core.js')` 变为 `import('../lifo-core.js')`。
+- `scripts/build-host.mjs` 的 `external` 仍只有 `'./lifo-core.js'`，没有匹配 `'../lifo-core.js'`，因此 esbuild 把约 1 MB 的 `@lifo-sh/core` 重新打进 `public/host.js`。
+- 实测当前 `public/host.js` 为 1,082,069 字节；把 `'../lifo-core.js'` 加入 external 后同一入口产物为 15,676 字节，并保留 `import("../lifo-core.js")` 懒加载。
+- 这违反 AGENTS.md、MASTER-PLAN 与 SDK.md 的“host.js 轻量 + lifo-core 懒加载”约束，会重新拖慢 boot。
+- 建议修复：在 `scripts/build-host.mjs` 的 host external 列表补 `'../lifo-core.js'`，同步更新注释，再重跑 build-host、verify-deploy 与 bench boot 时间。
+- **已修复（5afac54）**：esbuild 插件把 `src/engine/host/` 下的 `../lifo-core.js` 导入改写为 external 的 `./lifo-core.js`；实测 host.js 15,675 B、懒加载保留，verify-deploy 76/0/5 与 bench 均通过。
+
+#### R4 残留：MASTER-PLAN 门禁数字未全量统一
+
+- README、FEATURES、verify-deploy 已统一为 `>=71`，但 `docs/MASTER-PLAN.md` 仍有 7 处 `?test=1 >=76`（约第 49/113/304/315/416/569/661 行）。
+- 若希望 71-75 的回归仍被拦截，应把门禁升回 `>=76`；若 71 是有意阈值，应同步改 MASTER-PLAN。二选一后删除残留。
+- **已修复（5afac54）**：确认 71 为有意阈值（verify-deploy `MIN_PASSED = 71`、README/FEATURES 同步），MASTER-PLAN 7 处残留统一为 `>=71`，§11 实测 76/0/5 记录保留。
+
+#### R1 残留：engine 包版本策略冲突
+
+- `docs/MASTER-PLAN.md` 的 DM-6、TASK-E4 与 §11 明确写 `@succinix/engine` **0.4.0 一次性发布**。
+- 当前 `packages/engine/package.json` 仍是 `0.1.3`，SDK.md 写 engine 独立 `0.1.x` 线。
+- 发布前必须二选一：按 MASTER-PLAN 把 engine 包 bump 到 0.4.0，或按 SDK.md 保持 0.1.x 并修改 MASTER-PLAN/SDK 表述，避免发布流程自相矛盾。
+- **已修复（5afac54）**：按 SDK.md 版本策略节定稿 —— 主项目 0.x 线（0.4.0），engine 独立 0.1.x 线（本次随 0.4.0 发布 0.1.3）；MASTER-PLAN DM-6/TASK-E4/§10/§11 与 SDK 双语文档已统一口径。
+
+#### D9. O3 后文档仍引用已删除的 `src/engine/host.ts`（低）
+
+- `docs/PROTOCOL.md`、`docs/PROTOCOL.zh-CN.md`、`docs/SDK.md`、`docs/SDK.zh-CN.md`、`docs/MASTER-PLAN.md` 多处仍指向 `src/engine/host.ts`。
+- O3 已将该文件拆为 `src/engine/host/*`；文档应改指 `src/engine/host/main.ts` 或 `src/engine/host/`。
+- `docs/ENGINEERING-REVIEW.md` 第 6 节仍保留拆分前的大文件行数，建议标注为审查时基线或更新为当前结构。
+- **已修复（5afac54）**：PROTOCOL*/SDK*/MASTER-PLAN 全部改指 `src/engine/host/`；§6.1 标注为审查时基线并注明 O3 迁移。
+
+### 11.4 完成判定
+
+本轮修复（5afac54）已闭环复验发现的全部本地问题：D8 懒加载回归、R4 门禁数字、R1 版本口径、D9 文档引用；`npm run build`、`verify-deploy`（76/0/5）、`instance-demo`（27/27）、`bench` 均已重跑通过。
+
+仍待外部状态闭环（用户/Hermes 侧，本地无推进空间）：
+
+1. **R2 / MASTER-PLAN §11⑧**：`gh auth login`（CJackHwang token 失效）→ push main → CI 全绿 → `gh run view` 回填。
+2. **R1 / §11①**：`npm publish @succinix/engine@0.1.3`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布）。
+3. **§11⑨**：Vercel 部署 + 线上 `?instance=`/`?user=` 验证。
+4. **§11⑩**：`webunix-development` 技能更新（用户/Hermes 侧）。
 
 ---
 

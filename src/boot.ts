@@ -24,7 +24,7 @@ import { loadSnapshot } from './persist.js';
 import type { TerminalOutput, TerminalSessionOptions } from './terminal/index.js';
 import { createSuccinixInstance, DEFAULT_INSTANCE_BOOT_STEPS, type SuccinixInstance } from './instance/index.js';
 import { DEFAULT_INSTANCE_ID, userHomePath } from './instance/paths.js';
-import { readAutostart } from './services.js';
+import { readAutostart } from './services/index.js';
 import { log } from './log.js';
 
 export { checkEnvironment, detectSystemInfo, initWorkspace, withRetry, bootWebContainerWithRetry, waitForHostReadyWithRetry };

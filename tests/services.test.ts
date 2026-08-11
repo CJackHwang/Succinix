@@ -21,7 +21,7 @@ import {
   startService,
   stopService,
   type ServiceContext,
-} from '../src/services.js';
+} from '../src/services/index.js';
 import { instancePorts } from '../src/instance/ports.js';
 import { clearSnapshot } from '../src/persist.js';
 

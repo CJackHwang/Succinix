@@ -6,7 +6,7 @@ import type { Terminal } from '@xterm/xterm';
 import { FakeFS, FakeClient } from './helpers/fakes.js';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import { instancePorts } from '../src/instance/ports.js';
-import { clearDbActivePorts } from '../src/services.js';
+import { clearDbActivePorts } from '../src/services/index.js';
 import {
   fmtUnit,
   buildWorkspaceList,

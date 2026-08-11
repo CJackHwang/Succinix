@@ -7,7 +7,7 @@ import { TerminalClient } from '../src/engine/client.js';
 import { createSuccinixInstance, DEFAULT_INSTANCE_BOOT_STEPS } from '../src/instance/index.js';
 import { instanceStateRoot, statePath, tinbaseDataDir, INSTANCE_STATE_ROOT_PREFIX } from '../src/instance/paths.js';
 import { envFilePath, settingsFilePath } from '../src/config.js';
-import { servicesFilePath, autostartFilePath } from '../src/services.js';
+import { servicesFilePath, autostartFilePath } from '../src/services/index.js';
 import { motdFilePath } from '../src/motd.js';
 import { SuccinixTerminalSession, type TerminalOutput } from '../src/terminal/index.js';
 import type { WebContainer } from '@webcontainer/api';

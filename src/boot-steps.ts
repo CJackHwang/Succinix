@@ -15,7 +15,7 @@ import {
 } from './terminal/boot.js';
 import { TerminalClient, bootEngineHost, waitForHostReady, type EngineBootHooks } from './engine/index.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
-import { ensureServicesFiles, readAutostart, startService } from './services.js';
+import { ensureServicesFiles, readAutostart, startService } from './services/index.js';
 import { initLogger, log } from './log.js';
 import { ensureMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';

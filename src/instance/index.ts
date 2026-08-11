@@ -33,7 +33,7 @@ import {
   clearActivePorts,
   clearDbActivePorts,
   type ServiceContext,
-} from '../services.js';
+} from '../services/index.js';
 import { DEFAULT_INSTANCE_ID, instanceStateRoot, browserPathToSessionCwd } from './paths.js';
 import { instancePorts } from './ports.js';
 

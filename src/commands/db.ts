@@ -3,7 +3,7 @@ import type { FileSystemAPI } from '@webcontainer/api';
 import { getSetting } from '../config.js';
 import { DEFAULT_INSTANCE_ID, instanceStateRoot, tinbaseDataDir } from '../instance/paths.js';
 import { instancePorts } from '../instance/ports.js';
-import { dbActivePortFor, setDbActivePort, clearDbActivePorts } from '../services.js';
+import { dbActivePortFor, setDbActivePort, clearDbActivePorts } from '../services/index.js';
 import { AMBER, RED, RESET } from '../theme.js';
 import { sleep } from '../util.js';
 import type { CommandContext } from './types.js';

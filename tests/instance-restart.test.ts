@@ -7,7 +7,7 @@ import { TerminalClient } from '../src/engine/client.js';
 import { createSuccinixInstance, type SuccinixRestartContext } from '../src/instance/index.js';
 import { instancePorts } from '../src/instance/ports.js';
 import { instanceStateRoot } from '../src/instance/paths.js';
-import { dbActivePortFor, setDbActivePort } from '../src/services.js';
+import { dbActivePortFor, setDbActivePort } from '../src/services/index.js';
 import { processesOwnedByInstance, CurrentRunRegistry } from '../src/engine/host-route.js';
 import type { WebContainer } from '@webcontainer/api';
 import type { TerminalOutput } from '../src/terminal/index.js';

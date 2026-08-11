@@ -1,6 +1,6 @@
 // M4：service/ports 按实例视图 + db 数据目录 + reboot 实例级语义（纯逻辑单测）。
 import { describe, it, expect } from 'vitest';
-import { processBelongsToInstance } from '../src/services.js';
+import { processBelongsToInstance } from '../src/services/index.js';
 import { InstancePortRegistry } from '../src/instance/ports.js';
 import { tinbaseDataDir, DEFAULT_INSTANCE_ID } from '../src/instance/paths.js';
 import { rebootMode } from '../src/commands.js';

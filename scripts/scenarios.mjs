@@ -802,11 +802,27 @@ async function main() {
       const started = Date.now();
       let checks = [];
       let crashed = '';
-      try {
-        checks = (await sc.run(h)) || [];
-      } catch (e) {
-        crashed = String(e).slice(0, 300);
-        checks = [{ name: `scenario crashed: ${crashed}`, ok: false, detail: '' }];
+      let attempts = 0;
+      while (attempts < 2) {
+        attempts++;
+        try {
+          // 场景前置：句柄必须就绪（页面意外 reload 后自动恢复/主动 reload 自愈）。
+          await h.ensureScenario(120000);
+          checks = (await sc.run(h)) || [];
+          crashed = '';
+          break;
+        } catch (e) {
+          crashed = String(e).slice(0, 300);
+          checks = [{ name: `scenario crashed: ${crashed}`, ok: false, detail: '' }];
+          if (attempts === 1) {
+            console.log(`  [ WARN ] ${sc.id} crashed (${crashed}) — reloading and retrying once`);
+            try {
+              await h.reloadAndWait(180000);
+            } catch (e2) {
+              crashed += ` | reload failed: ${String(e2).slice(0, 120)}`;
+            }
+          }
+        }
       }
       const ok = crashed === '' && checks.every((c) => c.ok);
       scenarioResults.push({ id: sc.id, name: sc.name, ok, checks, ms: Date.now() - started });

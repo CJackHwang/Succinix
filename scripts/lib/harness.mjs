@@ -83,6 +83,33 @@ export function makeHarness(cdp) {
       }
       throw new Error(`scenario handle did not become ready within ${timeoutMs}ms`);
     },
+    // 场景前置：确保句柄可用。页面意外 reload（宿主看门狗/大输出触发）后句柄会消失，
+    // 这里等新 boot 重新注册；长时间缺失（卡错误页/半载）则主动 reload 一次自愈。
+    async ensureScenario(timeoutMs = 120000) {
+      const deadline = Date.now() + timeoutMs;
+      let missingSince = null;
+      let reloaded = false;
+      while (Date.now() < deadline) {
+        try {
+          const v = await evalValue(cdp, '!!window.__succinixScenario && window.__succinixScenario.booted === true');
+          if (v) return;
+        } catch {
+          /* 导航期间上下文销毁：下一轮再试 */
+        }
+        if (missingSince === null) missingSince = Date.now();
+        if (!reloaded && Date.now() - missingSince > 20000) {
+          reloaded = true;
+          missingSince = null;
+          try {
+            await cdp.send('Page.reload', { ignoreCache: true });
+          } catch {
+            /* 导航中 */
+          }
+        }
+        await sleep(400);
+      }
+      throw new Error(`scenario handle lost and did not recover within ${timeoutMs}ms`);
+    },
     // 刷新页面（保持 ?scenario=1），等重新 boot + 句柄就绪。
     async reloadAndWait(timeoutMs = 120000) {
       try {

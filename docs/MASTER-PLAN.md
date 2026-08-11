@@ -700,7 +700,9 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
       （0.4.0 版本单源同步；SDK.md/PROTOCOL.md/FEATURES.md 均含中英双语）
 - [x] 全项目过时文档清点完成（F2）——根 README/AGENTS/CHANGELOG/CONTRIBUTING +
       docs/ 全部双语成对同步，无描述旧架构（单应用/单用户/旧数字/旧引用）的残留
-- [ ] CI 全绿（jobs conclusion 全 success）—— 需 `gh auth login` 后推送/触发并回填
+- [x] CI 全绿（jobs conclusion 全 success）—— push 0f5c25b 触发 run 31459095383，
+      check job 全绿（lint / tsc / vitest+coverage / build / verify-deploy ?test=1 ≥71），
+      nightly-scenarios 按设计 skip（2026-08-11，gh run view 实测）
 - [ ] 部署站强刷显示最新版本；`?instance=`/`?user=` demo 线上可用 —— 需 Vercel 部署
 - [ ] 技能沉淀：webunix-development 更新（宿主集成两层模型 + 多用户组织性隔离声明）
 

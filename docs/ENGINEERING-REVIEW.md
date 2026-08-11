@@ -313,7 +313,7 @@ scripts/lib/
 | ID | 类型 | 优先级 | 问题 | 位置 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（主项目本地 bump 0.4.0 + README/bench 版本同步；版本策略统一为 SDK.md 定稿：engine 独立 0.1.x 线、随 0.4.0 发布 0.1.4，见 5afac54；registry 0.1.3 已被旧内容占用，npm 发布 0.1.4/GitHub Release/Vercel 部署待用户执行） |
-| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始（`gh` token 失效，需重新认证后跑 CI 并回填 `gh run view`） |
+| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 已完成（2026-08-11：`gh` 重新认证后 push 0f5c25b，run 31459095383 check job 全绿：lint / tsc / vitest+coverage / build / verify-deploy ?test=1 ≥71；nightly-scenarios 按设计 skip） |
 | R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
 | R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb + 5afac54：MASTER-PLAN 7 处残留统一为 `>=71`） |
 | D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 已完成（7326bdb） |
@@ -406,10 +406,9 @@ scripts/lib/
 
 仍待外部状态闭环（用户/Hermes 侧，本地无推进空间）：
 
-1. **R2 / MASTER-PLAN §11⑧**：`gh auth login`（CJackHwang token 失效）→ push main → CI 全绿 → `gh run view` 回填。
-2. **R1 / §11①**：`npm publish @succinix/engine@0.1.4`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布；registry 0.1.3 已被旧内容占用）。
-3. **§11⑨**：Vercel 部署 + 线上 `?instance=`/`?user=` 验证。
-4. **§11⑩**：`webunix-development` 技能更新（用户/Hermes 侧）。
+1. **R1 / §11①**：`npm publish @succinix/engine@0.1.4`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布；registry 0.1.3 已被旧内容占用）。
+2. **§11⑨**：Vercel 部署 + 线上 `?instance=`/`?user=` 验证（push 已触发自动部署，待线上强刷验证）。
+3. **§11⑩**：`webunix-development` 技能更新（用户/Hermes 侧）。
 
 ---
 

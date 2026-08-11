@@ -38,6 +38,9 @@ export default defineConfig({
   },
   server: {
     port: 7892,
+    // 显式绑 127.0.0.1（IPv4）：默认 localhost 只绑 ::1，127.0.0.1 探测（CI/verify/外部工具）会被拒。
+    // localhost 访问靠 IPv4 fallback 可达；不暴露局域网（比 host: true 收敛）。
+    host: '127.0.0.1',
     // TASK23：固定 7892，禁用端口漂移（WebContainer 需要稳定 origin；scripts/start-dev.mjs
     // 启动前会释放被占用的 7892）。strictPort 让 vite 端口被占时直接报错而非漂到 7893。
     strictPort: true,

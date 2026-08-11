@@ -63,10 +63,6 @@ export function resetOutput(): void {
 export function setError(msg: string): void {
   errBuf = msg;
 }
-/** 追加 stderr（缺模块 hint 等）。 */
-export function appendError(msg: string): void {
-  errBuf += msg;
-}
 /** 直接设置 stdout 缓冲（覆盖；固定输出如 usage/help）。 */
 export function setOutput(msg: string): void {
   outBuf = msg;

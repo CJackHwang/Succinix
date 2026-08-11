@@ -16,8 +16,8 @@ export {
   enableAutostart,
   disableAutostart,
 } from './io.js';
-export { activePortsFor, clearActivePorts, dbActivePortFor, setDbActivePort, clearDbActivePorts } from './registry.js';
-export { resolvePreviewPort, renderCommand, portsView } from './ports.js';
+export { clearActivePorts, dbActivePortFor, setDbActivePort, clearDbActivePorts } from './registry.js';
+export { resolvePreviewPort, renderCommand } from './ports.js';
 export {
   processBelongsToInstance,
   getServiceState,

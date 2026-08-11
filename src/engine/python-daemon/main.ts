@@ -31,7 +31,6 @@ import {
   errBuf,
   resetOutput,
   setError,
-  appendError,
   setOutput,
   setPythonCwd,
   PYTHON_VERSION,
@@ -47,7 +46,7 @@ function handleC(code: string): number {
     return 0;
   } catch (e) {
     if (!errBuf) setError(formatError(e));
-    appendError(appendInstallHint(errBuf));
+    setError(appendInstallHint(errBuf));
     return 1;
   }
 }
@@ -68,7 +67,7 @@ function handleScript(scriptArg: string, cwd: string | undefined): number {
     return 0;
   } catch (e) {
     if (!errBuf) setError(formatError(e));
-    appendError(appendInstallHint(errBuf));
+    setError(appendInstallHint(errBuf));
     return 1;
   }
 }
@@ -97,7 +96,7 @@ runpy.run_module(${JSON.stringify(target)}, run_name='__main__')
     return 0;
   } catch (e) {
     if (!errBuf) setError(formatError(e));
-    appendError(appendInstallHint(errBuf));
+    setError(appendInstallHint(errBuf));
     return 1;
   }
 }

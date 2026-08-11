@@ -13,7 +13,7 @@ import {
   removePackage,
   packageInfo,
   type PkgContext,
-} from '../src/pkg.js';
+} from '../src/pkg/index.js';
 import { clearSnapshot } from '../src/persist.js';
 
 function makeCtx(fake: FakeClient, f: FakeFS): PkgContext {

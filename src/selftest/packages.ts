@@ -1,7 +1,7 @@
 // 自检域：包管理（pkg 命令族）（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { listPackages, formatPackageList, searchPackages } from '../pkg.js';
+import { listPackages, formatPackageList, searchPackages } from '../pkg/index.js';
 
 export async function runPackages(ctx: TestContext): Promise<void> {
   const { wc, client, term } = ctx;

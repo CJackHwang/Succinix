@@ -1,5 +1,5 @@
 // pkg 命令域：包管理（lifo + npm 双通道，O1 拆分）。
-import { listPackages, formatPackageList, searchPackages, formatSearchResults, installPackage, removePackage, packageInfo, type PkgContext } from '../pkg.js';
+import { listPackages, formatPackageList, searchPackages, formatSearchResults, installPackage, removePackage, packageInfo, type PkgContext } from '../pkg/index.js';
 import { GRAY, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 包管理（TASK13）：pkg 命令族，统一 lifo + npm 两通道 ───

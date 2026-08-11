@@ -29,7 +29,8 @@
     "test:e2e": "node scripts/run-e2e.mjs",
     "audit:files": "node scripts/audit-file-size.mjs",
     "check:static": "node scripts/check-static.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static",
+    "check:docs": "node scripts/check-docs.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:docs",
     "check:e2e": "npm run check && npm run test:e2e",
     "setup:hooks": "node scripts/setup-hooks.mjs"
   },

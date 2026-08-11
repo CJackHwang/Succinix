@@ -90,7 +90,7 @@
 ### TASK-O11：`scripts/scenarios.mjs` 拆分（838 行）
 
 - 建议结构：`scripts/scenarios/{kernel,filesystem,services,languages,smoke}.mjs`
-- 复用：`scripts/lib/harness.mjs` / `cdp.mjs` / `chrome.mjs`。
+- 复用：`scripts/lib/harness.mjs` / `scripts/lib/cdp.mjs` / `scripts/lib/chrome.mjs`。
 - 验收：O 系列门禁全过；scenarios 数量与输出不回归。
 - commit：`refactor(O11): split browser scenarios into suites`
 
@@ -121,7 +121,7 @@
 ### TASK-R5：同页多实例宿主行为补 e2e
 
 - 现状：跨容器双 tab 已 e2e；同页 `?instance=` 端口/ps/kill/reboot 目前以协议单测为主。
-- 建议：在 `scripts/run-e2e.mjs` 或 `instance-demo.mjs` 增加同页双实例场景，
+- 建议：在 `scripts/run-e2e.mjs` 或 `scripts/instance-demo.mjs` 增加同页双实例场景，
   覆盖同页共享 RPC 的端口事件分发与重启边界。
 - 目标断言：`service start` 端口只注册到各自实例视图；`ps` 不显示对方进程；
   `kill` 越权拒绝；`reboot` 只重置自己，另一实例状态不变；同页快照按实例键隔离。

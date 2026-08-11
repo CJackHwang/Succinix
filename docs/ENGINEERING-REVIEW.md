@@ -312,7 +312,7 @@ scripts/lib/
 
 | ID | 类型 | 优先级 | 问题 | 位置 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（主项目本地 bump 0.4.0 + README/bench 版本同步；版本策略统一为 SDK.md 定稿：engine 独立 0.1.x 线、随 0.4.0 发布 0.1.3，见 5afac54；npm 发布/GitHub Release/Vercel 部署待用户执行） |
+| R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（主项目本地 bump 0.4.0 + README/bench 版本同步；版本策略统一为 SDK.md 定稿：engine 独立 0.1.x 线、随 0.4.0 发布 0.1.4，见 5afac54；registry 0.1.3 已被旧内容占用，npm 发布 0.1.4/GitHub Release/Vercel 部署待用户执行） |
 | R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 未开始（`gh` token 失效，需重新认证后跑 CI 并回填 `gh run view`） |
 | R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
 | R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb + 5afac54：MASTER-PLAN 7 处残留统一为 `>=71`） |
@@ -365,7 +365,7 @@ scripts/lib/
 
 ### 11.2 结论
 
-- D1-D7、R3、R4 以及 O1-O6 全部闭环；`package.json` 已本地 bump 为 `0.4.0`，engine 版本策略统一为 SDK.md 定稿（独立 0.1.x 线，随 0.4.0 发布 0.1.3）。
+- D1-D7、R3、R4 以及 O1-O6 全部闭环；`package.json` 已本地 bump 为 `0.4.0`，engine 版本策略统一为 SDK.md 定稿（独立 0.1.x 线，随 0.4.0 发布 0.1.4；registry 0.1.3 已被旧内容占用，本地已 bump 0.1.4）。
 - 复验发现的 D8（host.js 懒加载回归）与 D9（文档引用）已由 5afac54 修复，全部质量门禁与浏览器自检重跑通过。
 - R1/R2 仍待外部状态闭环：npm 发布、远程 CI、Vercel 部署、`webunix-development` 技能更新需凭据/远程状态（见 §11.4）。
 
@@ -391,7 +391,7 @@ scripts/lib/
 - `docs/MASTER-PLAN.md` 的 DM-6、TASK-E4 与 §11 明确写 `@succinix/engine` **0.4.0 一次性发布**。
 - 当前 `packages/engine/package.json` 仍是 `0.1.3`，SDK.md 写 engine 独立 `0.1.x` 线。
 - 发布前必须二选一：按 MASTER-PLAN 把 engine 包 bump 到 0.4.0，或按 SDK.md 保持 0.1.x 并修改 MASTER-PLAN/SDK 表述，避免发布流程自相矛盾。
-- **已修复（5afac54）**：按 SDK.md 版本策略节定稿 —— 主项目 0.x 线（0.4.0），engine 独立 0.1.x 线（本次随 0.4.0 发布 0.1.3）；MASTER-PLAN DM-6/TASK-E4/§10/§11 与 SDK 双语文档已统一口径。
+- **已修复（5afac54）**：按 SDK.md 版本策略节定稿 —— 主项目 0.x 线（0.4.0），engine 独立 0.1.x 线；因 registry `0.1.3` 已被旧内容（无 `./terminal`/`./instance` 导出）占用，本地 bump 至 **0.1.4** 作为随 0.4.0 发布的版本；MASTER-PLAN DM-6/TASK-E4/§10/§11 与 SDK 双语文档已统一口径。
 
 #### D9. O3 后文档仍引用已删除的 `src/engine/host.ts`（低）
 
@@ -407,7 +407,7 @@ scripts/lib/
 仍待外部状态闭环（用户/Hermes 侧，本地无推进空间）：
 
 1. **R2 / MASTER-PLAN §11⑧**：`gh auth login`（CJackHwang token 失效）→ push main → CI 全绿 → `gh run view` 回填。
-2. **R1 / §11①**：`npm publish @succinix/engine@0.1.3`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布）。
+2. **R1 / §11①**：`npm publish @succinix/engine@0.1.4`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布；registry 0.1.3 已被旧内容占用）。
 3. **§11⑨**：Vercel 部署 + 线上 `?instance=`/`?user=` 验证。
 4. **§11⑩**：`webunix-development` 技能更新（用户/Hermes 侧）。
 

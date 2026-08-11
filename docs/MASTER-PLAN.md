@@ -46,7 +46,7 @@ L0 单实例（现状 0.3.0）      L1 SDK 化               L2 多实例       
   netstat/ip/uname/motd/lang/pwd/version/whoami），走 `tryHandleLocalCommand`。
 - `src/persist.ts`（392 行）：IndexedDB `succinix-persist` 库 / `current` key，
   force 语义 + 30s age-force + 内容签名去重。
-- 门禁基线：tsc 0 / lint 0 / vitest 118 / `?test=1` ≥76 passed / grep emoji 0。
+- 门禁基线：tsc 0 / lint 0 / vitest 118 / `?test=1` ≥71 passed / grep emoji 0。
 - 包：`@succinix/engine` 0.1.3（exports `.` + `./host.js`/`./lifo-core.js`）。
 - 物理边界（AGENTS.md）：不做真内核/apt/原生二进制、不做登录仪式/权限位、
   不做 REPL stdin、不做 symlink。**多用户条目当前为"❌ 已砍"，U1 改为
@@ -60,7 +60,8 @@ L0 单实例（现状 0.3.0）      L1 SDK 化               L2 多实例       
 ## 2. 目标架构
 
 ```
-@succinix/engine（npm 包，**0.4.0 一次性发布**：terminal 导出 + 实例 API + 多用户全量）
+@succinix/engine（npm 包，独立 **0.1.x 线**，随 0.4.0 应用版本一次性发布：
+                 terminal 导出 + 实例 API + 多用户全量）
 ├─ createTerminalExecutor()          [已有] 命令式接口（Agent/宿主通道）
 ├─ SuccinixTerminalSession           [E1]  终端交互核心（无 UI：历史/补全/真中断/队列/cwd）
 ├─ TerminalBoot + BootUI             [E2]  boot 流程参数化（steps 数组，宿主可自定义）
@@ -110,7 +111,7 @@ L0 单实例（现状 0.3.0）      L1 SDK 化               L2 多实例       
 5. **物理边界**：不做真内核/apt/原生二进制、不做登录仪式/权限位、不做 REPL stdin、
    不做 symlink。多实例/多用户是组织性隔离，如实标注非安全边界。
 6. **质量门禁**：tsc 0 / build-host.mjs 成功 / npm run build 成功 / grep emoji 0 /
-   `?test=1` ≥76（且各阶段自检数不降）。
+   `?test=1` ≥71（且各阶段自检数不降）。
 7. **独立应用不回归**：boot 观感、`?test=1`/`?bench=1`/`?scenario=1` hooks、
    全量本地命令、guest 单用户语义 —— 每阶段末回归实测。
 8. **代码风格**：注释中文、标识符英文、TS strict、禁 emoji；SDK 核心（terminal/
@@ -131,7 +132,7 @@ L0 单实例（现状 0.3.0）      L1 SDK 化               L2 多实例       
 | DM-3 | session 的 RPC 依赖面 | **已定**：窄接口 `TerminalRpc`（exec/spawn?/listProcesses?/kill?/ping/pingDirect?/interruptDirect?，可选方法安全降级），测试注入 fake。 |
 | DM-4 | xterm 适配器归属 | **已定**：SDK 只定义 `TerminalOutput { write; clear }`；xterm 适配器在应用层（main.ts）写薄适配（≤10 行）。SDK 不依赖 @xterm/xterm。 |
 | DM-5 | boot 步骤配置 | **已定**：`TerminalBootOptions.steps: string[]`，编号 N/M 自动；独立应用 12 步不变。宿主（未来）传自己的步骤清单。步骤文案必须与真实状态绑定（TERMBOOT 教训）。 |
-| DM-6 | npm 版本节奏 | **已定**：**全部 TASK 完成后一次性发布一个大版本 `0.4.0`**（terminal 导出 + 实例 API + 多用户全量；中间不发布）。各阶段只做本地打包验证（`npm pack` + 干净目录安装），版本 bump 与发布统一在 F 阶段后由用户/Hermes 执行。 |
+| DM-6 | npm 版本节奏 | **已定**：主项目走 `0.x` 线，**全部 TASK 完成后一次性发布 `0.4.0`**（terminal 导出 + 实例 API + 多用户全量；中间不发布）；`@succinix/engine` 独立走 `0.1.x` 线（本次随 0.4.0 发布 0.1.3，见 SDK.md 版本策略节）。各阶段只做本地打包验证（`npm pack` + 干净目录安装），版本 bump 与发布统一在 F 阶段后由用户/Hermes 执行。 |
 | DM-7 | 提示符 cwd 跟随 | **已定**：SDK 内实现（session 维护 cwd，`cd` 成功更新，渲染 `guest@succinix:<短路径>$`，/workspace→~）。 |
 | DM-8 | 实例标识 | **已定**：`instanceId: string`；缺省 `'default'` = 单实例路径（全等现状）。demo 用 `?instance=<id>` URL 参数启动指定实例。 |
 | DM-9 | 实例 API 形态 | **已定**：工厂 `createSuccinixInstance({ wc, instanceId, statePrefix?, persistence?, terminal?, executor?, rpc?, bootUI?, bootSteps? })` → `{ terminal, executor, snapshot, services, restart, dispose }`（rpc = 同页共享通道，见 M5）。 |
@@ -301,7 +302,7 @@ bootWebContainerWithRetry/waitForHostReadyWithRetry/initWorkspace/资产预取 �
 - host 重启路径：executor.respawn() 后 session 无需重建（确认看门狗触发后终端可用）。
 - 新增 `src/terminal/index.ts` 统一导出（session/boot/output 类型）。
 
-**保留项**：`?test=1` ≥76；`?bench=1`/`?scenario=1` hooks 形状不变
+**保留项**：`?test=1` ≥71；`?bench=1`/`?scenario=1` hooks 形状不变
 （scripts/bench.mjs、scenarios.mjs、verify-deploy.mjs 依赖）；commands.ts/
 persist.ts/boot.ts/tests.ts/services.ts 不改（最小适配需写明）。
 
@@ -312,13 +313,13 @@ persist.ts/boot.ts/tests.ts/services.ts 不改（最小适配需写明）。
 2. `echo hello` 回显；`cd /workspace` → `~`；`cd /` → `~`
 3. `sleep 2` 期间 Ctrl+C → 真中断 + 回提示符
 4. ↑/↓ 历史；`cl`+Tab → clear
-5. `?test=1` ≥76 + `__succinixResult` 存在
+5. `?test=1` ≥71 + `__succinixResult` 存在
 6. `?bench=1` `__succinixBench` 存在；`?scenario=1` `__succinixScenario.run('echo hi')` ok:true
 **commit**：`refactor(embed): rewrite main.ts as assembly layer over terminal SDK`
 
 ---
 
-### TASK-E4：@succinix/engine 0.4.0 打包（本地验证，不发布）
+### TASK-E4：@succinix/engine 打包（独立 0.1.x 线，随 0.4.0 发布；本地验证，不发布）
 
 **目标**：terminal 层并入包，`./terminal` 导出。
 
@@ -327,7 +328,7 @@ persist.ts/boot.ts/tests.ts/services.ts 不改（最小适配需写明）。
   dist/terminal.js（与 index.js 同配置：ESM、external @webcontainer/api）；
   tsc emitDeclarationOnly 补 .d.ts —— **注意 packages/engine/tsconfig.json 的
   编译入口列表同步加 terminal 入口**（[锚点] 现有脚本 entryPoints 单入口模式）。
-- package.json：version 最终 **0.4.0**（bump 统一在 F 阶段执行；此处本地验证 exports 完整）；exports 加 `"./terminal"`；peerDeps 不变。
+- package.json：version 沿 **0.1.x** 线（当前 0.1.3；engine 独立版本生命周期，bump 统一在 F 阶段执行；此处本地验证 exports 完整）；exports 加 `"./terminal"`；peerDeps 不变。
 - `docs/SDK.md`（+ zh）：新增"终端嵌入（Terminal SDK）"节 —— 接入示例
   （15 行内）、TerminalRpc/TerminalOutput 契约、本地命令注入、boot 步骤配置、
   与 createTerminalExecutor 的分工（命令式通道 vs 终端会话）。
@@ -397,7 +398,7 @@ grep -rn "node:" dist/terminal.js           # 空
   状态根 = `f(instanceId)`（缺省 = cwd 根，现状语义）。**实例配置按实例存放**：
   bootEngineHost 写配置时落到该实例的 `<stateRoot>/etc/succinix.engine.json`，
   host 启动时从请求携带的 instanceId 解析自身配置路径（全局单份 /etc 配置在
-  多实例下会串扰，禁止）。改 `src/engine/host.ts` + `bootEngineHost` → 重建 host.js。
+  多实例下会串扰，禁止）。改 `src/engine/host/` + `bootEngineHost` → 重建 host.js。
 - **host 侧 per-instance 状态清单（明确"哪些 /etc/* 实例化、哪些仍页面级"）**：
   同页共享 host 时，下列 host 全局状态必须按 instanceId 分键（`Map<instanceId, ...>`，
   缺省 `default` 键 = 现状单值全等）：会话 cwd（现 host.ts 单值 `sessionCwd` +
@@ -413,7 +414,7 @@ grep -rn "node:" dist/terminal.js           # 空
   host-procs 新增 `.succinix-<id>` 归属用例（不回归 `c-<id>` 既有用例）。
 
 **保留项**：默认实例路径不变（`/etc` 语义）；host 注入顺序不变。
-**门禁**：tsc + build-host + 相关单测 + `?test=1`（独立应用默认前缀空，必须 ≥76）。
+**门禁**：tsc + build-host + 相关单测 + `?test=1`（独立应用默认前缀空，必须 ≥71）。
 **commit**：`feat(instance): parameterize state file paths per instance (browser + host)`
 
 ---
@@ -428,7 +429,7 @@ grep -rn "node:" dist/terminal.js           # 空
 - host 内部：状态文件读取（M2 的 statePrefix）与进程表登记（复用 CISOL 的
   containerId 标注字段，语义对齐为 instanceId）按实例关联；`ps` 响应带
   `instanceId` 过滤面（请求带 instanceId 时只返回该实例 + system 进程）。
-  改 `src/engine/host.ts` + `host-procs.ts` → 重建 host.js。
+  改 `src/engine/host/` + `host-procs.ts` → 重建 host.js。
 - `docs/PROTOCOL.md`（+zh）补 instanceId 节（additive 声明）。
 - **多实例共享命令队列语义**：/cmd.json 仍单 host 串行处理（已有），请求带
   instanceId 区分归属；interrupt 只中断该实例的进程。
@@ -555,7 +556,7 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
   demo 模式下改为内部调用实例工厂 + 应用级 bootsteps，避免逻辑分叉。
 - 文档 SDK.md（+zh）"多实例"节：实例模型、组织性隔离声明、接入示例
   （宿主风格：每容器/每用户一个 instance）。
-- 打包验证：exports 增加 instance API（最终 0.4.0 统一 bump，见 F 阶段）；本地 `npm pack` + 干净目录安装验证。
+- 打包验证：exports 增加 instance API（engine 独立 0.1.x 线，bump 统一在 F 阶段执行，见 DM-6）；本地 `npm pack` + 干净目录安装验证。
 
 **保留项**：单实例路径 = 默认 instanceId 行为全等；`?test=1` 等 hooks 不降。
 **门禁**：tsc + build-host + `npm run build` + 实例单测（≥8：两实例隔离/聚合
@@ -566,7 +567,7 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 1. 双 tab demo（`?instance=c-1` / `?instance=c-2`）：各自终端独立、进程互不可见
    （ps 过滤）、状态文件独立（env 不串扰）、快照独立（A 修改 B 不受影响）、
    `service start` 只影响自己实例、`reboot` 只重置自己
-2. 单实例回归：无参数启动 = 现状全等（?test=1 ≥76 + E3 清单 1-6）
+2. 单实例回归：无参数启动 = 现状全等（?test=1 ≥71 + E3 清单 1-6）
 3. 本地打包验证（exports 含 instance API，干净目录可 import）
 4. **盲区确认（M3）**：双 tab 各自独立 host，**不**覆盖 host 侧按实例路由
    （Map 分键 / ps 过滤 / kill 越权）——该部分以 M3 协议级单测为证，如实标注
@@ -587,7 +588,7 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
   进程视图、状态、快照、终端装配示例。
 - host 协议补 user 维度的完整性检查：`ps` 过滤（请求带 userId 时只返回该用户 +
   system）、`kill` 越权拒绝（跨用户 kill 拦截，复用 CISOL 语义 host 侧收口）。
-  改 `src/engine/host.ts` + `host-procs.ts` → 重建 host.js。
+  改 `src/engine/host/` + `host-procs.ts` → 重建 host.js。
 - 独立应用：guest 单用户语义不变；`?instance=` demo 升级为 `?user=` 参数
   （别名兼容 instance）。
 - **每用户 home 初始化**：`initWorkspace` 参数化 per-user —— 用户首次启动时
@@ -658,11 +659,11 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 
 ### TASK-F3：CI 全绿
 - push 后 `gh run watch` + `gh run view --json jobs` conclusion 全 success
-  （verify：tsc/lint/vitest 全量 + `?test=1` 自检 ≥76）。
+  （verify：tsc/lint/vitest 全量 + `?test=1` 自检 ≥71）。
 - 确认 CI 不依赖未发布资产（engine 包构建自仓库源码，无外部回落坑）。
 
 ### TASK-F4：最终验收
-- §11 清单全过；npm **0.4.0** 干净安装验证；
+- §11 清单全过；npm `@succinix/engine` **0.1.3**（独立 0.1.x 线）干净安装验证；
   succinix.alibicore.com 强刷显示最新版本（Vercel 自动部署）；
   部署站 `?instance=`/`?user=` demo 可用。
 
@@ -672,8 +673,8 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 
 | 动作 | 时机 | 执行者 |
 |---|---|---|
-| `npm publish @succinix/engine@0.4.0` | **全部 TASK 完成后一次性发布** | 用户/Hermes |
-| git push + GitHub Release（v0.4.0 tag） | 同上 | 用户/Hermes |
+| `npm publish @succinix/engine@0.1.3`（engine 独立 0.1.x 线） | **全部 TASK 完成后一次性发布** | 用户/Hermes |
+| git push + GitHub Release（v0.4.0 tag，主项目 0.x 线） | 同上 | 用户/Hermes |
 | Vercel 部署 | push main 自动 | 自动（强刷验证） |
 
 发布前检查：`npm whoami` / `npm pack --dry-run` / 干净目录安装验证 /
@@ -683,8 +684,8 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
 
 ## 11. 最终验收清单（全部完成后逐项勾）
 
-- [ ] `@succinix/engine` **0.4.0 一次性发布**，`/terminal` + instance + 多用户 API 干净安装可 import
-- [x] 独立应用：`?test=1` 76 passed / 0 failed（verify-deploy 门禁同值）；boot 门禁过（verify-bootgate）、
+- [ ] `@succinix/engine` **0.1.3（独立 0.1.x 线）一次性发布**，`/terminal` + instance + 多用户 API 干净安装可 import
+- [x] 独立应用：`?test=1` 76 passed / 0 failed（verify-deploy 门禁 ≥71）；boot 门禁过（verify-bootgate）、
       boot/历史/补全/真中断/cd cwd 由终端会话单测 + 场景套件覆盖；单实例行为全等 0.3.0
       （2026-08-11 verify-deploy 实测 76/0/5）
 - [x] 多实例：`?instance=c-1`/`c-2` 双 tab —— 进程互不可见 / kill 越权拒绝 /

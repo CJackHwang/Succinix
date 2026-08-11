@@ -3,7 +3,7 @@
 > This is the **contract** for the Succinix command-execution engine (`src/engine/`).
 > Ecosystem consumers should be able to build an alternative client or host against this
 > document alone, without reading the implementation. The in-repo implementation is the
-> reference: `src/engine/client.ts` (browser side) and `src/engine/host.ts` (in-container
+> reference: `src/engine/client.ts` (browser side) and `src/engine/host/` (in-container
 > daemon). Protocol version: **1**.
 
 ## 1. Overview

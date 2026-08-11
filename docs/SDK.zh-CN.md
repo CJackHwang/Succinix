@@ -2,8 +2,8 @@
 
 > 中文翻译。英文版为准：见 [SDK.md](SDK.md)
 >
-> 状态：**已发布** —— `@succinix/engine` 在 npm 上（0.1.x 线；**0.4.0** 增加下方 `./terminal`
-> 与 `./instance` 导出，即终端 SDK / 多实例 / 多用户一次发布）。本文档始于 SDK 形态设计建议
+> 状态：**已发布** —— `@succinix/engine` 在 npm 上（独立 0.1.x 线；**0.4.0 应用版本**增加
+> 下方 `./terminal` 与 `./instance` 导出，即终端 SDK / 多实例 / 多用户一次发布）。本文档始于 SDK 形态设计建议
 > （形态 A：同页 npm 内嵌），现同时作为宿主的集成参考。线上契约见
 > [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)，能力矩阵见 [FEATURES.zh-CN.md](FEATURES.zh-CN.md)。
 
@@ -139,7 +139,7 @@ await term.dispose();
   `bootEngineHost`、`waitForHostReady`、类型（`TerminalExecutor`、`ExecResult`、
   `TerminalExecutorOptions`、`ProcInfo`）。
 - `src/engine/client.ts` —— 文件 RPC 客户端（经 `onCommand` 与日志解耦）。
-- `src/engine/host.ts`、`host-procs.ts`、`lifo-core.ts` —— 容器内 host daemon 与进程注册表，
+- `src/engine/host/`、`host-procs.ts`、`lifo-core.ts` —— 容器内 host daemon 与进程注册表，
   构建为 `public/host.js` + `public/lifo-core.js`。
 - `docs/PROTOCOL.md` —— 权威线上契约。
 - 本文档 —— SDK 形态决策。

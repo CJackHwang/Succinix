@@ -1,8 +1,8 @@
 # Succinix Engine — SDK Form Design (recommendation)
 
-> Status: **shipped** — `@succinix/engine` is published on npm (0.1.x line; **0.4.0** adds
-> the `./terminal` + `./instance` exports below, i.e. Terminal SDK, multi-instance and
-> multi-user in one release). This document started as the SDK form-design recommendation
+> Status: **shipped** — `@succinix/engine` is published on npm (own `0.1.x` line; the
+> **0.4.0 app release** adds the `./terminal` + `./instance` exports below, i.e. Terminal
+> SDK, multi-instance and multi-user in one release). This document started as the SDK form-design recommendation
 > (Form A: same-page npm embedding) and now doubles as the integration reference for
 > hosts. See [PROTOCOL.md](./PROTOCOL.md) for the wire contract and
 > [FEATURES.md](./FEATURES.md) for the capability matrix.
@@ -168,7 +168,7 @@ Each stage is gated on the previous one; none of them changes the wire protocol
   `bootEngineHost`, `waitForHostReady`, types (`TerminalExecutor`, `ExecResult`,
   `TerminalExecutorOptions`, `ProcInfo`).
 - `src/engine/client.ts` — file-RPC client (log-decoupled via `onCommand`).
-- `src/engine/host.ts`, `host-procs.ts`, `lifo-core.ts` — in-container host daemon and
+- `src/engine/host/`, `host-procs.ts`, `lifo-core.ts` — in-container host daemon and
   process registry, built to `public/host.js` + `public/lifo-core.js`.
 - `docs/PROTOCOL.md` — the authoritative wire contract.
 - This document — the SDK form decision.

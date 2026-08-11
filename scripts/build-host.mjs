@@ -15,6 +15,21 @@ import { build } from 'esbuild';
 import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// host 入口在 src/engine/host/ 下，源码里对 lifo-core 的相对导入是 '../lifo-core.js'；
+// 但两个产物最终都注入容器根目录，运行时 host.js 必须以 './lifo-core.js' 解析。
+// 插件把该导入改写为 external 的 './lifo-core.js'：既不打包内核（保持 host.js 轻量），
+// 又保证容器内相对路径正确（O3 拆分后 external 只匹配 './lifo-core.js' 的回归修复）。
+const lifoCoreExternalPlugin = {
+  name: 'lifo-core-external',
+  setup(build) {
+    build.onResolve({ filter: /^\.\.\/lifo-core\.js$/ }, (args) => {
+      if (args.importer.includes('/src/engine/host/')) {
+        return { path: './lifo-core.js', external: true };
+      }
+      return null;
+    });
+  },
+};
 
 await build({
   entryPoints: ['src/engine/host/main.ts'],
@@ -26,6 +41,7 @@ await build({
   // ./lifo-core.js 是运行时相对导入（host.js 所在目录的兄弟文件，由 boot 注入到容器根），
   // 不在 host bundle 里打包；@lifo-sh/ui 仅可视化终端用到，headless 不加载。
   external: ['@lifo-sh/ui', './lifo-core.js'],
+  plugins: [lifoCoreExternalPlugin],
   outfile: 'public/host.js',
   logLevel: 'info',
 });

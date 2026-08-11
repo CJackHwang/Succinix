@@ -4,7 +4,7 @@
 >
 > 这是 Succinix 命令执行引擎（`src/engine/`）的**契约（contract）**。
 > 生态使用方应能仅凭本文档构建替代客户端或 host，而无需阅读实现。仓库内实现是参考：
-> `src/engine/client.ts`（浏览器侧）与 `src/engine/host.ts`（容器内 daemon）。协议版本：**1**。
+> `src/engine/client.ts`（浏览器侧）与 `src/engine/host/`（容器内 daemon）。协议版本：**1**。
 
 ## 1. 概览（Overview）
 

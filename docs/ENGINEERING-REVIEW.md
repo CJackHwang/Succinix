@@ -313,7 +313,7 @@ scripts/lib/
 | ID | 类型 | 优先级 | 问题 | 位置 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | R1 | 发布 | P0 | 0.4.0 未 bump/发布/验收 | `package.json`、`packages/engine/package.json`、§11 | 部分完成（主项目本地 bump 0.4.0 + README/bench 版本同步；版本策略统一为 SDK.md 定稿：engine 独立 0.1.x 线、随 0.4.0 发布 0.1.4，见 5afac54；registry 0.1.3 已被旧内容占用，npm 发布 0.1.4/GitHub Release/Vercel 部署待用户执行） |
-| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 已完成（2026-08-11：`gh` 重新认证后 push 0f5c25b，run 31459095383 check job 全绿：lint / tsc / vitest+coverage / build / verify-deploy ?test=1 ≥71；nightly-scenarios 按设计 skip；Vercel 自动部署已生效，线上 `?instance=`/`?user=` 实测通过，见 §11⑨） |
+| R2 | 验证 | P0 | CI/部署无远程证据 | `.github/workflows/ci.yml` | 已完成（2026-08-11：`gh` 重新认证后 push 0f5c25b，run 31459095383 check job 全绿：lint / tsc / vitest+coverage / build / verify-deploy ?test=1 ≥71；nightly-scenarios 按设计 skip；后续 docs-only push 44f0b9f（run 31460377953）与 6576984（run 31460633422）均全绿，5f02f29 的 run 31459207049 曾瞬时 flake 于 e2e deploy gate、非回归；Vercel 自动部署已生效，线上 `?instance=`/`?user=` 实测通过，见 §11⑨） |
 | R3 | 自动化 | P1 | instance-demo 未接入 CI/e2e | `scripts/run-e2e.mjs`、CI | 已完成（7326bdb） |
 | R4 | 门禁 | P1 | `?test=1` 门禁数字不一致 | verify-deploy/README/FEATURES | 已完成（7326bdb + 5afac54：MASTER-PLAN 7 处残留统一为 `>=71`） |
 | D1 | 架构 | P0 | TerminalBoot 分层边界破坏 | `src/terminal/boot.ts` | 已完成（7326bdb） |

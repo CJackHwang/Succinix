@@ -34,7 +34,7 @@
 | E1 终端会话提取 | 已完成 | `src/terminal/session.ts` + 单测 |
 | E2 boot 参数化 | 已完成 | `src/terminal/boot.ts` SDK 化，应用 boot 步骤注入 `src/boot-steps.ts`（D1 已修复） |
 | E3 main.ts 组装层 | 已完成 | `src/main.ts` 已瘦身到 560 行 |
-| E4 engine 打包 | 部分完成 | 本地 `build:engine-package` 通过；版本仍是 0.1.3 |
+| E4 engine 打包 | 已完成 | 本地 `build:engine-package` + `npm pack --dry-run`（40 文件）通过；版本已 bump 0.1.4（registry 0.1.3 被旧内容占用） |
 | M1 persist key 注入 | 已完成 | `src/persist/` 多 key 单测通过；同页快照按实例 scope 隔离（D4 已修复） |
 | M2 状态文件路径参数化 | 已完成 | 浏览器侧参数化 + db start 透传 `statePrefix` 到 tinbase `--data-dir`（D6 已修复） |
 | M3 协议 instanceId | 已完成 | 协议单测覆盖；同页 e2e 仍是盲区 |
@@ -43,16 +43,16 @@
 | U1 多用户语义 | 已完成 | `?user=` 双 tab 27 项断言通过 |
 | F1 文档定稿 | 已完成 | CHANGELOG/SDK/PROTOCOL/FEATURES 已更新 |
 | F2 文档扫尾 | 已完成 | README/FEATURES 门禁数字统一为 `>=71`、实测 76（D7 已修复） |
-| F3 CI 全绿 | 未验证 | 有 workflow，无 `gh run` 结果证据 |
-| F4 最终验收 | 未完成 | 版本未 bump、未发布、未部署验证、§11 未勾选 |
+| F3 CI 全绿 | 已完成 | run 31459095383 check job 全绿（lint/tsc/vitest+coverage/build/verify-deploy），nightly 按设计 skip（2026-08-11） |
+| F4 最终验收 | 部分完成 | 0.4.0 bump、Vercel 部署 + 线上 `?instance=`/`?user=` 验证、§11 除 §11① 外全部勾选；`npm publish @succinix/engine@0.1.4` + GitHub Release v0.4.0 待用户/Hermes 执行 |
 
 ## 4. 未完成项
 
 ### R1. 0.4.0 发布/最终验收未闭环
 
-- `package.json` 已本地 bump 为 `0.4.0`（README/bench 版本同步，单一事实来源）；`packages/engine/package.json` 仍为 `0.1.3`（SDK.md 策略：engine 独立 `0.1.x` 线，发布时决定）。
-- `MASTER-PLAN.md` §11 全部为未勾选状态。
-- npm 0.4.0 干净安装、GitHub Release、Vercel 部署站 `?instance=`/`?user=` 均无仓库内证据（需用户/Hermes 凭据）。
+- `package.json` 已本地 bump 为 `0.4.0`（README/bench 版本同步，单一事实来源）；`packages/engine/package.json` 已 bump 为 `0.1.4`（SDK.md 策略：engine 独立 `0.1.x` 线；registry 0.1.3 被旧内容占用，5afac54/0f5c25b）。
+- `MASTER-PLAN.md` §11 仅剩 §11①（npm publish 0.1.4）未勾选。
+- npm 0.1.4 干净安装、GitHub Release v0.4.0 无仓库内证据（需用户/Hermes 凭据）；Vercel 部署站 `?instance=`/`?user=` 已线上实测通过（§11⑨）。
 
 建议：完成 P0/P1 缺陷修复后，由用户/Hermes 执行发布流程并回填 §11。
 
@@ -407,7 +407,10 @@ scripts/lib/
 仍待外部状态闭环（用户/Hermes 侧，本地无推进空间）：
 
 1. **R1 / §11①**：`npm publish @succinix/engine@0.1.4`（engine 独立 0.1.x 线，随 0.4.0 应用版本发布；registry 0.1.3 已被旧内容占用）。
-1. **§11⑩**：`webunix-development` 技能更新（用户/Hermes 侧）。
+
+§11⑩ 已闭环（2026-08-11）：`/Users/mac/.hermes/skills/custom/webunix-development/SKILL.md`
+（v1.1.1）物理边界表已声明多用户 = 组织性隔离（非安全隔离），references 已含宿主集成
+两层模型；旧数字已同步（engine 独立 0.1.4 线 / 门禁 ≥71 / vitest 334 / U1 已实现）。
 
 ---
 

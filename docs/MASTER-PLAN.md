@@ -707,7 +707,11 @@ export function createSuccinixInstance(opts: SuccinixInstanceOptions): Promise<S
       （HTML asset hash 与本地最新构建一致，线上 motd 显示 Succinix 0.4.0）；
       2026-08-11 headless Chrome 线上实测：`?instance=c-online` boot/状态根/命令执行 ✓，
       `?user=u-online` boot/每用户 home/whoami/会话 cwd 从 home ✓
-- [ ] 技能沉淀：webunix-development 更新（宿主集成两层模型 + 多用户组织性隔离声明）
+- [x] 技能沉淀：webunix-development 更新（宿主集成两层模型 + 多用户组织性隔离声明）——
+      `/Users/mac/.hermes/skills/custom/webunix-development/SKILL.md`（v1.1.1）：
+      物理边界表多用户行声明组织性隔离（非安全隔离），references/sunamai-integration-status.md
+      宿主集成分层模型（共享层自动跟随 vs 宿主自研层需移植）；（2026-08-11 核验，
+      旧数字同步为 0.1.4 独立线 / 门禁 ≥71 / vitest 334 / U1 已实现）
 
 ---
 

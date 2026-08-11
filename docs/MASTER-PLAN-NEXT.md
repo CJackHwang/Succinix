@@ -37,6 +37,10 @@ S8 起连续崩溃（`Cannot read properties of undefined (reading 'wc'/'run')`�
 根因是场景间页面意外 reload 导致 `window.__succinix` 句柄丢失且无恢复路径。
 `e7b3624` 给 harness 增加 `ensureScenario()`（20s 未恢复主动 reload 自愈）与场景
 崩溃重试一次；`5ea8c10` 起 push 由 `e2e-full` job 覆盖，nightly 保留做深度回归。
+后续 run `31473605209`（首次含 e2e-full 的 push）秒失败且零 job：`paths` 被误写在
+job 级（非法键），GitHub 判定工作流无效。已把 e2e-full 拆为独立
+`.github/workflows/e2e-full.yml`，`paths` 回到 workflow 级 `on.<event>` 下，本地
+YAML 校验通过后重推验证。
 
 ## 2. 统一门禁与执行原则
 
@@ -172,9 +176,10 @@ S8 起连续崩溃（`Cannot read properties of undefined (reading 'wc'/'run')`�
   `scenarios + lang-verify + bench` 拆成两个 job。
 - flake 策略：对已知 deploy gate flake 自动重试一次，失败时上传日志 artifact。
 - 验收：源码变更的 push CI 全绿时包含场景门禁；docs-only push 不被拖慢；nightly 保留。
-- 实际：`.github/workflows/ci.yml` 增 `e2e-full` job（路径过滤 src/scripts/public/
-  vite/vitest/tsconfig/eslint/package/ci.yml；45min；失败上传 `e2e-full.log`）；
-  `scripts/run-e2e.mjs` 对 verify-deploy 自动重试一次；nightly 保留独立 job。
+- 实际：新增 `.github/workflows/e2e-full.yml`（workflow 级 `paths` 过滤
+  src/scripts/public/vite/vitest/tsconfig/eslint/package/ci.yml/e2e-full.yml；
+  45min；失败上传 `e2e-full.log`）；`scripts/run-e2e.mjs` 对 verify-deploy 自动重试
+  一次；`.github/workflows/ci.yml` 保留无过滤的 check 快路径与 nightly 深度回归。
 - commit：`5ea8c10` `ci(R6): run scenario suite on push`
 
 ## 5. 建议执行顺序

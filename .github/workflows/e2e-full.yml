@@ -1,0 +1,62 @@
+name: e2e-full
+
+# R6：完整场景门禁。源码/脚本/构建配置变更时跑全量 e2e（build + deploy gate + bench +
+# scenarios + lang-verify + instance-demo）；纯 docs 变更跳过。check 快路径在 ci.yml
+# 无过滤执行（docs-only push 也跑 O14 文档完整性）；nightly 深度回归保留在 ci.yml。
+# paths 必须在 workflow 级 on.<event> 下声明（job 级 paths 不是合法键）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'public/**'
+      - 'vite.config.*'
+      - 'vitest.config.*'
+      - 'tsconfig.json'
+      - 'eslint.config.js'
+      - 'package*.json'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/e2e-full.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'public/**'
+      - 'vite.config.*'
+      - 'vitest.config.*'
+      - 'tsconfig.json'
+      - 'eslint.config.js'
+      - 'package*.json'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/e2e-full.yml'
+
+jobs:
+  e2e-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22 (npm cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run full e2e suite (deploy gate retried once on flake)
+        run: |
+          set -o pipefail
+          node scripts/run-e2e.mjs 2>&1 | tee e2e-full.log
+
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-log
+          path: e2e-full.log
+          if-no-files-found: ignore

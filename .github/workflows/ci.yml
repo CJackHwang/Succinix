@@ -9,7 +9,8 @@ on:
     - cron: '17 4 * * *'
 
 jobs:
-  # 快路径（R6 保留）：tsc/lint/unit/build/verify-deploy + 规模/静态/文档完整性。
+  # 快路径：tsc/lint/unit/build/verify-deploy + 规模/静态/文档完整性。
+  # 无路径过滤：docs-only push 也执行（O14 文档完整性随文档变更跑）。
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -44,50 +45,8 @@ jobs:
       - name: File size audit + static/docs integrity (O12/O14)
         run: npm run audit:files && npm run check:static && npm run check:docs
 
-  # 完整场景门禁（R6）：源码/脚本/构建配置变更时跑全量 e2e（build + deploy gate + bench +
-  # scenarios + lang-verify + instance-demo）；纯 docs 变更跳过；nightly 保留独立 job。
-  e2e-full:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    timeout-minutes: 45
-    paths:
-      - 'src/**'
-      - 'scripts/**'
-      - 'public/**'
-      - 'vite.config.*'
-      - 'vitest.config.*'
-      - 'tsconfig.json'
-      - 'eslint.config.js'
-      - 'package*.json'
-      - '.github/workflows/ci.yml'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node 22 (npm cache)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run full e2e suite (deploy gate retried once on flake)
-        run: |
-          set -o pipefail
-          node scripts/run-e2e.mjs 2>&1 | tee e2e-full.log
-
-      - name: Upload e2e logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-full-log
-          path: e2e-full.log
-          if-no-files-found: ignore
-
   # 场景套件重（14 场景，含数据库/服务自启/持久化压力/TS 生态/语言防回归），
-  # nightly 独立跑（R6 后 push 门禁由 e2e-full 覆盖，nightly 保留作深度回归）。
+  # nightly 独立跑（push 门禁由 e2e-full.yml 覆盖，nightly 保留作深度回归）。
   nightly-scenarios:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'

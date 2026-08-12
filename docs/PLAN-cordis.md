@@ -95,8 +95,8 @@
 
 ### 1.4 与 SunamAI 并行对齐
 
-SunamAI 计划的 §1.3 表把 Succinix 阶段误写为 `C4 外部 demo / C5 发布`。权威映射如下，
-SunamAI 侧需要做一行更正，但不改变任何依赖结论：
+SunamAI 计划的 §1.3 表已按以下权威映射核对一致（历史版本曾把 C4/C5 编号误写为
+"外部 demo / 发布"，已更正；不改变任何依赖结论）：
 
 | Succinix C 阶段 | 内容 | SunamAI 依赖 |
 |---|---|---|
@@ -1371,7 +1371,7 @@ commit：
 
 ## 11. 参考文档
 
-- SunamAI `docs/PLAN-succinix-embed.md`（§1.3 阶段编号需按本计划 §1.4 修正）
+- SunamAI `docs/PLAN-succinix-embed.md`（§1.3 阶段编号已与本计划 §1.4 核对一致）
 - DSH 情报档案 `~/Desktop/ds_harness_leak/03-analysis/dsh-technical-report.md`
 - DSH 设计模式档案 `~/Desktop/ds_harness_leak/03-analysis/05-design-patterns.md`
 - Cordis fork `~/Desktop/MyProject/cordis`，
@@ -1382,8 +1382,10 @@ commit：
 
 ## 12. DSH 技术借鉴调研清单（对接面）
 
-> SunamAI 采纳 dsh 的 8 项技术借鉴（DM-43/13.6）后，**Succinix 作为对接方**需
-> 调研/配合的接口面。本计划把每项绑定到具体契约与产出。
+> SunamAI 采纳 dsh 的 **10 项**技术借鉴（DM-43/13.6，①-⑩），其中 **8 项**需要
+> Succinix 作为对接方调研/配合（J1-J8；④ LLM 五件套 / ⑨ systemPrompt 随插件分发 /
+> ⑩ 真实 Context 单测范式为 SunamAI 内部结构，无 Succinix 对接面）。本计划把
+> 每项绑定到具体契约与产出。
 
 ### 12.1 对接面清单
 

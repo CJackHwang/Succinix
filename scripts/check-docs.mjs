@@ -27,6 +27,8 @@ function collectMds(dir, out = []) {
     const full = join(dir, name);
     // CHANGELOG 是历史记录：其中路径指向当时文件，不做完整性校验。
     if (statSync(full).isDirectory()) collectMds(full, out);
+    // 计划文档允许引用未来路径与外部仓库，不做当前仓库完整性校验。
+    else if (name.startsWith('PLAN-') && name.endsWith('.md')) continue;
     else if (name.startsWith('CHANGELOG')) continue;
     else if (name.endsWith('.md')) out.push(full);
   }

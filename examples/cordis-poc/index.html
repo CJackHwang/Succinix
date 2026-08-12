@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cordis WebContainer POC</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #0a0a0a;
+        color: #d6cfc4;
+        font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      main { padding: 24px; max-width: 920px; margin: 0 auto; }
+      h1 { font-size: 18px; color: #c98a2e; }
+      pre { white-space: pre-wrap; line-height: 1.6; }
+      .ok { color: #c98a2e; }
+      .fail { color: #c0543a; }
+      .muted { color: #6b6560; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Cordis WebContainer POC</h1>
+      <pre id="log">running...</pre>
+    </main>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

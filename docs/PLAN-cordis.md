@@ -1323,8 +1323,8 @@ commit：
 
 ## 9. Definition of Done
 
-- [ ] C0 POC 通过，`docs/cordis-poc-report.md` 存档
-- [ ] C0 报告包含 loader/hmr/database-memory/logger-console 可行性、fork/npm
+- [x] C0 POC 通过，`docs/cordis-poc-report.md` 存档
+- [x] C0 报告包含 loader/hmr/database-memory/logger-console 可行性、fork/npm
       一致性、provide/inject 生命周期结论
 - [ ] `@succinix/engine@0.5.0` 发布 npm（breaking change，插件形态）；
       0.4.0 与 0.1.x 已全部 deprecate
@@ -1359,7 +1359,9 @@ commit：
 
 ## 10. 执行记录（每 C 完成后追加）
 
-- C0 Cordis POC：___
+- C0 Cordis POC：完成。`examples/cordis-poc/` + `scripts/cordis-browser-probe.mjs`
+  + `scripts/cordis-poc-check.mjs`；headless Chrome 全绿；loader/HMR 判定浏览器
+  不可用；npm rc.8 与 fork `f46ae95e` 仅构建路径注释差异。
 - C1 包形态骨架：___
 - C2 插件实现：___
 - C3 宿主应用 Cordis 化：___

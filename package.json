@@ -42,9 +42,15 @@
     "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
+    "@cordisjs/plugin-database-memory": "^4.1.1",
+    "@cordisjs/plugin-hmr": "^1.0.15",
+    "@cordisjs/plugin-loader": "^1.0.0-rc.5",
+    "@cordisjs/plugin-logger-console": "^1.0.0",
+    "@cordisjs/plugin-timer": "^1.1.2",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
+    "cordis": "^4.0.0-rc.8",
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
     "globals": "^16.5.0",

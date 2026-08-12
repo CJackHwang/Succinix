@@ -1,7 +1,17 @@
 // 自检域：服务管理 + 日志（O5 拆分）。
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
-import { readServices, addServiceDef, removeServiceDef, startService, stopService, getServiceState, enableAutostart, disableAutostart, readAutostart } from '../services/index.js';
+import {
+  addServiceDef,
+  disableAutostart,
+  enableAutostart,
+  getServiceState,
+  readAutostart,
+  readServices,
+  removeServiceDef,
+  startService,
+  stopService,
+} from '@succinix/engine';
 import { readLog, readBootLog, clearLog, flushLogs } from '../log.js';
 import { sleep } from '../util.js';
 

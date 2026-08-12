@@ -1,5 +1,14 @@
 // service 命令域：声明式服务管理（O1 拆分）。
-import { readServices, listServiceStates, getServiceState, startService, stopService, enableAutostart, disableAutostart, type ServiceContext } from '../services/index.js';
+import {
+  disableAutostart,
+  enableAutostart,
+  getServiceState,
+  listServiceStates,
+  readServices,
+  startService,
+  stopService,
+  type ServiceContext,
+} from '@succinix/engine';
 import { AMBER, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 服务管理（TASK11）：service 命令族，spawn/ps/kill + 端口注册表的声明式封装 ───

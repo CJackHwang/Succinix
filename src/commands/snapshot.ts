@@ -2,7 +2,15 @@
 import type { Terminal } from '@xterm/xterm';
 import type { FileSystemAPI } from '@webcontainer/api';
 import { log } from '../log.js';
-import { saveSnapshot, loadSnapshot, clearSnapshot, getSnapshotMeta, forcePersist, type PersistContext, type SnapshotMeta } from '../persist.js';
+import {
+  clearSnapshot,
+  forcePersist,
+  getSnapshotMeta,
+  loadSnapshot,
+  saveSnapshot,
+  type PersistContext,
+  type SnapshotMeta,
+} from '@succinix/engine';
 import type { CommandContext } from './types.js';
 // M2：snapshot 命令缺省适配（单实例 = 模块级默认实例行为全等）。
 async function loadSnapshotDefault(fs: FileSystemAPI): Promise<SnapshotMeta | null> {

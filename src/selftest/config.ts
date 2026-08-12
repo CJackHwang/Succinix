@@ -2,7 +2,7 @@
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
 import { readEnvFile, getEnvVar, setEnvVar, unsetEnvVar, getSetting, setSetting, resetSetting } from '../config.js';
-import { saveSnapshot, loadSnapshot } from '../persist.js';
+import { loadSnapshot, saveSnapshot } from '@succinix/engine';
 
 export async function runConfig(ctx: TestContext): Promise<void> {
   const { wc, client, term } = ctx;

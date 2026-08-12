@@ -20,8 +20,8 @@ vi.mock('../src/engine/index.js', async (importOriginal) => {
 
 import type { BootUI } from '../src/boot-ui.js';
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
-import type { TerminalClient, EngineBootHooks } from '../src/engine/index.js';
-import { withRetry, bootWebContainerWithRetry, waitForHostReadyWithRetry } from '../src/boot.js';
+import { bootWebContainerWithRetry, withRetry, type EngineBootHooks, type TerminalClient } from '@succinix/engine';
+import { waitForHostReadyWithRetry } from '../src/boot-steps.js';
 
 function makeUI(logs: string[]): BootUI {
   return {

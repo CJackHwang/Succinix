@@ -8,7 +8,7 @@
 // （client.ts 的 channelFor），每个实例一个带自身 instanceId 的 client（M3 host 路由）；
 // 看门狗是 per-host（页面级一个），工厂不内置看门狗；端口事件经 M4 的实例期望端口
 // 注册表归属（instancePorts）。双 tab 各容器天然隔离，与单实例行为全等。
-import type { WebContainer } from '@webcontainer/api';
+import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { BootUI } from '../terminal/ui.js';
 import {
   TerminalClient,
@@ -70,6 +70,8 @@ export interface SuccinixInstanceOptions {
    *  注意：请求的 instanceId 取自 client 自身（构造时传入），共享一个 client 的多个实例
    *  会共享同一 instanceId —— 每实例一个 client（通道自动共享）才是按实例路由的姿势。 */
   rpc?: TerminalClient;
+  /** 共享 host 进程句柄（rpc 共享路径下由宿主注入；executor.respawn 用它先 kill 旧 host） */
+  hostProc?: WebContainerProcess;
   /** boot 进度 UI（缺省静默；宿主可传 E2 TerminalBoot 的 UI） */
   bootUI?: BootUI;
   /** boot 步骤文案（缺省 = DEFAULT_INSTANCE_BOOT_STEPS；应用级 bootsteps 归宿主） */
@@ -158,7 +160,8 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
   const ports = new Map<number, string>();
   // D2：事件按实例期望归属 —— 同页所有实例共享 wc 的 server-ready 事件（页面级分发），
   // 无法归属的端口只进页面级 registry（pagePorts.readyPorts()），不进任何实例视图。
-  const isExpected = (port: number): boolean => instancePorts.expects(instanceId, port);
+  // 缺省实例 = 页面级全部（现状行为全等：旧默认路径的 ports 视图直接就是页面 registry）。
+  const isExpected = (port: number): boolean => instanceId === DEFAULT_INSTANCE_ID || instancePorts.expects(instanceId, port);
   const executorHooks: EngineBootHooks = {
     ...opts.executor,
     instanceId,
@@ -182,7 +185,7 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
   let executor: TerminalExecutor;
   if (opts.rpc) {
     client = opts.rpc;
-    executor = createTerminalExecutor({ wc: opts.wc, client });
+    executor = createTerminalExecutor({ wc: opts.wc, client, hostProc: opts.hostProc, sharedHost: true });
     // D2：同页共享 RPC 路径 —— 页面 host 已 bind wc 事件（单 host 不变量），工厂不重复
     // 拉起 host，这里直接订阅本实例的端口钩子（按期望归属过滤，与自建路径同款语义）。
     unsubscribePorts = pagePorts.subscribe(instanceId, {
@@ -306,7 +309,8 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       unsubscribePorts?.();
       unsubscribePorts = null;
       session.dispose();
-      // rpc 共享路径：executor 未持有 hostProc，dispose 只清引用不动共享 host；
+      // rpc 共享路径：executor 持有 hostProc（respawn 用）但标记 sharedHost，
+      // dispose 只清引用不动共享 host；
       // 自建路径：executor.dispose kill 自建 host（单实例页面的 host 由实例拥有）。
       await executor.dispose();
     },

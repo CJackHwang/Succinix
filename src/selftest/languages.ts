@@ -1,7 +1,7 @@
 // 自检域：内置语言运行时（python / pip / npm EACCES / lang 列表）（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { ensurePythonRuntime } from '../engine/index.js';
+import { ensurePythonRuntime } from '@succinix/engine';
 import { tryHandleLocalCommand } from '../commands.js';
 import { captureTerm, makeDispatchBase } from './info.js';
 

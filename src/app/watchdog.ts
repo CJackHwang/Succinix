@@ -1,12 +1,12 @@
 // host 看门狗：每 30s ping，连续 2 次失败 → executor.respawn 重启 host（O2 拆分）。
-import { createTerminalExecutor } from '../engine/index.js';
-import type { SuccinixServices } from '../boot.js';
+import type { TerminalExecutor } from '@succinix/engine';
+import type { WebContainer } from '@webcontainer/api';
 import { log } from '../log.js';
 import { AMBER, RED, RESET } from '../theme.js';
 import { term } from './xterm.js';
 
 // ─── host 看门狗（每 30s ping，连续 2 次失败 → executor.respawn 重启 host）───
-export function startHostWatchdog(executor: ReturnType<typeof createTerminalExecutor>, wc: SuccinixServices['wc']): void {
+export function startHostWatchdog(executor: TerminalExecutor, wc: WebContainer): void {
   let consecutiveFailures = 0;
   let probing = false;
   setInterval(async () => {
@@ -34,7 +34,7 @@ export function startHostWatchdog(executor: ReturnType<typeof createTerminalExec
 }
 
 // 重新注入 host.js（容器内缺失时从构建产物拉取）并 respawn，等待就绪。
-export async function restartHost(executor: ReturnType<typeof createTerminalExecutor>, wc: SuccinixServices['wc']): Promise<void> {
+export async function restartHost(executor: TerminalExecutor, wc: WebContainer): Promise<void> {
   try {
     term.writeln(`${AMBER}[ WARN ] host unresponsive — re-injecting host.js and respawning${RESET}`);
     void log('WARN', 'host unresponsive — re-injecting host.js and respawning');

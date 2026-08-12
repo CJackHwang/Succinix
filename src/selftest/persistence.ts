@@ -1,7 +1,7 @@
 // 自检域：持久化 + 工作区（O5 拆分）。
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
-import { saveSnapshot, loadSnapshot } from '../persist.js';
+import { loadSnapshot, saveSnapshot } from '@succinix/engine';
 import { getCurrentWorkspace, listWorkspaces, buildWorkspaceList, workspaceCreate, workspaceSwitch, workspaceRemove } from '../commands.js';
 
 export async function runPersistence(ctx: TestContext): Promise<void> {

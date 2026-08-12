@@ -2,7 +2,7 @@
 // captureTerm / makeDispatchBase 是"捕获型假终端"共享工具：Info 与 Languages 域都用。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from '../engine/index.js';
+import type { TerminalClient } from '@succinix/engine';
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
 import { buildUnameLine, detectUnameArch, unameRuntimeVersion, tryHandleLocalCommand } from '../commands.js';

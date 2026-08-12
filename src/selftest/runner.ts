@@ -3,7 +3,7 @@
 // O5 拆分：runTests 编排 + 断言输出（verdict/boundary）+ 计数；各域测试见同目录模块。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from '../engine/index.js';
+import type { TerminalClient } from '@succinix/engine';
 import { AMBER, RED, GRAY, RESET } from '../theme.js';
 import { runKernel } from './kernel.js';
 import { runFilesystem } from './filesystem.js';

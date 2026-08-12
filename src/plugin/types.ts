@@ -12,7 +12,6 @@ import type {
   PersistContext,
   SnapshotMeta,
 } from '../persist.js';
-import type { ServiceActionResult, ServiceState } from '../services/index.js';
 import type {
   SuccinixTerminalSession,
   TerminalOutput,
@@ -38,6 +37,25 @@ export type {
   SuccinixWorkspaceEvent,
   SuccinixProcessEvent,
 } from './events.js';
+export type {
+  CommandLogEntry,
+  EngineBootHooks,
+  ExecResult,
+  ProcInfo,
+  TerminalClient,
+  TerminalExecutor,
+} from '../engine/index.js';
+export type {
+  PersistContext,
+  SaveResult,
+  SnapshotMeta,
+} from '../persist.js';
+export type { SuccinixRestartContext } from '../instance/index.js';
+export type {
+  SuccinixTerminalSession,
+  TerminalOutput,
+  TerminalSessionOptions,
+} from '../terminal/index.js';
 
 export interface AttachOptions {
   output?: TerminalOutput;
@@ -46,6 +64,9 @@ export interface AttachOptions {
   home?: string;
   persistence?: SuccinixInstanceOptions['persistence'];
   executor?: EngineBootHooks;
+  bootSteps?: SuccinixInstanceOptions['bootSteps'];
+  bootUI?: SuccinixInstanceOptions['bootUI'];
+  onRestart?: SuccinixInstanceOptions['onRestart'];
 }
 
 export interface BootOptions extends AttachOptions {
@@ -90,12 +111,46 @@ export interface SuccinixPortsService {
   ready(port: number): string | undefined;
   onServerReady(handler: (payload: SuccinixPortEvent) => void): () => void;
   onServerClosed(handler: (payload: SuccinixPortEvent) => void): () => void;
+  /** Reserve a port for the current instance before spawn (multi-instance attribution). */
+  expect(port: number): void;
+  /** Release a previously reserved port. */
+  release(port: number): void;
+  /** Return another instance id that already reserved this port, or null. */
+  hasConflict(port: number): string | null;
+}
+
+export interface SuccinixServiceDefinition {
+  name: string;
+  command: string;
+  port: number | null;
+}
+
+export interface SuccinixServiceState {
+  def: SuccinixServiceDefinition;
+  state: 'running' | 'stopped';
+  pid?: number;
+  effectivePort: number | null;
+  url?: string;
+}
+
+export interface SuccinixServiceAction {
+  ok: boolean;
+  message: string;
+  pid?: number;
 }
 
 export interface SuccinixServicesService {
-  list(): Promise<ServiceState[]>;
-  start(name: string): Promise<ServiceActionResult>;
-  stop(name: string): Promise<ServiceActionResult>;
+  list(): Promise<SuccinixServiceState[]>;
+  read(): Promise<SuccinixServiceDefinition[]>;
+  status(name: string): Promise<SuccinixServiceState>;
+  start(name: string): Promise<SuccinixServiceAction>;
+  stop(name: string): Promise<SuccinixServiceAction>;
+  enable(name: string): Promise<boolean>;
+  disable(name: string): Promise<boolean>;
+  add(name: string, command: string, port: number | null): Promise<void>;
+  remove(name: string): Promise<boolean>;
+  autostart(): Promise<string[]>;
+  ensureFiles(): Promise<void>;
 }
 
 export type SuccinixCapabilityPattern =
@@ -122,6 +177,7 @@ export interface SuccinixInstance {
   executor: TerminalExecutor;
   persist: PersistContext;
   ports: Map<number, string>;
+  statePrefix?: string;
   snapshot: { save(force?: boolean): Promise<unknown>; restore(): Promise<void> };
   services: SuccinixServicesService;
   workspace: SuccinixWorkspaceView;

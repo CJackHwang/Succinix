@@ -16,6 +16,9 @@ export function createPortsService(instanceId: string): SuccinixPortsService {
       pagePorts.subscribe(subscriptionKey, {
         onServerClosed: (port) => handler({ port, instanceId }),
       }),
+    expect: (port) => instancePorts.expect(instanceId, port),
+    release: (port) => instancePorts.release(instanceId, port),
+    hasConflict: (port) => instancePorts.hasConflict(instanceId, port),
   };
 }
 

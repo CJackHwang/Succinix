@@ -1,11 +1,16 @@
 // 开发钩子（TASK18/TASK19/TASK16）：bench / scenario / 自检结果 window 句柄（O2 拆分）。
 import type { Terminal } from '@xterm/xterm';
-import type { TerminalClient } from '../engine/index.js';
+import type { TerminalClient } from '@succinix/engine';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
-import type { SuccinixTerminalSession } from '../terminal/index.js';
-import type { SuccinixServices } from '../boot.js';
+import type { SuccinixTerminalSession } from '@succinix/engine';
 import type { TestResult } from '../tests.js';
 import { AMBER, RED, RESET } from '../theme.js';
+
+export interface ScenarioServices {
+  wc: WebContainer;
+  client: TerminalClient;
+  ports: Map<number, string>;
+}
 
 // 模式（与既有开发钩子形状完全一致，scripts/bench.mjs / scenarios.mjs / verify-deploy.mjs 依赖）。
 export const benchMode = new URLSearchParams(location.search).get('bench') === '1';
@@ -23,7 +28,7 @@ export function benchMarkPrompt(): void {
 // 输出改为结构化捕获（capture shim）。timeoutMs 仅约束 host 命令的 RPC 等待。
 export async function scenarioRun(
   session: SuccinixTerminalSession,
-  services: SuccinixServices,
+  _services: ScenarioServices,
   cmd: string,
   timeoutMs = 60000
 ): Promise<Record<string, unknown>> {

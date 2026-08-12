@@ -1,5 +1,5 @@
 // TerminalOutput / Terminal shim：xterm 只在应用层，SDK 契约走薄适配（O2 拆分）。
-import type { TerminalOutput } from '../terminal/index.js';
+import type { TerminalOutput } from '@succinix/engine';
 import type { Terminal } from '@xterm/xterm';
 import { term } from './xterm.js';
 

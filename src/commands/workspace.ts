@@ -1,7 +1,7 @@
 // workspace 命令域：/ws/<name> 工作区管理（O1 拆分）。
 import type { FileSystemAPI } from '@webcontainer/api';
 import { isValidWorkspaceName } from '../config.js';
-import { forcePersist } from '../persist.js';
+import { forcePersist } from '@succinix/engine';
 import { RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 工作区（workspace，TASK7）：/ws/<name> 子目录 = 一个工作区，

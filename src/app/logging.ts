@@ -1,5 +1,5 @@
 // 命令日志采集（对齐既有 /var/log/succinix.log 行为）（O2 拆分）。
-import type { CommandLogEntry } from '../engine/index.js';
+import type { CommandLogEntry } from '@succinix/engine';
 import { log } from '../log.js';
 
 // ─── 命令日志采集（对齐既有 /var/log/succinix.log 行为）───

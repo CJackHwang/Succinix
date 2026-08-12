@@ -30,6 +30,14 @@ export interface TerminalExecutorOptions {
   onServerClosed?: (port: number) => void;
 }
 
+export interface TerminalExecutorSeed {
+  wc?: WebContainer | null;
+  client?: TerminalClient | null;
+  hostProc?: WebContainerProcess | null;
+  /** Shared host mode: the page owns the host, so dispose clears references only. */
+  sharedHost?: boolean;
+}
+
 export interface TerminalExecutor {
   /** 注入 host 资产 + 拉起 host + 等待就绪。解析时引擎可用。
    *  opts 即 EngineBootHooks（在 TerminalExecutorOptions 之上额外支持预取的 hostSrc / lifoCoreSrc /
@@ -147,13 +155,15 @@ class TerminalExecutorImpl implements TerminalExecutor {
   private wc: WebContainer | null = null;
   private client: TerminalClient | null = null;
   private hostProc: WebContainerProcess | null = null;
+  private sharedHost = false;
   private opts: EngineBootHooks = {};
 
   /** 复用已 boot 的 client / host（createTerminalExecutor(seed) 用；避免双 host） */
-  seed(s: { wc?: WebContainer | null; client?: TerminalClient | null; hostProc?: WebContainerProcess | null }): void {
+  seed(s: TerminalExecutorSeed): void {
     this.wc = s.wc ?? null;
     this.client = s.client ?? null;
     this.hostProc = s.hostProc ?? null;
+    this.sharedHost = s.sharedHost ?? false;
   }
 
   async boot(wc: WebContainer, opts: EngineBootHooks = {}): Promise<void> {
@@ -238,14 +248,14 @@ class TerminalExecutorImpl implements TerminalExecutor {
   }
 
   async dispose(): Promise<void> {
-    if (this.hostProc) {
+    if (this.hostProc && !this.sharedHost) {
       try {
         this.hostProc.kill();
       } catch {
         /* 句柄失效：忽略 */
       }
-      this.hostProc = null;
     }
+    this.hostProc = null;
     this.client = null;
     this.wc = null;
   }
@@ -263,11 +273,7 @@ class TerminalExecutorImpl implements TerminalExecutor {
 
 /** 构造命令式通道。可选 seed 复用已 boot 的 client（宿主 boot 流程已拉起 host 时，
  *  直接包装既有 TerminalClient，避免双 host；未传时行为不变 —— boot(wc) 自建 client）。 */
-export function createTerminalExecutor(seed?: {
-  wc?: WebContainer | null;
-  client?: TerminalClient | null;
-  hostProc?: WebContainerProcess | null;
-}): TerminalExecutor {
+export function createTerminalExecutor(seed?: TerminalExecutorSeed): TerminalExecutor {
   const impl = new TerminalExecutorImpl();
   if (seed) {
     impl.seed(seed);

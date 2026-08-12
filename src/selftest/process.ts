@@ -1,7 +1,7 @@
 // 自检域：执行路由 / 进程表 / Shell 融合 / spawn 链路（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { tokenize } from '../engine/tokenize.js';
+import { tokenize } from '@succinix/engine';
 import { respawnWithKillFirst } from '../host-restart.js';
 import { sleep } from '../util.js';
 

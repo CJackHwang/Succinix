@@ -15,8 +15,18 @@ import type { SaveResult } from '../persist.js';
 import {
   clearActivePorts,
   clearDbActivePorts,
-  type ServiceActionResult,
-  type ServiceState,
+  addServiceDef,
+  disableAutostart,
+  enableAutostart,
+  ensureServicesFiles,
+  getServiceState,
+  listServiceStates,
+  readAutostart,
+  readServices,
+  removeServiceDef,
+  startService,
+  stopService,
+  type ServiceContext,
 } from '../services/index.js';
 import type {
   SuccinixTerminalSession,
@@ -58,9 +68,41 @@ import type {
   SuccinixPortEvent,
   SuccinixProcessEvent,
   SuccinixService,
+  SuccinixServiceAction,
+  SuccinixServiceDefinition,
+  SuccinixServiceState,
   SuccinixWorkspaceEvent,
+  SuccinixServicesService,
 } from './types.js';
 import { createWorkspaceService, type SuccinixWorkspaceService } from './workspace.js';
+
+function makeServicesService(instance: Pick<SuccinixInstance, 'client' | 'ports' | 'instanceId' | 'statePrefix'>, wc: WebContainerType): SuccinixServicesService {
+  const context: ServiceContext = {
+    wc,
+    client: instance.client,
+    ports: instance.ports,
+    instanceId: instance.instanceId,
+    statePrefix: undefined,
+  };
+  return {
+    list: () => listServiceStates(context),
+    read: () => readServices(context.wc.fs, context.instanceId, context.statePrefix) as Promise<SuccinixServiceDefinition[]>,
+    status: async (name) => {
+      const defs = await readServices(context.wc.fs, context.instanceId, context.statePrefix);
+      const def = defs.find((item) => item.name === name);
+      if (!def) throw new Error(`unknown service: ${name}`);
+      return (await getServiceState(context, def)) as SuccinixServiceState;
+    },
+    start: (name) => startService(context, name) as Promise<SuccinixServiceAction>,
+    stop: (name) => stopService(context, name) as Promise<SuccinixServiceAction>,
+    enable: (name) => enableAutostart(context.wc.fs, name, context.instanceId, context.statePrefix),
+    disable: (name) => disableAutostart(context.wc.fs, name, context.instanceId, context.statePrefix),
+    add: (name, command, port) => addServiceDef(context.wc.fs, name, command, port, context.instanceId, context.statePrefix),
+    remove: (name) => removeServiceDef(context.wc.fs, name, context.instanceId, context.statePrefix),
+    autostart: () => readAutostart(context.wc.fs, context.instanceId, context.statePrefix),
+    ensureFiles: () => ensureServicesFiles(context.wc.fs, context.instanceId, context.statePrefix),
+  };
+}
 
 export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConfig, rawConfig: SuccinixConfig = {}): SuccinixService {
   const state = createInitialState();
@@ -204,7 +246,7 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
 
     const statePrefix = opts.statePrefix ?? resolvedConfig.defaultInstance.statePrefix;
     const home = opts.home ?? resolvedConfig.defaultInstance.home;
-    const rpcClient = new TerminalClient(wc, { instanceId: containerId });
+    const rpcClient = new TerminalClient(wc, { instanceId: containerId, onCommand: opts.executor?.onCommand });
     const instance = await createEngineInstance({
       wc,
       instanceId: containerId,
@@ -224,6 +266,10 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
         onServerClosed: (port) => opts.executor?.onServerClosed?.(port),
       },
       rpc: rpcClient,
+      hostProc: manager.getHostProc() ?? undefined,
+      bootSteps: opts.bootSteps,
+      bootUI: opts.bootUI,
+      onRestart: opts.onRestart,
     });
 
     const view: SuccinixInstance = {
@@ -235,12 +281,9 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
       executor: wrapExecutor(containerId, instance.executor),
       persist: instance.persist,
       ports: instance.ports,
+      statePrefix,
       snapshot: instance.snapshot,
-      services: {
-        list: () => instance.services.list() as Promise<ServiceState[]>,
-        start: (name) => instance.services.start(name) as Promise<ServiceActionResult>,
-        stop: (name) => instance.services.stop(name) as Promise<ServiceActionResult>,
-      },
+      services: makeServicesService(instance, wc),
       workspace: createWorkspaceService({
         stateRoot: instanceStateRoot(containerId, statePrefix),
         home: home ?? '/workspace',
@@ -327,12 +370,7 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
       return currentPorts;
     },
     get services() {
-      const instance = requireDefault();
-      return {
-        list: () => instance.services.list() as Promise<ServiceState[]>,
-        start: (name: string) => instance.services.start(name) as Promise<ServiceActionResult>,
-        stop: (name: string) => instance.services.stop(name) as Promise<ServiceActionResult>,
-      };
+      return makeServicesService(requireDefault(), requireWc());
     },
     capabilities,
     get instance() {

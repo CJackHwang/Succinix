@@ -56,6 +56,10 @@ export class HostManager {
     return null;
   }
 
+  getHostProc(): WebContainerProcess | null {
+    return this.hostProc;
+  }
+
   /** Internal container mode: WebContainer is booted by the plugin. */
   async boot(wc: WebContainer, opts: HostManagerBootOptions): Promise<void> {
     return this.ensureHost(wc, { ...opts, mode: 'internal' });

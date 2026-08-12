@@ -1,8 +1,6 @@
 // 网络视图命令域：ports / netstat / ip（O1 拆分）。
 import type { Terminal } from '@xterm/xterm';
-import type { TerminalClient } from '../engine/index.js';
-import { DEFAULT_INSTANCE_ID } from '../instance/paths.js';
-import { instancePorts } from '../instance/ports.js';
+import { DEFAULT_INSTANCE_ID, instancePorts, type TerminalClient } from '@succinix/engine';
 import { GRAY, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 export function printPorts(term: Terminal, ports: Map<number, string>, instanceId?: string): void {

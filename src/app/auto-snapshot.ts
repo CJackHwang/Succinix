@@ -1,13 +1,13 @@
 // 自动快照（每 ~2.5s 保存一次；persist 内部去重 + 空闲退避）（O2 拆分）。
-import { saveSnapshot, type PersistContext } from '../persist.js';
-import type { SuccinixServices } from '../boot.js';
+import { saveSnapshot, type PersistContext } from '@succinix/engine';
+import type { FileSystemAPI } from '@webcontainer/api';
 
 // ─── 自动快照（每 ~2.5s 保存一次；persist 内部去重 + 空闲退避）───
 const AUTO_SNAPSHOT_BASE_MS = 2500;
 const AUTO_SNAPSHOT_MAX_MS = 15000;
 
 // M5：持久化主循环按实例键（demo 传 instance.persist；缺省 = 模块级默认实例，现状全等）。
-export function startAutoSnapshot(fs: SuccinixServices['wc']['fs'], persist?: Pick<PersistContext, 'save'>): void {
+export function startAutoSnapshot(fs: FileSystemAPI, persist?: Pick<PersistContext, 'save'>): void {
   const save = persist ? (force?: boolean) => persist.save(fs, force) : (force?: boolean) => saveSnapshot(fs, force);
   let interval = AUTO_SNAPSHOT_BASE_MS;
   let idleTicks = 0;

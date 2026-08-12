@@ -2,7 +2,7 @@
 import { AMBER, RED, GRAY, RESET } from '../theme.js';
 import { sleep } from '../util.js';
 import { SUCCINIX_VERSION } from '../version.js';
-import { DEFAULT_INSTANCE_ID } from '../instance/paths.js';
+import { DEFAULT_INSTANCE_ID } from '@succinix/engine';
 import type { CommandContext } from './types.js';
 // M4：reboot 目标判定 —— 非默认实例 = 实例级重置；缺省/默认实例 = 整页刷新（现状）。
 export function rebootMode(instanceId: string | undefined): 'instance' | 'page' {

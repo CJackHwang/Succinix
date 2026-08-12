@@ -1,8 +1,7 @@
 // CommandContext：本地命令的统一上下文（浏览器侧命令拦截的入参契约，O1 拆分）。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
-import type { TerminalClient } from '../engine/index.js';
-import type { PersistContext } from '../persist.js';
+import type { PersistContext, TerminalClient } from '@succinix/engine';
 export interface CommandContext {
   wc: WebContainer;
   client: TerminalClient;

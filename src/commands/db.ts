@@ -1,9 +1,15 @@
 // db 命令域：tinbase 安装 / 启动 / 状态 / 停止（O1 拆分）。
 import type { FileSystemAPI } from '@webcontainer/api';
 import { getSetting } from '../config.js';
-import { DEFAULT_INSTANCE_ID, instanceStateRoot, tinbaseDataDir } from '../instance/paths.js';
-import { instancePorts } from '../instance/ports.js';
-import { dbActivePortFor, setDbActivePort, clearDbActivePorts } from '../services/index.js';
+import {
+  clearDbActivePorts,
+  dbActivePortFor,
+  DEFAULT_INSTANCE_ID,
+  instancePorts,
+  instanceStateRoot,
+  setDbActivePort,
+  tinbaseDataDir,
+} from '@succinix/engine';
 import { AMBER, RED, RESET } from '../theme.js';
 import { sleep } from '../util.js';
 import type { CommandContext } from './types.js';

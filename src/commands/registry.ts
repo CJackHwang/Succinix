@@ -3,7 +3,7 @@
 //   reboot / shutdown / cache / workspace / env / settings / service / log / pkg /
 //   netstat / ip / version / whoami / uname / motd
 // 其余命令返回 false，由调用方原样发 host（TerminalExecutor 路由）。
-import { detectSystemInfo } from '../boot.js';
+import { detectSystemInfo } from '@succinix/engine';
 import { RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 import { printHelp } from './help.js';

@@ -6,6 +6,7 @@ import { bootEngineHost, pagePorts } from '../src/engine/index.js';
 import { TerminalClient } from '../src/engine/client.js';
 import { createSuccinixInstance } from '../src/instance/index.js';
 import { instancePorts } from '../src/instance/ports.js';
+import { DEFAULT_INSTANCE_ID } from '../src/instance/paths.js';
 import type { WebContainer } from '@webcontainer/api';
 import type { TerminalOutput } from '../src/terminal/index.js';
 
@@ -102,6 +103,24 @@ beforeEach(() => {
 });
 
 describe('D2 同页端口事件分发', () => {
+  it('rpc 共享路径：default instance sees every page-level ready port', async () => {
+    const { wc } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
+    const hostClient = new TerminalClient({ fs: (wc as unknown as { fs: unknown }).fs } as never);
+    await bootEngineHost(wc, hostClient, { hostSrc: '// host.js' });
+    const { serverReady } = eventHandlers(wc);
+
+    const inst = await createSuccinixInstance({
+      wc,
+      instanceId: DEFAULT_INSTANCE_ID,
+      rpc: hostClient,
+      output: silentOutput,
+    });
+
+    serverReady(4321, 'https://4321-preview');
+    expect(inst.ports.get(4321)).toBe('https://4321-preview');
+    expect(pagePorts.readyPorts().get(4321)).toBe('https://4321-preview');
+  });
+
   it('rpc 共享路径：server-ready 按实例期望归属，无法归属的端口只进页面级 registry', async () => {
     const { wc } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
     const hostClient = new TerminalClient({ fs: (wc as unknown as { fs: unknown }).fs } as never);

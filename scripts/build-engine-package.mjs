@@ -57,6 +57,10 @@ rmSync(assetsDir, { recursive: true, force: true });
 mkdirSync(assetsDir, { recursive: true });
 cpSync(hostJs, join(assetsDir, 'host.js'));
 cpSync(lifoCoreJs, join(assetsDir, 'lifo-core.js'));
+const pythonAssetsDir = join(root, 'public', 'pyodide');
+if (existsSync(pythonAssetsDir)) {
+  cpSync(pythonAssetsDir, join(assetsDir, 'pyodide'), { recursive: true });
+}
 
 const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 const manifest = {

@@ -1348,7 +1348,7 @@ commit：
 - [x] `succinix/*` 类型化事件 + command telemetry 载荷已实现，state 事件带
       `reason/changed`
 - [x] `docs/replay-support.md` 已产出，J3 结论明确
-- [ ] 外部 demo（仅发布物依赖）全流程通过
+- [x] 外部 demo（仅发布物依赖）全流程通过
 - [ ] `docs/MIGRATION.md`、`SDK.md`、`PLUGIN.md`、`cordis-contract.md`、
       README、FEATURES 已迁移
 - [ ] `AGENTS.md` 已同步单轨、`ctx.succinix` 契约与新增门禁
@@ -1384,7 +1384,10 @@ commit：
   本地命令接入 app 命令域；状态事件、热重载、失败隔离、订阅泄漏、telemetry 测试
   补齐；HostManager 复用路径补齐 state 同步与端口订阅；`docs/manageability.md`、
   `docs/replay-support.md` 产出（replay 结论：restricted replay supported）。
-- C5 外部 demo + SunamAI 契约复验：___
+- C5 外部 demo + SunamAI 契约复验：完成。`examples/cordis-app/` 独立 Vite app 只依赖
+  `cordis` + `@succinix/engine` 发布物；`scripts/cordis-app-e2e.mjs` 32 项浏览器契约全绿
+  （node/lifo/python、多实例单 host、快照/workspace、端口、服务、fiber reload、
+  inject/fallback、attach/boot mismatch、shutdown/dispose/reapply、资产 SHA）。
 - C6 发布 + 文档迁移：___
 
 ---

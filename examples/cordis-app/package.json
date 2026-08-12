@@ -1,0 +1,24 @@
+{
+  "name": "cordis-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "External Cordis consumer demo for @succinix/engine 0.5.0.",
+  "scripts": {
+    "prepare": "node scripts/prepare-assets.mjs",
+    "dev": "npm run prepare && vite",
+    "build": "npm run prepare && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@succinix/engine": "file:../../packages/engine",
+    "@webcontainer/api": "file:../../node_modules/@webcontainer/api",
+    "cordis": "file:../../node_modules/cordis"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "~6.0.3",
+    "vite": "^8.2.0"
+  }
+}

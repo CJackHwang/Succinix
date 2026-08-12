@@ -11,3 +11,4 @@ export * from './pkg-cmd.js';
 export * from './network.js';
 export * from './identity.js';
 export * from './registry.js';
+export * from './manage.js';

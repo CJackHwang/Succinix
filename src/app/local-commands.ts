@@ -10,6 +10,7 @@ const LOCAL_COMMAND_NAMES = [
   'help', 'clear', 'sysinfo', 'ports', 'db', 'snapshot', 'free', 'top', 'reboot', 'shutdown',
   'cache', 'workspace', 'env', 'settings', 'service', 'log', 'pkg', 'netstat', 'ip', 'uname',
   'motd', 'lang', 'pwd', 'version', 'whoami',
+  'succinix',
 ];
 
 // 每个命令名一个处理器：把 (ctx, args) 还原成完整命令串交给 tryHandleLocalCommand。

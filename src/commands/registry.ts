@@ -17,6 +17,7 @@ import { serviceCmd } from './service-cmd.js';
 import { logCmd } from './log-cmd.js';
 import { pkgCmd } from './pkg-cmd.js';
 import { unameCmd, motdCmd, langCmd } from './identity.js';
+import { succinixCmd } from './manage.js';
 
 // 尝试在浏览器侧处理命令；返回 true 表示已处理，false 表示应发 host。
 export async function tryHandleLocalCommand(ctx: CommandContext, input: string): Promise<boolean> {
@@ -122,6 +123,10 @@ export async function tryHandleLocalCommand(ctx: CommandContext, input: string):
     }
     case 'lang': {
       await langCmd(ctx, rest);
+      return true;
+    }
+    case 'succinix': {
+      await succinixCmd(ctx, rest);
       return true;
     }
     default:

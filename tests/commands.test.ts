@@ -23,8 +23,12 @@ import {
   unameRuntimeVersion,
   detectUnameArch,
   tryHandleLocalCommand,
+  formatSuccinixStatus,
+  formatSuccinixPlugins,
   type CommandContext,
+  type SuccinixPluginSummary,
 } from '../src/commands.js';
+import type { SuccinixPluginState } from '../src/plugin/index.js';
 
 beforeEach(() => {
   instancePorts.clear();
@@ -264,5 +268,73 @@ describe('tryHandleLocalCommand 冒烟（无副作用命令）', () => {
     expect(await tryHandleLocalCommand(ctx, 'uname -a')).toBe(true);
     expect(term.lines.length).toBe(1);
     expect(term.lines[0]).toMatch(/^Succinix /);
+  });
+});
+
+describe('succinix manageability commands (C4)', () => {
+  const state: SuccinixPluginState = {
+    version: '0.5.0',
+    containerMode: 'internal',
+    containerState: 'ready',
+    host: { pid: 42, startedAt: 1720000000000 },
+    instances: [{ instanceId: 'default', state: 'active' }],
+    capabilities: ['terminal.exec', 'fs.read'],
+    configRevision: 3,
+    lastError: null,
+  };
+
+  const plugins: SuccinixPluginSummary[] = [
+    { name: 'succinix', fibers: [{ state: 'ACTIVE' }] },
+    { name: 'succinix-app-broken', fibers: [{ state: 'FAILED' }] },
+  ];
+
+  it('formatSuccinixStatus covers every required state field in ASCII English', () => {
+    const lines = formatSuccinixStatus(state, 'ACTIVE');
+    const text = lines.join('\n');
+    expect(text).toContain('Succinix plugin status');
+    expect(text).toContain('0.5.0');
+    expect(text).toContain('ACTIVE');
+    expect(text).toContain('internal');
+    expect(text).toMatch(/READY/);
+    expect(text).toContain('42');
+    expect(text).toMatch(/default:.*ACTIVE/);
+    expect(text).toContain('terminal.exec, fs.read');
+    expect(text).toContain('configRevision');
+    expect(text).toContain('(none)');
+    expect(text).not.toMatch(/✅|❌|🎉|…/);
+  });
+
+  it('formatSuccinixPlugins lists runtimes and every fiber state', () => {
+    const lines = formatSuccinixPlugins(plugins);
+    expect(lines[0]).toBe('Plugins (2)');
+    expect(lines.join('\n')).toContain('succinix');
+    expect(lines.join('\n')).toContain('ACTIVE');
+    expect(lines.join('\n')).toContain('succinix-app-broken');
+    expect(lines.join('\n')).toContain('FAILED');
+    expect(lines.join('\n')).not.toMatch(/✅|❌|🎉|…/);
+  });
+
+  it('succinix status and succinix plugins dispatch through tryHandleLocalCommand', async () => {
+    const term = captureTerm();
+    const ctx = ctxOf({
+      term: term as unknown as Terminal,
+      succinixState: state,
+      succinixPlugins: plugins,
+    });
+    expect(await tryHandleLocalCommand(ctx, 'succinix status')).toBe(true);
+    expect(term.lines.join('\n')).toContain('Succinix plugin status');
+    expect(await tryHandleLocalCommand(ctx, 'succinix plugins')).toBe(true);
+    expect(term.lines.join('\n')).toContain('Plugins (2)');
+    expect(await tryHandleLocalCommand(ctx, 'succinix')).toBe(true);
+    expect(term.lines.at(-1)).toBe('usage: succinix status | succinix plugins');
+  });
+
+  it('unavailable manageability views report a clear error instead of crashing', async () => {
+    const term = captureTerm();
+    const ctx = ctxOf({ term: term as unknown as Terminal });
+    expect(await tryHandleLocalCommand(ctx, 'succinix status')).toBe(true);
+    expect(term.lines.at(-1)).toContain('unavailable');
+    expect(await tryHandleLocalCommand(ctx, 'succinix plugins')).toBe(true);
+    expect(term.lines.at(-1)).toContain('unavailable');
   });
 });

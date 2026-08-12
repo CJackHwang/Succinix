@@ -1344,10 +1344,10 @@ commit：
 - [ ] 核心逻辑（src/engine、src/terminal、src/instance）git diff 无行为改动
 - [ ] 核心目录 grep 无 `import.*cordis`（仅 `src/plugin/` 允许）
 - [ ] 宿主应用 = Cordis app，无核心模块直接 import（兼容 shim 已删）
-- [ ] `succinix status`（或等价管理入口）可显示插件状态
-- [ ] `succinix/*` 类型化事件 + command telemetry 载荷已实现，state 事件带
+- [x] `succinix status`（或等价管理入口）可显示插件状态
+- [x] `succinix/*` 类型化事件 + command telemetry 载荷已实现，state 事件带
       `reason/changed`
-- [ ] `docs/replay-support.md` 已产出，J3 结论明确
+- [x] `docs/replay-support.md` 已产出，J3 结论明确
 - [ ] 外部 demo（仅发布物依赖）全流程通过
 - [ ] `docs/MIGRATION.md`、`SDK.md`、`PLUGIN.md`、`cordis-contract.md`、
       README、FEATURES 已迁移
@@ -1374,8 +1374,16 @@ commit：
   telemetry 完成；`service-runtime.ts`/`service-lifecycle.ts` 拆分后
   `plugin/services.ts` 408 行；`tests/plugin-c2.test.ts` 58 项全绿，
   tsc/lint/test/build/audit/docs/static/boundaries/package dry-run 全绿。
-- C3 宿主应用 Cordis 化：___
-- C4 可管理性 + telemetry/replay 调研：___
+- C3 宿主应用 Cordis 化：完成。`src/host/` 新增 Cordis 启动壳与 7 个 app 插件
+  （container/terminal/commands/snapshot/watchdog/selftest/devhooks）；旧
+  `src/app/main.ts`、`src/boot.ts` 删除，`src/main.ts` 转发；commands/selftest/
+  auto-snapshot 改经 `@succinix/engine` 消费；`tests/plugin-c3.test.ts` 全绿；
+  browser e2e（verify-deploy 76 passed、bench、14 scenarios、lang-verify、
+  instance-demo、instance-routing）全绿。
+- C4 可管理性 + telemetry/replay 调研：完成。`succinix status` / `succinix plugins`
+  本地命令接入 app 命令域；状态事件、热重载、失败隔离、订阅泄漏、telemetry 测试
+  补齐；HostManager 复用路径补齐 state 同步与端口订阅；`docs/manageability.md`、
+  `docs/replay-support.md` 产出（replay 结论：restricted replay supported）。
 - C5 外部 demo + SunamAI 契约复验：___
 - C6 发布 + 文档迁移：___
 

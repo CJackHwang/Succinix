@@ -31,6 +31,8 @@ export function printHelp(term: Terminal): void {
   term.writeln(`  pwd          show the session working directory (synced with node/python child cwd)`);
   term.writeln(`  version      show version`);
   term.writeln(`  whoami       show current user`);
+  term.writeln(`  succinix status   show engine plugin state (version, host, instances, capabilities)`);
+  term.writeln(`  succinix plugins  list Cordis plugin runtimes and fiber states`);
   term.writeln('');
   term.writeln('host side (TerminalExecutor unified routing)');
   term.writeln(`  node|npm|npx ...   real node subprocess (spawn for long-running background)`);

@@ -1,7 +1,13 @@
 // CommandContext：本地命令的统一上下文（浏览器侧命令拦截的入参契约，O1 拆分）。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
-import type { PersistContext, TerminalClient } from '@succinix/engine';
+import type { PersistContext, SuccinixPluginState, TerminalClient } from '@succinix/engine';
+
+export interface SuccinixPluginSummary {
+  name: string;
+  fibers: Array<{ state: string }>;
+}
+
 export interface CommandContext {
   wc: WebContainer;
   client: TerminalClient;
@@ -26,4 +32,8 @@ export interface CommandContext {
   onInstanceReset?: () => void | Promise<void>;
   /** 实例停止回调（M4/M5，additive）：多实例模式 shutdown = 停当前实例，不动其他实例 */
   onInstanceStop?: () => void | Promise<void>;
+  /** 可管理性视图（C4）：succinix status 的数据源 */
+  succinixState?: SuccinixPluginState;
+  /** 可管理性视图（C4）：succinix plugins 的数据源 */
+  succinixPlugins?: SuccinixPluginSummary[];
 }

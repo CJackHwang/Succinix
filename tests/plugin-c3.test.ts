@@ -41,6 +41,7 @@ vi.hoisted(() => {
     __succinixScenario: null,
     crossOriginIsolated: true,
     addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
   } as unknown as Record<string, unknown>;
   const global = globalThis as unknown as Record<string, unknown>;
   const define = (name: string, value: unknown) =>

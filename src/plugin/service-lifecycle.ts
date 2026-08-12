@@ -35,6 +35,16 @@ export class ServiceLifecycle {
     this.shutdownDone = false;
   }
 
+  private resumeReady(): void {
+    if (this.deps.state.containerState === 'ready' && this.portEventsUnsub) return;
+    const handle = this.deps.manager.handle();
+    this.deps.state.host = { pid: handle.hostPid, startedAt: handle.startedAt };
+    this.deps.state.containerState = 'ready';
+    this.deps.state.lastError = null;
+    this.bindPortEvents();
+    this.deps.emitState('ready');
+  }
+
   async runManagerBoot(wc: WebContainerType, mode: 'internal' | 'external', hooks: EngineBootHooks = {}): Promise<void> {
     const config = this.deps.resolvedConfig();
     const assets = await loadBootAssets(config, hooks);
@@ -69,6 +79,7 @@ export class ServiceLifecycle {
       throw new Error('ERR_MODE_MISMATCH: container is already attached in external mode');
     }
     if (handle.state === 'ready' && handle.mode === 'internal' && handle.wc) {
+      this.resumeReady();
       return handle.wc;
     }
     this.resetShutdownState();
@@ -90,6 +101,7 @@ export class ServiceLifecycle {
       }
     }
     if (!wc) {
+      this.deps.state.containerState = 'unattached';
       this.deps.state.lastError = `WebContainer boot failed: ${String(lastError)}`;
       this.deps.emitState('error');
       throw new Error(this.deps.state.lastError);
@@ -107,7 +119,10 @@ export class ServiceLifecycle {
     if (handle.mode === 'internal' && (handle.state === 'ready' || handle.state === 'booting')) {
       throw new Error('ERR_MODE_MISMATCH: container is already booted in internal mode');
     }
-    if (handle.state === 'ready' && handle.mode === 'external') return;
+    if (handle.state === 'ready' && handle.mode === 'external') {
+      this.resumeReady();
+      return;
+    }
     this.resetShutdownState();
     this.deps.state.containerState = 'booting';
     this.deps.state.lastError = null;

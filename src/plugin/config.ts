@@ -67,13 +67,13 @@ export interface ResolvedSuccinixConfig {
     persistence?: { dbName?: string; storeKey?: string };
   };
   terminal: {
-    cwd?: string;
+    cwd: string;
     timeoutMs: number;
     bootGate: boolean;
     history: boolean;
     tabComplete: boolean;
     interrupt: boolean;
-    promptPrefix?: string;
+    promptPrefix: string;
   };
   capabilities: {
     defaultAllow: boolean;
@@ -112,6 +112,11 @@ function ruleItem(value: unknown): string | null {
   return null;
 }
 
+function rejectUnknownKeys(record: Record<string, unknown>, allowed: readonly string[], name: string): string | null {
+  const unknown = Object.keys(record).find((key) => !allowed.includes(key));
+  return unknown ? `${name} has unknown field: ${unknown}` : null;
+}
+
 export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
   hostJsUrl: optional((v) => isString(v, 'hostJsUrl')),
   lifoCoreUrl: optional((v) => isString(v, 'lifoCoreUrl')),
@@ -136,7 +141,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       const error = isIntegerRange(c.hostReadyDeadlineMs, 'container.hostReadyDeadlineMs', 1, 300000);
       if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(c as Record<string, unknown>, ['mode', 'bootRetries', 'bootIntervalMs', 'hostReadyDeadlineMs'], 'container');
   }),
   defaultInstance: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'defaultInstance must be an object';
@@ -166,8 +171,10 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
         const error = isString(p.storeKey, 'defaultInstance.persistence.storeKey');
         if (error) return error;
       }
+      const error = rejectUnknownKeys(p as Record<string, unknown>, ['dbName', 'storeKey'], 'defaultInstance.persistence');
+      if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(d as Record<string, unknown>, ['instanceId', 'statePrefix', 'home', 'persistence'], 'defaultInstance');
   }),
   terminal: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'terminal must be an object';
@@ -186,7 +193,11 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       const error = isString(t.promptPrefix, 'terminal.promptPrefix');
       if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(
+      t as Record<string, unknown>,
+      ['cwd', 'timeoutMs', 'bootGate', 'history', 'tabComplete', 'interrupt', 'promptPrefix'],
+      'terminal'
+    );
   }),
   capabilities: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'capabilities must be an object';
@@ -199,7 +210,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       const error = isArrayOf(ruleItem, 'capabilities.rules')(c.rules);
       if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(c as Record<string, unknown>, ['defaultAllow', 'rules'], 'capabilities');
   }),
   lifecycle: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'lifecycle must be an object';
@@ -212,7 +223,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       const error = isBoolean(l.flushOnPageHide, 'lifecycle.flushOnPageHide');
       if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(l as Record<string, unknown>, ['disposeMode', 'flushOnPageHide'], 'lifecycle');
   }),
   assets: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'assets must be an object';
@@ -221,7 +232,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       const error = isBoolean(a.integrity, 'assets.integrity');
       if (error) return error;
     }
-    return null;
+    return rejectUnknownKeys(a as Record<string, unknown>, ['integrity'], 'assets');
   }),
 });
 
@@ -244,13 +255,13 @@ export function resolveConfig(config: SuccinixConfig): ResolvedSuccinixConfig {
       persistence: config.defaultInstance?.persistence,
     },
     terminal: {
-      cwd: config.terminal?.cwd,
+      cwd: config.terminal?.cwd ?? '/workspace',
       timeoutMs: config.terminal?.timeoutMs ?? 120_000,
       bootGate: config.terminal?.bootGate ?? true,
       history: config.terminal?.history ?? true,
       tabComplete: config.terminal?.tabComplete ?? true,
       interrupt: config.terminal?.interrupt ?? true,
-      promptPrefix: config.terminal?.promptPrefix,
+      promptPrefix: config.terminal?.promptPrefix ?? 'guest@succinix:',
     },
     capabilities: {
       defaultAllow: config.capabilities?.defaultAllow ?? true,

@@ -1367,7 +1367,13 @@ commit：
   engine 包 0.5.0 exports 单轨 + `tsconfig.plugin.json` + `assets/sha256.json`；
   `check:plugin-boundaries`/`check:engine-package` 门禁；tsc/lint/test/build/
   包 dry-run 全绿。
-- C2 插件实现：___
+- C2 插件实现：完成。`ctx.succinix` 服务面（executor/terminal/snapshot/persist/
+  workspace/ports/services/capabilities/instance/container）与 attach/boot/
+  ensure/release/dispose/shutdown/reconfigure 生命周期落地；HostManager 页面级
+  单例、软重载不重启 host、`ERR_MODE_MISMATCH`、能力注册、类型化事件与 command
+  telemetry 完成；`service-runtime.ts`/`service-lifecycle.ts` 拆分后
+  `plugin/services.ts` 408 行；`tests/plugin-c2.test.ts` 58 项全绿，
+  tsc/lint/test/build/audit/docs/static/boundaries/package dry-run 全绿。
 - C3 宿主应用 Cordis 化：___
 - C4 可管理性 + telemetry/replay 调研：___
 - C5 外部 demo + SunamAI 契约复验：___

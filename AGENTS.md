@@ -25,7 +25,9 @@ Design rules for anyone (human or AI agent) modifying this project. English text
   no `plugin-*` second package.
 - Consumers must declare `inject: ['succinix']` or use `ctx.get('succinix', false)`;
   do not rely on implicit globals or top-level `ctx.mixin`.
-- All services are exposed under `ctx.succinix` (`state/container/executor/terminal/snapshot/persist/workspace/ports/services/capabilities/instance`). See `docs/PLAN-cordis.md` §2.2 for the contract.
+- All services are exposed under `ctx.succinix` (state, container, executor,
+  terminal, snapshot, persist, workspace, ports, services, capabilities,
+  instance). See `docs/PLAN-cordis.md` §2.2 for the contract.
 - Only `src/plugin/` may import `cordis`; `src/engine`, `src/terminal`,
   `src/instance`, `src/persist`, and `src/services` must stay Cordis-free.
 - `./terminal` and `./instance` are no longer package exports; use
@@ -33,8 +35,8 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - The page-level HostManager is a module singleton; fiber reload must not
   restart the host. `shutdown()` or page unload is the only hard host teardown.
 - Rebuild the engine package with `node scripts/build-engine-package.mjs` after
-  touching `src/plugin/`; it regenerates `assets/sha256.json` and validates the
-  exports snapshot.
+  touching `src/plugin/`; it regenerates `packages/engine/assets/sha256.json`
+  and validates the exports snapshot.
 
 ## Explicitly Not Implemented (do not force)
 
@@ -58,6 +60,7 @@ Browser-environment limits are accepted as-is. Do not build simulations with no 
 - `npm run check:plugin-boundaries` → core dirs have no `cordis` imports and
   every `src/plugin/` file carries an invariant marker
 - `npm run check:engine-package` → builds the package, writes
-  `assets/sha256.json`, validates exports, and runs `npm pack --dry-run`
+  `packages/engine/assets/sha256.json`, validates exports, and runs
+  `npm pack --dry-run`
 - Dev server starts at `localhost:7892` with COOP/COEP headers
 - Static self-check: `grep -n '✅\|❌\|🎉\|GREEN' src/ index.html` → no matches

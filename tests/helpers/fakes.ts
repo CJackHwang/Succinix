@@ -1,5 +1,10 @@
 // 单元测试共享辅助（TASK20）：内存版 FileSystemAPI、最小 indexedDB、可脚本化 TerminalClient。
 // 只覆盖被测模块用到的 API 子集；在测试里以 `as unknown as FileSystemAPI` 传入。
+import type {
+  FSWatchCallback,
+  FSWatchOptions,
+  IFSWatcher,
+} from '@webcontainer/api';
 
 // ─── 内存 FileSystemAPI ───
 export interface FakeDirEntry {
@@ -58,6 +63,23 @@ export class FakeFS {
     for (const k of [...this.entries.keys()]) {
       if (k.startsWith(prefix)) this.entries.delete(k);
     }
+  }
+
+  async rename(oldPath: string, newPath: string): Promise<void> {
+    const value = this.entries.get(this.norm(oldPath));
+    if (value === undefined) throw new Error(`ENOENT: no such file ${oldPath}`);
+    this.entries.delete(this.norm(oldPath));
+    if (value === null) {
+      await this.mkdir(newPath, { recursive: true });
+    } else {
+      await this.writeFile(newPath, value);
+    }
+  }
+
+  watch(filename: string, options?: FSWatchOptions, listener?: FSWatchCallback): IFSWatcher;
+  watch(filename: string, listener?: FSWatchCallback): IFSWatcher;
+  watch(_filename: string, _optionsOrListener?: FSWatchOptions | FSWatchCallback, _listener?: FSWatchCallback): IFSWatcher {
+    return { close() {} };
   }
 
   async readdir(path: string, _opts?: { withFileTypes?: boolean }): Promise<FakeDirEntry[]> {

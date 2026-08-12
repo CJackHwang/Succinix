@@ -13,7 +13,7 @@ browser-safe and will not be part of the default composition.
 ## Fork / npm parity
 
 - npm package: `cordis@4.0.0-rc.8`
-- fork commit: `CJackHwang/cordis` `f46ae95e`
+- fork commit: CJackHwang/cordis `f46ae95e`
 - fork package version: `4.0.0-rc.8`
 
 Parity check: the fork core source was bundled with `esbuild` using

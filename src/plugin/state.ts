@@ -25,3 +25,11 @@ export function createInitialState(): SuccinixPluginState {
     lastError: null,
   };
 }
+
+export function cloneState(state: SuccinixPluginState): SuccinixPluginState {
+  return {
+    ...state,
+    host: { ...state.host },
+    instances: state.instances.map((instance) => ({ ...instance })),
+  };
+}

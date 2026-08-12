@@ -4,6 +4,7 @@ import {
   CAPABILITY_PATTERNS,
   type SuccinixCapabilityPattern,
 } from './config.js';
+import type { SuccinixCapabilityService } from './types.js';
 
 export interface CapabilityConfig {
   defaultAllow: boolean;
@@ -46,9 +47,13 @@ export class SuccinixCapabilityRegistry {
       if (this.checkers.get(pattern) === current) this.checkers.delete(pattern);
     };
   }
+
+  reset(): void {
+    this.checkers.clear();
+  }
 }
 
-export function registerHostCapabilities(ctx: Context, registry: SuccinixCapabilityRegistry): (() => void)[] {
+export function registerHostCapabilities(ctx: Context, registry: SuccinixCapabilityService): (() => void)[] {
   const host = ctx.get('capability', false) as HostCapabilityService | undefined;
   if (!host || typeof host.define !== 'function') return [];
   return registry.list().map((pattern) => {

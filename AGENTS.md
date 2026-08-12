@@ -18,6 +18,24 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **tinbase:** must start with `--engine wasm`（no `--memory` — data persists in the workspace snapshot; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`).
 - **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Produces two in-container bundles: `public/host.js` (lightweight host daemon — RPC loop, process table, node subprocesses) and `public/lifo-core.js` (the ~1 MB `@lifo-sh/core` kernel, loaded lazily via `import('./lifo-core.js')` on first Lifo command). Rebuild with `node scripts/build-host.mjs` after touching files under `src/engine/host/`, `src/engine/host-procs.ts`, or `src/engine/lifo-core.ts`.
 
+## Cordis Single-Track (0.5.0+)
+
+- `@succinix/engine@0.5.0` is a Cordis plugin; the root export is
+  `{ name: 'succinix', apply, Config }`. There is no separate SDK API line and
+  no `plugin-*` second package.
+- Consumers must declare `inject: ['succinix']` or use `ctx.get('succinix', false)`;
+  do not rely on implicit globals or top-level `ctx.mixin`.
+- All services are exposed under `ctx.succinix` (`state/container/executor/terminal/snapshot/persist/workspace/ports/services/capabilities/instance`). See `docs/PLAN-cordis.md` §2.2 for the contract.
+- Only `src/plugin/` may import `cordis`; `src/engine`, `src/terminal`,
+  `src/instance`, `src/persist`, and `src/services` must stay Cordis-free.
+- `./terminal` and `./instance` are no longer package exports; use
+  `ctx.succinix.terminal.create` / `ctx.succinix.ensureInstance`.
+- The page-level HostManager is a module singleton; fiber reload must not
+  restart the host. `shutdown()` or page unload is the only hard host teardown.
+- Rebuild the engine package with `node scripts/build-engine-package.mjs` after
+  touching `src/plugin/`; it regenerates `assets/sha256.json` and validates the
+  exports snapshot.
+
 ## Explicitly Not Implemented (do not force)
 
 Browser-environment limits are accepted as-is. Do not build simulations with no real value; if a capability cannot genuinely work, it is omitted or clearly degraded:
@@ -37,5 +55,9 @@ Browser-environment limits are accepted as-is. Do not build simulations with no 
 - `npx tsc -p tsconfig.json --noEmit` → 0 errors
 - `node scripts/build-host.mjs` → succeeds
 - `npm run build` → succeeds
+- `npm run check:plugin-boundaries` → core dirs have no `cordis` imports and
+  every `src/plugin/` file carries an invariant marker
+- `npm run check:engine-package` → builds the package, writes
+  `assets/sha256.json`, validates exports, and runs `npm pack --dry-run`
 - Dev server starts at `localhost:7892` with COOP/COEP headers
 - Static self-check: `grep -n '✅\|❌\|🎉\|GREEN' src/ index.html` → no matches

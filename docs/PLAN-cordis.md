@@ -1362,7 +1362,11 @@ commit：
 - C0 Cordis POC：完成。`examples/cordis-poc/` + `scripts/cordis-browser-probe.mjs`
   + `scripts/cordis-poc-check.mjs`；headless Chrome 全绿；loader/HMR 判定浏览器
   不可用；npm rc.8 与 fork `f46ae95e` 仅构建路径注释差异。
-- C1 包形态骨架：___
+- C1 包形态骨架：完成。`src/plugin/` 入口/types/events/config/schema/services/
+  capabilities/lifecycle/host-manager/default-instance/workspace/ports/assets；
+  engine 包 0.5.0 exports 单轨 + `tsconfig.plugin.json` + `assets/sha256.json`；
+  `check:plugin-boundaries`/`check:engine-package` 门禁；tsc/lint/test/build/
+  包 dry-run 全绿。
 - C2 插件实现：___
 - C3 宿主应用 Cordis 化：___
 - C4 可管理性 + telemetry/replay 调研：___

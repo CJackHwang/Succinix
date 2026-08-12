@@ -1,5 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+
+const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
 // R1（TASK17）：uname -r 的 @webcontainer/api 运行时版本改为构建期注入，杜绝硬编码漂移。
 // 数据源用已安装版本（node_modules 实际解析版本），而非根 package.json 的 semver 区间
@@ -35,6 +39,11 @@ export default defineConfig({
     __UNAME_RUNTIME__: JSON.stringify(resolveApiRuntimeVersion()),
     // 供 src/version.ts 的 SUCCINIX_VERSION 使用（同上模式；根 package.json 版本单一来源）。
     __SUCCINIX_VERSION__: JSON.stringify(resolveSuccinixVersion()),
+  },
+  resolve: {
+    alias: {
+      '@succinix/engine': resolve(rootDir, 'src/plugin/index.ts'),
+    },
   },
   server: {
     port: 7892,

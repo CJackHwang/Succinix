@@ -1,29 +1,20 @@
 {
   "name": "@succinix/engine",
-  "version": "0.4.0",
-  "description": "Succinix engine: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, sharing the container filesystem with the host app. Browser client + in-container host assets.",
+  "version": "0.5.0",
+  "description": "Succinix engine as a Cordis plugin: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, exposed through ctx.succinix.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/plugin/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": "./dist/plugin/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./terminal": {
-      "types": "./dist/terminal/index.d.ts",
-      "import": "./dist/terminal.js",
-      "default": "./dist/terminal.js"
-    },
-    "./instance": {
-      "types": "./dist/instance/index.d.ts",
-      "import": "./dist/instance.js",
-      "default": "./dist/instance.js"
-    },
     "./host.js": "./assets/host.js",
     "./lifo-core.js": "./assets/lifo-core.js",
+    "./assets/*": "./assets/*",
     "./package.json": "./package.json"
   },
   "files": [
@@ -54,7 +45,11 @@
     "node": ">=18"
   },
   "peerDependencies": {
+    "cordis": ">=4.0.0-rc.8",
     "@webcontainer/api": "^1.6.4"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
   },
   "publishConfig": {
     "access": "public",

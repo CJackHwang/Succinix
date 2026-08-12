@@ -6,6 +6,7 @@ import enginePlugin, {
   type SuccinixService,
 } from '@succinix/engine';
 import type { WebContainer } from '@webcontainer/api';
+import { runMigrationSurface } from './migration';
 
 export interface ContractCheck {
   name: string;
@@ -138,6 +139,9 @@ export async function runContract(): Promise<ContractResult> {
     await fallbackFiber;
     add(checks, 'uninjected fallback is explicit', fallbackValue === undefined);
     await fallbackFiber.dispose();
+
+    const migration = await runMigrationSurface(`${storeKey}-migration`);
+    add(checks, 'migration example runs', migration.ok, migration.detail);
 
     const service: SuccinixService = ctx.succinix;
     const capabilityMatch =

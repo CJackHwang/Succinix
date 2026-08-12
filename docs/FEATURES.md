@@ -16,9 +16,10 @@ Postgres database (tinbase), and persistence.
 | Item | Value | Source |
 | ---- | ----- | ------ |
 | Product | SuccinixOS (formerly WebUnix) — unified brand, zero functional change | TASK26 |
-| Engine | TerminalExecutor (unified routing: `node|npm|npx` → real Node child; everything else → Lifo sandbox) | TASK1 |
+| Engine | Cordis plugin `ctx.succinix.executor` (unified routing: `node|npm|npx` → real Node child; everything else → Lifo sandbox) | TASK1, C2 |
 | Runtime | WebContainer + Lifo, shared virtualized `node:fs` (browser `wc.fs`, Node children, Lifo — one tree) | TASK1, README |
-| Version | **0.4.0** | CHANGELOG |
+| Succinix app version | **0.4.0** | CHANGELOG |
+| Engine package | **`@succinix/engine` 0.5.0** — Cordis plugin, `ctx.succinix` service | CHANGELOG, cordis-contract.md |
 | License | **MIT** © 2026 CJackHwang | README |
 | Browser | Chromium family only (Chrome/Edge) + COOP/COEP cross-origin isolation + SharedArrayBuffer | TASK4, README |
 
@@ -175,36 +176,42 @@ Key measured facts:
 
 ## 9. Ecosystem / SDK
 
-- **Decoupled engine**: the command-execution engine lives in `src/engine/` with a clean public API
-  (`TerminalClient`, `createTerminalExecutor()`, `bootEngineHost`, `waitForHostReady`) and no
-  app-layer dependency leakage (logging injected via `onCommand`). | TASK21
+- **Decoupled engine, plugin single-track**: the command-execution core lives in
+  `src/engine/` and stays Cordis-free; `src/plugin/` is the thin Cordis layer.
+  `@succinix/engine@0.5.0` is the only public form: a plugin registered as
+  `succinix`, consumed through `ctx.succinix`. | C1–C6, AGENTS.md
 - **Authoritative protocol**: `docs/PROTOCOL.md` is the file-RPC wire contract (version 1) —
   request/response shapes, command routing, process model, port events, timeouts; an ecosystem
   consumer can build an alternative client/host from it alone. | TASK21, PROTOCOL.md
-- **Shipped package — `@succinix/engine`** (npm; Form A of the SDK form design — same-page
-  embedding, shared filesystem, best UX). Exports: `.` (`createTerminalExecutor`,
-  `TerminalClient`, `bootEngineHost`, `waitForHostReady`), `./host.js` + `./lifo-core.js`
-  (in-container assets), `./terminal` (UI-free session + boot orchestration, 0.4.0) and
-  `./instance` (aggregate factory, 0.4.0). Form B (iframe `@succinix/sandbox-page` + postMessage
-  bridge) remains the fallback for hard isolation; Form C (`create-succinix-app` scaffold) is a
-  planned onboarding stage. | TASK21, TASK26, E1–E4, M5
-- **TerminalExecutor facade**: `boot(wc, opts)` / `exec(command, opts)` / `spawn(command, opts)` /
-  `listProcesses()` / `kill(pid)` / `ping()` / `pingDirect()` / `respawn()` / `dispose()`. | TASK21
-- **Terminal SDK (0.4.0)** — `SuccinixTerminalSession` is a UI-free terminal core (history, Tab
-  completion, real Ctrl+C interrupt, command queue, cwd-following prompt) over the narrow
-  `TerminalRpc`/`TerminalOutput` contracts; `createTerminalBoot` parameterizes the boot flow
-  (steps/retry/testMode). Local command handlers are injectable; no xterm dependency. | E1, E2
-- **Multi-instance (0.4.0)** — `createSuccinixInstance({ wc, instanceId })` assembles executor +
-  session + per-instance snapshot/services/ports in one call. `?instance=<id>` starts the app as a
-  named instance: state files (`/workspace/.succinix-<id>`), IndexedDB snapshot keys, env,
+- **Published package exports**: `.` (plugin entry `{ name, apply, Config }` + types),
+  `./host.js` + `./lifo-core.js` (in-container assets), `./assets/*` (Pyodide + SHA manifest),
+  `./package.json`. The 0.4.0 `./terminal` / `./instance` subpaths are removed. | C1, C6
+- **`ctx.succinix` service surface**: `state`, `container`, `executor`, `terminal`, `snapshot`,
+  `persist`, `workspace`, `ports`, `services`, `capabilities`, `instance`, lifecycle methods
+  (`boot` / `attach` / `ensureInstance` / `releaseInstance` / `dispose` / `shutdown` /
+  `reconfigure`). | C2, cordis-contract.md
+- **Typed events**: `succinix/state` (with `reason` / `changed`), `server-ready`,
+  `server-closed`, `command` telemetry, `instance`, `workspace`, `process`. | C4,
+  manageability.md
+- **Capability registry**: `terminal.exec`, `terminal.spawn`, `terminal.kill`,
+  `terminal.interrupt`, `fs.read`, `fs.write`, `workspace.restore`, `workspace.flush`,
+  `workspace.list`; default-allow with configurable rules. | C2
+- **Lifecycle semantics**: page-level HostManager singleton; fiber reload does not restart the
+  host; `dispose()` is soft, `shutdown()` is hard; `attach`/`boot` mode mismatch throws
+  `ERR_MODE_MISMATCH`; asset SHA-256 integrity is enforced by default. | C2, C5
+- **Multi-instance (0.4.0 / 0.5.0)** — `ctx.succinix.ensureInstance(id, opts)` creates or reuses
+  a per-instance stack on the shared page host. `?instance=<id>` starts the app as a named
+  instance: state files (`/workspace/.succinix-<id>`), IndexedDB snapshot keys, env,
   services/ports views and process views are per-instance; cross-instance `kill` is rejected.
-  Two tabs with different ids are fully isolated (separate hosts — e2e verified); same-page
-  shared-host routing (ps filtering / kill authorization) is protocol-level unit-tested.
-  | M1–M5, PROTOCOL.md
+  Two tabs with different ids are fully isolated (separate hosts — e2e verified). | M1–M5,
+  PROTOCOL.md
 - **Multi-user (0.4.0)** — `?user=<id>` (alias of `?instance=<id>`) seeds a per-user home
   (`/workspace/users/<id>`): session starts in the home (prompt `~`, node/python spawns there),
   `whoami`/prompt show the user, and state/snapshots/process views are per-user with `ps`
   filtering + `kill` authorization (organizational only — not a security boundary). | U1, SDK.md
+- **External demo / contract snapshot**: `examples/cordis-app/` depends only on the packed
+  engine, `cordis`, and `@webcontainer/api`; `scripts/cordis-app-e2e.mjs` runs the contract in
+  headless Chrome. | C5, cordis-contract.md
 
 ## 10. Honest boundaries
 
@@ -260,7 +267,10 @@ Type `help` in the shell for the full command list. Documentation family (Englis
 - **FEATURES** — this document: [English](FEATURES.md) · [中文](FEATURES.zh-CN.md)
 - **LANGUAGES** — measured language support matrix: [English](LANGUAGES.md) · [中文](LANGUAGES.zh-CN.md)
 - **PROTOCOL** — file-RPC wire contract (v1): [English](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
-- **SDK** — engine embed form design: [English](SDK.md) · [中文](SDK.zh-CN.md)
+- **SDK** — Cordis plugin integration: [English](SDK.md) · [中文](SDK.zh-CN.md)
+- **PLUGIN** — third-party Cordis plugin authoring: [English](PLUGIN.md)
+- **MIGRATION** — 0.4.0 to 0.5.0 guide: [English](MIGRATION.md)
+- **cordis-contract** — contract snapshot and runner: [English](cordis-contract.md)
 - **AGENTS** — agent & design guidelines: [English](../AGENTS.md) · [中文](../AGENTS.zh-CN.md)
 - **CHANGELOG** — change history: [English](../CHANGELOG.md) · [中文](../CHANGELOG.zh-CN.md)
 - **CONTRIBUTING** — how to contribute: [English](../CONTRIBUTING.md) · [中文](../CONTRIBUTING.zh-CN.md)

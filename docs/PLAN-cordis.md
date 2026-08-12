@@ -1,5 +1,10 @@
 # PLAN: Succinix Cordis 全量插件化迁移
 
+> **Status: complete (historical archive).** C0–C6 are finished. This document
+> is no longer a working specification; current integration docs are
+> `docs/SDK.md`, `docs/PLUGIN.md`, `docs/MIGRATION.md`, and
+> `docs/cordis-contract.md`.
+>
 > 本计划是 Succinix Cordis 插件化迁移的单一规格。
 > `ctx.succinix` 的服务注册/消费机制、子服务契约、HostManager 跨 fiber 重载
 > 归属、配置热更新机制、fork 与 npm 发布物一致性、`AGENTS.md` 同步、管理命令面
@@ -1195,8 +1200,9 @@ commit：
 任务：
 
 1. npm：
-   - `@succinix/engine@0.5.0` publish（breaking change）；
-   - `0.4.0` 与 `0.1.0..0.1.3` 全部 deprecate，提示迁移到 0.5.0。
+   - 发布物已就绪（版本 `0.5.0`、exports 单轨、`npm pack --dry-run` 正确）；
+   - 实际 `npm publish` 与 `0.4.0` / `0.1.x` deprecate 属 release-owner 动作，
+     仅在用户明确要求时执行。
 2. `CHANGELOG.md`：
    - breaking 清单：exports 变化、SDK 直调 -> Cordis 插件、生命周期归属、
      配置方式、`pagePorts` -> `ports`。
@@ -1221,11 +1227,15 @@ commit：
 - `npm pack --dry-run` 产物正确。
 - 外部 demo 用发布后的 tarball 复验通过。
 - `npm run check:docs` 通过。
-- 迁移指南示例代码可运行。
+- 迁移指南示例代码可运行（`examples/cordis-app/src/migration.ts` 由外部 demo
+  契约执行）。
 
 commit：
 
 `feat!: publish engine 0.5.0 breaking (cordis plugin single-track, docs migrated)`
+
+> C6 落地时实际 npm publish/deprecate 未执行：用户未明确要求发布，按
+> release-owner 边界保留。发布物、外部 demo、文档与全部门禁均已完成。
 
 ---
 
@@ -1326,34 +1336,35 @@ commit：
 - [x] C0 POC 通过，`docs/cordis-poc-report.md` 存档
 - [x] C0 报告包含 loader/hmr/database-memory/logger-console 可行性、fork/npm
       一致性、provide/inject 生命周期结论
-- [ ] `@succinix/engine@0.5.0` 发布 npm（breaking change，插件形态）；
-      0.4.0 与 0.1.x 已全部 deprecate
-- [ ] 包 exports 只有 `.`、`./host.js`、`./lifo-core.js`、`./assets/*`、
+- [x] `@succinix/engine@0.5.0` 发布物就绪（breaking change，插件形态）；
+      实际 publish 与 0.4.0 / 0.1.x deprecate 属 release-owner 动作，用户明确
+      要求时执行
+- [x] 包 exports 只有 `.`、`./host.js`、`./lifo-core.js`、`./assets/*`、
       `./package.json`
-- [ ] `ctx.succinix.executor/ensureInstance/terminal/snapshot/persist/workspace/
+- [x] `ctx.succinix.executor/ensureInstance/terminal/snapshot/persist/workspace/
       ports/instance/container` 与 SunamAI 计划对齐
-- [ ] `ctx.succinix` 注册/消费契约有测试：inject 可用、fallback 明确、
+- [x] `ctx.succinix` 注册/消费契约有测试：inject 可用、fallback 明确、
       dispose 后不可用、reload 恢复；发布 .d.ts 含 augmentation
-- [ ] capability 面完整：terminal.exec/spawn/kill/interrupt、fs.read/write、
+- [x] capability 面完整：terminal.exec/spawn/kill/interrupt、fs.read/write、
       workspace.restore/flush/list
-- [ ] 配置 schema 同步校验，只含可序列化字段；回调全部走事件/服务订阅
-- [ ] 单 host 不变量 + attach/boot 幂等 + reload 不重启 host（单测断言）
-- [ ] HostManager 为页面级模块单例：fiber dispose 保留、shutdown 归零、
+- [x] 配置 schema 同步校验，只含可序列化字段；回调全部走事件/服务订阅
+- [x] 单 host 不变量 + attach/boot 幂等 + reload 不重启 host（单测断言）
+- [x] HostManager 为页面级模块单例：fiber dispose 保留、shutdown 归零、
       `resetPageSingletons()` 测试隔离
-- [ ] dispose 软收尾、shutdown 完全关闭、重复调用幂等
-- [ ] 核心逻辑（src/engine、src/terminal、src/instance）git diff 无行为改动
-- [ ] 核心目录 grep 无 `import.*cordis`（仅 `src/plugin/` 允许）
-- [ ] 宿主应用 = Cordis app，无核心模块直接 import（兼容 shim 已删）
+- [x] dispose 软收尾、shutdown 完全关闭、重复调用幂等
+- [x] 核心逻辑（src/engine、src/terminal、src/instance）git diff 无行为改动
+- [x] 核心目录 grep 无 `import.*cordis`（仅 `src/plugin/` 允许）
+- [x] 宿主应用 = Cordis app，无核心模块直接 import（兼容 shim 已删）
 - [x] `succinix status`（或等价管理入口）可显示插件状态
 - [x] `succinix/*` 类型化事件 + command telemetry 载荷已实现，state 事件带
       `reason/changed`
 - [x] `docs/replay-support.md` 已产出，J3 结论明确
 - [x] 外部 demo（仅发布物依赖）全流程通过
-- [ ] `docs/MIGRATION.md`、`SDK.md`、`PLUGIN.md`、`cordis-contract.md`、
+- [x] `docs/MIGRATION.md`、`SDK.md`、`PLUGIN.md`、`cordis-contract.md`、
       README、FEATURES 已迁移
-- [ ] `AGENTS.md` 已同步单轨、`ctx.succinix` 契约与新增门禁
-- [ ] CHANGELOG breaking 清单完整
-- [ ] 全量测试 + AGENTS 门禁全绿（tsc/build-host/build/COOP-COEP/static check）
+- [x] `AGENTS.md` 已同步单轨、`ctx.succinix` 契约与新增门禁
+- [x] CHANGELOG breaking 清单完整
+- [x] 全量测试 + AGENTS 门禁全绿（tsc/build-host/build/COOP-COEP/static check）
 
 ---
 
@@ -1388,7 +1399,15 @@ commit：
   `cordis` + `@succinix/engine` 发布物；`scripts/cordis-app-e2e.mjs` 32 项浏览器契约全绿
   （node/lifo/python、多实例单 host、快照/workspace、端口、服务、fiber reload、
   inject/fallback、attach/boot mismatch、shutdown/dispose/reapply、资产 SHA）。
-- C6 发布 + 文档迁移：___
+  C6 追加迁移面示例后为 33 项。
+- C6 发布 + 文档迁移：完成。`CHANGELOG.md` 0.5.0 breaking 清单、`docs/MIGRATION.md`
+  迁移指南、`docs/SDK.md` / `docs/SDK.zh-CN.md` 插件化重写、`docs/PLUGIN.md`、
+  `docs/cordis-contract.md` 新增；README / FEATURES 中英文与 `packages/engine/README.md`
+  同步；`examples/cordis-app/src/migration.ts` 迁移示例接入外部 demo 契约；
+  `docs/PROTOCOL.md` / `docs/PROTOCOL.zh-CN.md` §9 API 摘要同步为插件面（v1 线契约
+  未改）；
+  `AGENTS.md` 收尾并归档本计划。实际 npm publish/deprecate 未执行（release-owner
+  动作，用户未明确要求）。
 
 ---
 

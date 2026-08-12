@@ -20,6 +20,32 @@
 - **tinbase：** 必须以 `--engine wasm` 启动（不要 `--memory` —— 数据持久于工作区快照 snapshot；浏览器内安装超时为主机侧 `{ timeout: 120000 }`，客户端等待 `150000`）。
 - **`scripts/build-host.mjs`：** `@lifo-sh/ui` 保持外部依赖。产出两个容器内 bundle：`public/host.js`（轻量 host 守护进程 daemon —— RPC 循环、进程表、node 子进程）与 `public/lifo-core.js`（约 1 MB 的 `@lifo-sh/core` 内核，首个 Lifo 命令时经 `import('./lifo-core.js')` 懒加载 lazy-inject）。改动 `src/engine/host/` 下文件、`src/engine/host-procs.ts` 或 `src/engine/lifo-core.ts` 后用 `node scripts/build-host.mjs` 重新构建。
 
+## Cordis 单轨（0.5.0+）
+
+- `@succinix/engine@0.5.0` 是 Cordis 插件；根导出为
+  `{ name: 'succinix', apply, Config }`。没有独立 SDK API 线，也没有第二个
+  `plugin-*` 包。
+- 消费方必须声明 `inject: ['succinix']`，或用 `ctx.get('succinix', false)`；
+  不依赖隐式全局或顶层 `ctx.mixin`。
+- 所有服务都在 `ctx.succinix` 下（state、container、executor、terminal、
+  snapshot、persist、workspace、ports、services、capabilities、instance）。
+  集成参考见 `docs/SDK.md`，权威可执行契约见 `docs/cordis-contract.md`。
+- 只有 `src/plugin/` 可以 import `cordis`；`src/engine`、`src/terminal`、
+  `src/instance`、`src/persist`、`src/services` 必须保持 Cordis-free。
+- `./terminal` 与 `./instance` 不再是包导出；改用
+  `ctx.succinix.terminal.create` / `ctx.succinix.ensureInstance`。
+- `onServerReady` / `onServerClosed` / `onCommand` 不是配置回调；改用
+  `ctx.succinix.onServerReady`、`ctx.succinix.onServerClosed` 与
+  `succinix/*` 事件。
+- 页面级 HostManager 是模块单例；fiber reload 不得重启 host。`shutdown()` 或
+  页面卸载是唯一的硬关闭路径。
+- 改动 `src/plugin/` 后用 `node scripts/build-engine-package.mjs` 重建引擎包；
+  它会重新生成 `packages/engine/assets/sha256.json` 并校验 exports 快照。
+- `docs/PLAN-cordis.md` 现在是历史执行档案。当前集成文档为 `docs/SDK.md`、
+  `docs/PLUGIN.md`、`docs/MIGRATION.md`、`docs/cordis-contract.md`。
+- 实际 npm publish 与 `0.4.0` / `0.1.x` deprecate 属 release-owner 动作；
+  用户未明确要求时不发布。
+
 ## 明确未实现（不要硬造）
 
 浏览器环境限制照单全收。不构建无真实价值的模拟；某项能力确实无法工作时，省略或明确降级：
@@ -39,5 +65,15 @@
 - `npx tsc -p tsconfig.json --noEmit` → 0 errors
 - `node scripts/build-host.mjs` → succeeds
 - `npm run build` → succeeds
+- `npm run lint` → 0 errors
+- `npm run test` → 全部单测通过
+- `npm run check:docs` → 无坏本地引用
+- `npm run check:plugin-boundaries` → 核心目录无 `cordis` import，且每个
+  `src/plugin/` 文件带 invariant 标记
+- `npm run check:engine-package` → 构建包、写
+  `packages/engine/assets/sha256.json`、校验 exports，并执行
+  `npm pack --dry-run`
+- `npm run test:e2e` → 完整浏览器流水线（含外部 `examples/cordis-app`
+  契约；需要浏览器权限时在沙箱外运行）
 - 开发服务器在 `localhost:7892` 启动并带 COOP/COEP 头
 - 静态自检：对 `src/` 与 `index.html` 执行禁用的 emoji 字形与 `GREEN` 常量的 `grep` 检查 → 无匹配

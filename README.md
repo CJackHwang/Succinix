@@ -295,7 +295,7 @@ src/
   pkg.ts             # package management: pkg list/search/install/remove/info over lifo + npm channels
   tests.ts           # self-test suite (?test=1)
   engine/            # TerminalExecutor engine — decoupled, reusable (see Ecosystem)
-    index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
+    index.ts         # internal core barrel consumed by src/plugin (not a package export)
     client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
     host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
     host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
@@ -304,8 +304,9 @@ src/
     python-daemon/       # resident Pyodide 314.0.4 daemon CLI (loader/rpc/pip/main, bundled to public/pyodide/python-daemon.js)
     python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
     python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
-  terminal/          # terminal SDK: UI-free session + parameterized boot (@succinix/engine/terminal)
-  instance/          # instance factory: createSuccinixInstance aggregate API (@succinix/engine/instance)
+  terminal/          # terminal core consumed by ctx.succinix.terminal.create (no ./terminal export)
+  instance/          # instance factory consumed by ctx.succinix.ensureInstance (no ./instance export)
+  plugin/            # Cordis plugin entry: services, lifecycle, events, capabilities, HostManager
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
@@ -334,36 +335,63 @@ public/
 
 ## Ecosystem
 
-Succinix's command-execution engine (`src/engine/`) is **decoupled from the Succinix app itself**, so other frontend projects can embed it as a browser-native Unix sandbox. It ships as **`@succinix/engine`** on npm: `createTerminalExecutor()` (imperative channel), `@succinix/engine/terminal` (UI-free terminal session + boot orchestration), and `@succinix/engine/instance` (aggregate multi-instance/multi-user factory). A consumer's page boots a WebContainer and gets a shared-filesystem shell with a real Node runtime (`node|npm|npx`), a built-in Pyodide Python, and a Lifo Unix userland (everything else) — without building any of that itself. See [docs/SDK.md](docs/SDK.md) for the embedding reference.
+Succinix's command-execution engine is **decoupled from the Succinix app
+itself**, and ships as **`@succinix/engine@0.5.0`**, a single Cordis plugin.
+There is no standalone SDK API line: consumers apply the plugin, then use the
+services under `ctx.succinix`. A consumer's page boots a WebContainer and gets
+a shared-filesystem shell with a real Node runtime (`node|npm|npx`), a built-in
+Pyodide Python, and a Lifo Unix userland (everything else) — without building
+any of that itself.
 
-### Engine API
+```ts
+import { Context } from 'cordis';
+import engine from '@succinix/engine';
 
-The public surface is `@succinix/engine` (built from `src/engine/index.ts`; 0.1.x shipped — 0.4.0 adds the `./terminal` and `./instance` exports below). One line each:
+const ctx = new Context();
+const fiber = ctx.plugin(engine, {
+  container: { mode: 'external' },
+  defaultInstance: { instanceId: 'default' },
+});
+await fiber;
 
-| Symbol                | What it does                                                                                                                                    |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createTerminalExecutor()` | Returns a clean `TerminalExecutor` facade for ecosystem consumers — `boot(wc, opts)` brings up the host, then `exec` / `spawn` / `ps` / `kill` / `ping` / `dispose`. |
-| `bootEngineHost(wc, client, hooks)` | Low-level boot helper: injects `host.js` if missing, spawns the host daemon, asynchronously writes `lifo-core.js`, and wires `server-ready` / `port` events to `onServerReady` / `onServerClosed`. |
-| `exec(command, opts)` | Run one command through unified routing (`node|npm|npx` → real Node child process, everything else → Lifo). Returns the full `ExecResult`; on RPC wait expiry returns `{ ok: false, timedOut: true }` instead of throwing. |
-| `spawn(command, opts)` | Start a background long-running process (node family) and return immediately with its pid; output streams into the process table. |
-| `listProcesses()` (`ps`) | Snapshot of the unified process table — `{ pid, cmd, status, startTime, exitCode?, outputTail? }`. |
-| `kill(pid)`           | SIGTERM a real child process in the table; returns `true` on success.                                                                           |
-| `ping()`              | Host liveness probe — resolves `true` when the host answers `pong`.                                                                             |
-| `pingDirect(timeoutMs?)` | Watchdog liveness probe that **bypasses the serialized request queue** — usable while a long command occupies the queue. `true`=alive, `false`=timeout, `null`=channel busy (skip the round, neutral). |
-| `respawn()`           | Restart the host: kill the old host process, re-inject assets, spawn a fresh one, and wait until it answers `ping`. Preserves the single-host invariant (never two hosts polling `/cmd.json`). |
-| `dispose()`           | Release resources (kill the host process, clear references). Idempotent.                                                                        |
+// ctx.succinix.executor, terminal, snapshot, persist, workspace, ports,
+// services, capabilities, instance, and container are all available.
+```
 
-> **Two execution surfaces, one host** (P1-3). `createTerminalExecutor()` is the **ecosystem surface**: the clean, complete API above, including watchdog `pingDirect()` and `respawn()` — everything an external consumer needs. The Succinix app's own terminal additionally uses the lower-level `TerminalClient` (returned by `bootEngineHost`) for its command path, because command handlers (`commands.ts`/`services.ts`/`pkg.ts`) rely on raw protocol semantics — `exec` throwing on timeout, `processes`/`killed`/`cwd` fields, and a `client` handle that's passed into command contexts. Both surfaces drive the **same** host and the **same** `/cmd.json` file-RPC channel; they are deliberately not the same object. If you are embedding the engine, use `createTerminalExecutor()`.
+### Plugin API
 
-### Protocol & SDK docs
+| Service | What it does |
+| --- | --- |
+| `ctx.succinix.executor` | Default-instance `TerminalExecutor`: `exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` |
+| `ctx.succinix.terminal` | `terminal.create(output)` returns a UI-free terminal session (history, completion, Ctrl+C, queueing) |
+| `ctx.succinix.ensureInstance(id, opts)` | Create/reuse a per-instance stack (replaces `createSuccinixInstance`) |
+| `ctx.succinix.snapshot` / `persist` / `workspace` | Snapshot save/restore, persistence, workspace facade |
+| `ctx.succinix.ports` | Page-level port view + `server-ready` / `server-closed` subscriptions (replaces `pagePorts`) |
+| `ctx.succinix.services` | Declarative background service management |
+| `ctx.succinix.capabilities` | `terminal.*`, `fs.*`, `workspace.*` capability registry |
+| `ctx.succinix.boot` / `attach` | Internal WebContainer boot or external container adoption |
+| `ctx.succinix.dispose` / `shutdown` | Soft fiber teardown / hard host shutdown |
 
-- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts. An ecosystem consumer can build an alternative client or host against this document alone, without reading the implementation.
-- **[docs/SDK.md](docs/SDK.md)** — the SDK form design for "embed the Succinix engine into different people's frontend projects to provide a sandbox": it compares an npm package (same-page embedding, shared filesystem), an iframe sandbox (hard isolation), and a scaffold, then recommends a path.
-- **[docs/LANGUAGES.md](docs/LANGUAGES.md)** — the measurement-backed language support matrix (Python stdlib, Node/TS toolchain, WASI, Ruby probe, absent compilers).
+Consumers declare `inject: ['succinix']` or probe with
+`ctx.get('succinix', false)`. The published `.d.ts` augments
+`Context['succinix']` and the `succinix/*` event map.
+
+### Protocol & integration docs
+
+- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts.
+- **[docs/SDK.md](docs/SDK.md)** — the 0.5.0 Cordis plugin integration reference: install, config, service surface, capabilities, lifecycle, hot reload, container modes.
+- **[docs/PLUGIN.md](docs/PLUGIN.md)** — how third-party Cordis plugins consume or extend Succinix.
+- **[docs/cordis-contract.md](docs/cordis-contract.md)** — the authoritative contract snapshot and its browser runner.
+- **[docs/MIGRATION.md](docs/MIGRATION.md)** — migration from the 0.4.0 standalone SDK form.
+- **[docs/LANGUAGES.md](docs/LANGUAGES.md)** — the measurement-backed language support matrix.
 
 ### Vision
 
-The engine is the same code that powers the Succinix terminal, behind a clean API boundary: logging is injected (the engine emits `CommandLogEntry` entries; the host app decides what to filter and persist), the wire protocol is documented, and no app-layer dependency leaks into `src/engine/`. Packaged as `@succinix/engine`, any Chromium-based frontend that already boots a WebContainer can add a Unix sandbox sharing its own files — the packaging stages are laid out in [docs/SDK.md](docs/SDK.md).
+The engine is the same code that powers the Succinix terminal, behind a clean
+Cordis boundary: core logic stays Cordis-free, the wire protocol is
+documented, and no app-layer dependency leaks into `src/engine/`. Any
+Chromium-based frontend that already boots a WebContainer can add a Unix
+sandbox sharing its own files by applying `@succinix/engine`.
 
 ## Development Archive
 
@@ -374,7 +402,10 @@ The engine is the same code that powers the Succinix terminal, behind a clean AP
 - **Supported features & capabilities** — [English](docs/FEATURES.md) · [简体中文](docs/FEATURES.zh-CN.md)
 - **Language support matrix** — [English](docs/LANGUAGES.md) · [简体中文](docs/LANGUAGES.zh-CN.md)
 - **File RPC protocol** — [English](docs/PROTOCOL.md) · [简体中文](docs/PROTOCOL.zh-CN.md)
-- **SDK form design** — [English](docs/SDK.md) · [简体中文](docs/SDK.zh-CN.md)
+- **SDK / plugin integration** — [English](docs/SDK.md) · [简体中文](docs/SDK.zh-CN.md)
+- **Cordis plugin integration** — [English](docs/PLUGIN.md)
+- **Migration guide** — [English](docs/MIGRATION.md)
+- **Contract snapshot** — [English](docs/cordis-contract.md)
 - **Agent & design guidelines** — [English](AGENTS.md) · [简体中文](AGENTS.zh-CN.md)
 - **Changelog** — [English](CHANGELOG.md) · [简体中文](CHANGELOG.zh-CN.md)
 - **Contributing** — [English](CONTRIBUTING.md) · [简体中文](CONTRIBUTING.zh-CN.md)
@@ -390,6 +421,7 @@ The engine is the same code that powers the Succinix terminal, behind a clean AP
 - [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
 - [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
+- [x] Cordis single-track engine: `@succinix/engine@0.5.0` as a plugin with `ctx.succinix`
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor — **deferred** (planned as TASK8; not scheduled)
 - [ ] Optional: WebSocket tunnel for external access
 

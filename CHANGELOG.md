@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-13
+
+### Breaking
+
+- **`@succinix/engine` is now a Cordis plugin (single-track).** The root
+  export is `{ name: 'succinix', apply, Config }`; there is no standalone SDK
+  API line and no second `plugin-*` package.
+- **Exports changed.** `./terminal` and `./instance` subpaths are removed;
+  `@succinix/engine` direct functions (`createTerminalExecutor`,
+  `createSuccinixInstance`) are no longer the public entry. The remaining
+  subpath exports are `./host.js`, `./lifo-core.js`, `./assets/*`, and
+  `./package.json`.
+- **SDK direct calls become Cordis services.** `createTerminalExecutor()`
+  maps to `ctx.succinix.executor`, `@succinix/engine/terminal` maps to
+  `ctx.succinix.terminal.create`, and `createSuccinixInstance` /
+  `@succinix/engine/instance` map to `ctx.succinix.ensureInstance`.
+- **Lifecycle ownership moved into the plugin.** The page-level HostManager
+  is a singleton that survives fiber reload; `dispose()` is soft by default
+  and `shutdown()` is the hard teardown.
+- **Configuration style changed.** `SuccinixConfig` is serializable and
+  synchronously validated; runtime callbacks (`onServerReady`,
+  `onServerClosed`, `onCommand`) move to event subscriptions or service
+  arguments.
+- **`pagePorts` is no longer public.** The canonical port surface is
+  `ctx.succinix.ports`.
+
+### Added
+
+- Cordis plugin entry, `ctx.succinix` service surface, typed `succinix/*`
+  events, capability registry, page-level HostManager, asset SHA-256
+  integrity, and `internal` / `external` container modes.
+- `docs/MIGRATION.md`, `docs/PLUGIN.md`, and `docs/cordis-contract.md`; the
+  SDK docs were rewritten for the plugin form.
+- `examples/cordis-app/` external demo and
+  `scripts/cordis-app-e2e.mjs` browser contract gate.
+
+### Changed
+
+- The Succinix app is now a Cordis host that consumes the engine plugin.
+- `docs/PLAN-cordis.md` is archived as the historical execution record.
+
+> Release note: this entry documents the release-ready package. Actual npm
+> publish and deprecation of `0.4.0` / `0.1.x` are executed by the release
+> owner when explicitly requested.
+
 ## [0.4.0] — 2026-08-10
 
 ### Added

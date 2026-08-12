@@ -288,14 +288,15 @@ src/
   tests.ts           # 兼容 shim → selftest/（O5 拆分）
   selftest/          # 自检套件（?test=1）：runner + 各域测试（kernel/filesystem/persistence/config/services/packages/process/network/info/languages/smoke）
   engine/            # TerminalExecutor 引擎——已解耦、可复用（见生态）
-    index.ts         # 公开 API：createTerminalExecutor / bootEngineHost / waitForHostReady + 类型
+    index.ts         # 内部核心 barrel，供 src/plugin 使用（不对外导出）
     client.ts        # 文件 RPC 客户端，TerminalClient（原 terminal-client.ts）
     host/            # host 守护进程域：config/rpc/run/spawn/ps-kill/main（O3 拆分）
     host-route.ts    # host 纯逻辑：路由 / 路径映射 / 按实例过滤 + kill 授权
     host-procs.ts    # 统一进程注册表（原 host-procs.ts）
     lifo-core.ts     # 懒加载 @lifo-sh/core 内核入口（打包为 public/lifo-core.js）
-  terminal/          # 终端 SDK：无 UI 会话 + 参数化 boot（@succinix/engine/terminal）
-  instance/          # 实例工厂：createSuccinixInstance 聚合 API（@succinix/engine/instance）
+  terminal/          # 终端核心，由 ctx.succinix.terminal.create 消费（无 ./terminal 导出）
+  instance/          # 实例工厂，由 ctx.succinix.ensureInstance 消费（无 ./instance 导出）
+  plugin/            # Cordis 插件入口：服务、生命周期、事件、能力、HostManager
 scripts/
   build-host.mjs     # esbuild 打包容器内 host（host.js + 懒加载 lifo-core.js）
   verify-deploy.mjs  # 部署就绪门禁：build + preview + COOP/COEP + ?test=1 自检
@@ -324,36 +325,60 @@ public/
 
 ## 生态
 
-Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解耦**，因此其他前端项目可以把它作为浏览器原生 Unix 沙箱内嵌。它以 **`@succinix/engine`** 发布到 npm：`createTerminalExecutor()`（命令式通道）、`@succinix/engine/terminal`（无 UI 终端会话 + boot 编排）、`@succinix/engine/instance`（多实例/多用户聚合工厂）。使用方页面启动 WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python 与 Lifo Unix 用户态（其余一切）——无需自己构建任何部分。内嵌参考见 [docs/SDK.zh-CN.md](SDK.zh-CN.md)。
+Succinix 的命令执行引擎**与 Succinix 应用本身解耦**，并以
+**`@succinix/engine@0.5.0`** 作为单个 Cordis 插件发布。没有独立 SDK API 线：
+消费方应用插件，然后使用 `ctx.succinix` 下的服务。使用方页面启动
+WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时
+（`node|npm|npx`）、内置 Pyodide Python 与 Lifo Unix 用户态（其余一切）——
+无需自己构建任何部分。
 
-### 引擎 API
+```ts
+import { Context } from 'cordis';
+import engine from '@succinix/engine';
 
-公开面是 `@succinix/engine`（由 `src/engine/index.ts` 构建；0.1.x 已发布——0.4.0 增加下方 `./terminal` 与 `./instance` 导出）。每行一句话：
+const ctx = new Context();
+const fiber = ctx.plugin(engine, {
+  container: { mode: 'external' },
+  defaultInstance: { instanceId: 'default' },
+});
+await fiber;
 
-| 符号 | 作用 |
-| ---- | ---- |
-| `createTerminalExecutor()` | 返回干净的 `TerminalExecutor` 门面供生态使用方——`boot(wc, opts)` 拉起 host，然后 `exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` / `dispose`。 |
-| `bootEngineHost(wc, client, hooks)` | 底层 boot 助手：缺失时注入 `host.js`、spawn host 守护进程、异步写入 `lifo-core.js`，并把 `server-ready` / `port` 事件接到 `onServerReady` / `onServerClosed`。 |
-| `exec(command, opts)` | 经统一路由跑一条命令（`node|npm|npx` → 真实 Node 子进程，其余 → Lifo）。返回完整 `ExecResult`；RPC 等待超时返回 `{ ok: false, timedOut: true }` 而非抛异常。 |
-| `spawn(command, opts)` | 启动后台长驻进程（node 系）并立即返回 pid；输出流入进程表。 |
-| `listProcesses()`（`ps`） | 统一进程表快照——`{ pid, cmd, status, startTime, exitCode?, outputTail? }`。 |
-| `kill(pid)` | 对表中真实子进程发 SIGTERM；成功返回 `true`。 |
-| `ping()` | host 存活探针——host 应答 `pong` 时 resolve `true`。 |
-| `pingDirect(timeoutMs?)` | 看门狗直接探活——**绕过串行化请求队列**，长命令占着队列时也能确认 host 存活。`true`=存活，`false`=超时，`null`=通道忙（本轮跳过，中性）。 |
-| `respawn()` | 重启 host：kill 旧 host → 重新注入资产 → spawn 新 host → 等待就绪。保持单 host 不变量（绝不让两个 host 同时轮询 `/cmd.json`）。 |
-| `dispose()` | 释放资源（kill host 进程、清引用）。幂等。 |
+// ctx.succinix.executor、terminal、snapshot、persist、workspace、ports、
+// services、capabilities、instance、container 全部可用。
+```
 
-> **两个执行面、同一 host**（P1-3）。`createTerminalExecutor()` 是**生态面**：上述干净完整 API（含看门狗 `pingDirect()` 与 `respawn()`），外部消费者所需的一切。Succinix 应用自身的终端额外使用低层 `TerminalClient`（`bootEngineHost` 返回）走命令路径，因为命令处理器（`commands.ts`/`services.ts`/`pkg.ts`）依赖协议原始语义——超时抛异常、`processes`/`killed`/`cwd` 字段、以及传入命令上下文的 `client` 句柄。两个执行面驱动的是**同一个** host、**同一条** `/cmd.json` 文件 RPC 通道；它们刻意不是同一个对象。若要内嵌引擎，请用 `createTerminalExecutor()`。
+### 插件 API
 
-### 协议与 SDK 文档
+| 服务 | 作用 |
+| --- | --- |
+| `ctx.succinix.executor` | 默认实例 `TerminalExecutor`：`exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` |
+| `ctx.succinix.terminal` | `terminal.create(output)` 返回无 UI 终端会话（历史、补全、Ctrl+C、队列） |
+| `ctx.succinix.ensureInstance(id, opts)` | 创建/复用按实例栈（替代 `createSuccinixInstance`） |
+| `ctx.succinix.snapshot` / `persist` / `workspace` | 快照保存/恢复、持久化、工作区 facade |
+| `ctx.succinix.ports` | 页面级端口视图 + `server-ready` / `server-closed` 订阅（替代 `pagePorts`） |
+| `ctx.succinix.services` | 声明式后台服务管理 |
+| `ctx.succinix.capabilities` | `terminal.*`、`fs.*`、`workspace.*` 能力注册表 |
+| `ctx.succinix.boot` / `attach` | 内部 WebContainer boot / 外部容器接管 |
+| `ctx.succinix.dispose` / `shutdown` | 软收尾 / 完全关闭 host |
 
-- **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。生态使用方可只凭本文档构建替代客户端或 host，无需读实现。
-- **[docs/SDK.md](SDK.md)** — "把 Succinix 引擎内嵌到不同人的前端项目做沙箱"的 SDK 形态设计（已落地为 npm 包）+ 集成参考：对比 npm 包（同页内嵌、共享文件系统）、iframe 沙箱（硬隔离）与脚手架，并给出推荐路径。
-- **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)** — 以实测为准的语言支持矩阵（Python 标准库、Node/TS 工具链、WASI、Ruby 探测、缺失的编译器）。
+消费方声明 `inject: ['succinix']`，或用 `ctx.get('succinix', false)` 探测。
+发布物 `.d.ts` 会增强 `Context['succinix']` 与 `succinix/*` 事件表。
+
+### 协议与集成文档
+
+- **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。
+- **[docs/SDK.zh-CN.md](SDK.zh-CN.md)** — 0.5.0 Cordis 插件集成参考：安装、配置、服务面、能力、生命周期、热重载、容器模式。
+- **[docs/PLUGIN.md](PLUGIN.md)** — 第三方 Cordis 插件如何消费/扩展 Succinix。
+- **[docs/cordis-contract.md](cordis-contract.md)** — 权威契约快照与浏览器验证。
+- **[docs/MIGRATION.md](MIGRATION.md)** — 0.4.0 独立 SDK 迁移指南。
+- **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)** — 以实测为准的语言支持矩阵。
 
 ### 愿景
 
-引擎与驱动 Succinix 终端的代码是同一份，只隔一道干净 API 边界：日志注入式（引擎发 `CommandLogEntry` 条目；宿主应用决定过滤与持久化什么）、线上协议有文档、无应用层依赖泄漏进 `src/engine/`。打包为 `@succinix/engine` 后，任何已启动 WebContainer 的 Chromium 前端都能加一个共享自己文件的 Unix 沙箱——打包阶段在 [docs/SDK.md](SDK.md) 有完整规划。
+引擎与驱动 Succinix 终端的代码是同一份，只隔一道干净 Cordis 边界：核心逻辑
+保持 Cordis-free、线上协议有文档、无应用层依赖泄漏进 `src/engine/`。任何已启动
+WebContainer 的 Chromium 前端，都能通过应用 `@succinix/engine` 添加一个共享
+自己文件的 Unix 沙箱。
 
 ## 开发档案
 
@@ -364,7 +389,10 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 - **功能与能力清单** — [英文](FEATURES.md) · [简体中文](FEATURES.zh-CN.md)
 - **语言支持矩阵** — [英文](LANGUAGES.md) · [简体中文](LANGUAGES.zh-CN.md)
 - **文件 RPC 协议** — [英文](PROTOCOL.md) · [简体中文](PROTOCOL.zh-CN.md)
-- **SDK 形态设计** — [英文](SDK.md) · [简体中文](SDK.zh-CN.md)
+- **SDK / 插件集成** — [英文](SDK.md) · [简体中文](SDK.zh-CN.md)
+- **Cordis 插件接入** — [英文](PLUGIN.md)
+- **迁移指南** — [英文](MIGRATION.md)
+- **契约快照** — [英文](cordis-contract.md)
 - **Agent 与设计规范** — [英文](../AGENTS.md) · [简体中文](../AGENTS.zh-CN.md)
 - **更新日志** — [英文](../CHANGELOG.md) · [简体中文](../CHANGELOG.zh-CN.md)
 - **参与贡献** — [英文](../CONTRIBUTING.md) · [简体中文](../CONTRIBUTING.zh-CN.md)
@@ -380,6 +408,7 @@ Succinix 的命令执行引擎（`src/engine/`）**与 Succinix 应用本身解�
 - [x] 内存管理：`free`/`top` 类命令、缓存清理、reboot 回收内存
 - [x] 工作区分拆：多虚拟目录隔离状态（类似 Sunam 工作区）
 - [x] 虚拟网络视图：`netstat` 虚拟监听端口表 + `ip addr` 诚实虚拟身份
+- [x] Cordis 单轨引擎：`@succinix/engine@0.5.0` 插件 + `ctx.succinix`
 - [ ] SunamAI 集成：`shell_run` 引擎换 TerminalExecutor——**暂缓**（计划为 TASK8；未排期）
 - [ ] 可选：外部访问 WebSocket 隧道
 

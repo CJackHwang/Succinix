@@ -19,7 +19,22 @@ const EXT_RE = /\.(md|ts|mjs|js|cjs|json|yml|yaml|sh|html|css|tsx|svg|png|ico|tx
 // 有意提及已删除文档的引用（MASTER-PLAN-NEXT 开篇说明旧计划文件已删除）。
 const ALLOW_MISSING = new Set(['MASTER-PLAN.md', 'ENGINEERING-REVIEW.md']);
 // 非仓库文件的容器资产 / SDK 导出子路径（描述运行时布局，不存在于仓库根）。
-const ALLOW_NON_REPO = new Set(['host.js', './host.js', 'lifo-core.js', './lifo-core.js', './terminal', './instance']);
+const ALLOW_NON_REPO = new Set([
+  'host.js',
+  './host.js',
+  'lifo-core.js',
+  './lifo-core.js',
+  './terminal',
+  './instance',
+  'sha256.json',
+  'succinix/state',
+  'succinix/server-ready',
+  'succinix/server-closed',
+  'succinix/command',
+  'succinix/instance',
+  'succinix/workspace',
+  'succinix/process',
+]);
 
 function collectMds(dir, out = []) {
   for (const name of readdirSync(dir)) {

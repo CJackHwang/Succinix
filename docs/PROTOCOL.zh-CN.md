@@ -272,21 +272,26 @@ host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、
 
 ## 9. Engine 公开 API（摘要）
 
-engine 经 `src/engine/index.ts` 消费：
+0.5.0 起 engine 以 Cordis 插件形态消费：`@succinix/engine` 导出
+`{ name: 'succinix', apply, Config }`，使用方注入 `succinix` 后经
+`ctx.succinix.executor` 访问命令门面。0.4.0 独立 SDK 导出
+（`createTerminalExecutor`、`createSuccinixInstance`、`./terminal`、
+`./instance`）已移除，迁移见 [MIGRATION.md](MIGRATION.md)。
+
+包内部仍接入同样的底层组件（`src/engine/`）：
 
 - `TerminalClient` —— 文件 RPC 客户端（丰富：`terminal`、`exec`、`spawn`、`pingDirect`）；
-  Succinix 前端使用。
-- `createTerminalExecutor(): TerminalExecutor` —— 为生态使用方准备的干净命令风格门面：
-  `boot(wc, opts)`、`exec(command, opts)`、`spawn(command, opts)`、`listProcesses()`、
-  `kill(pid)`、`ping()`、`dispose()`。
-- `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` —— 门面与 Succinix boot
+  Succinix 前端与插件运行时使用。
+- `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` —— 插件与 Succinix boot
   序列共享的底层 boot 助手。
 
-`TerminalExecutor.exec` 在 RPC 等待超时时返回 `{ ok: false, timedOut: true }` 而非抛异常
-（底层 `TerminalClient.exec` 仍抛）。`spawn` 返回完整 `ExecResult`（`{ pid }` 的超集），调用方可
-读取 `ok`/`runtime`/`error`。
+`ctx.succinix.executor` 保留命令风格门面语义：`exec(command, opts)`、`spawn(command, opts)`、
+`listProcesses()`、`kill(pid)`、`ping()`、`dispose()`。`TerminalExecutor.exec` 在 RPC
+等待超时时返回 `{ ok: false, timedOut: true }` 而非抛异常（底层 `TerminalClient.exec`
+仍抛）。`spawn` 返回完整 `ExecResult`（`{ pid }` 的超集），调用方可读取 `ok`/`runtime`/`error`。
 
-打包/内嵌设计见 [SDK.zh-CN.md](SDK.zh-CN.md)，参考实现见 `src/engine/`。
+插件打包/内嵌设计见 [SDK.zh-CN.md](SDK.zh-CN.md)，第三方接入见
+[PLUGIN.md](PLUGIN.md)，参考实现见 `src/engine/`。
 
 ## 10. 已知边界（Known boundaries）
 

@@ -311,21 +311,27 @@ read it yet). `true` = pong, `false` = timeout (host unreachable), `null` = skip
 
 ## 9. Engine public API (summary)
 
-The engine is consumed through `src/engine/index.ts`:
+In 0.5.0 the engine is consumed as a Cordis plugin: `@succinix/engine` exports
+`{ name: 'succinix', apply, Config }`, and consumers reach the facade through
+`ctx.succinix.executor` after injecting `succinix`. The pre-0.5.0 standalone SDK
+exports (`createTerminalExecutor`, `createSuccinixInstance`, `./terminal`,
+`./instance`) are removed; see [MIGRATION.md](./MIGRATION.md).
+
+The package still wires the same low-level pieces inside `src/engine/`:
 
 - `TerminalClient` — the file-RPC client (rich: `terminal`, `exec`, `spawn`,
-  `pingDirect`); used by the Succinix frontend.
-- `createTerminalExecutor(): TerminalExecutor` — clean command-style facade for
-  ecosystem consumers: `boot(wc, opts)`, `exec(command, opts)`, `spawn(command, opts)`,
-  `listProcesses()`, `kill(pid)`, `ping()`, `dispose()`.
+  `pingDirect`); used by the Succinix frontend and the plugin runtime.
 - `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` — low-level boot
-  helpers shared by the facade and the Succinix boot sequence.
+  helpers shared by the plugin and the Succinix boot sequence.
 
-`TerminalExecutor.exec` returns `{ ok: false, timedOut: true }` instead of throwing when
-the RPC wait expires (the raw `TerminalClient.exec` still throws). `spawn` returns the
-full `ExecResult` (a superset of `{ pid }`) so callers can read `ok`/`runtime`/`error`.
+`ctx.succinix.executor` keeps the command-style facade semantics: `exec(command, opts)`,
+`spawn(command, opts)`, `listProcesses()`, `kill(pid)`, `ping()`, `dispose()`.
+`TerminalExecutor.exec` returns `{ ok: false, timedOut: true }` instead of throwing
+when the RPC wait expires (the raw `TerminalClient.exec` still throws). `spawn` returns
+the full `ExecResult` (a superset of `{ pid }`) so callers can read `ok`/`runtime`/`error`.
 
-See [SDK.md](./SDK.md) for the packaging/embedding design, and `src/engine/` for the
+See [SDK.md](./SDK.md) for the plugin packaging/embedding design,
+[PLUGIN.md](./PLUGIN.md) for third-party consumption, and `src/engine/` for the
 reference implementation.
 
 ## 10. Known boundaries

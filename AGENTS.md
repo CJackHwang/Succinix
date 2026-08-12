@@ -27,16 +27,25 @@ Design rules for anyone (human or AI agent) modifying this project. English text
   do not rely on implicit globals or top-level `ctx.mixin`.
 - All services are exposed under `ctx.succinix` (state, container, executor,
   terminal, snapshot, persist, workspace, ports, services, capabilities,
-  instance). See `docs/PLAN-cordis.md` §2.2 for the contract.
+  instance). See `docs/SDK.md` for the integration reference and
+  `docs/cordis-contract.md` for the authoritative executable contract.
 - Only `src/plugin/` may import `cordis`; `src/engine`, `src/terminal`,
   `src/instance`, `src/persist`, and `src/services` must stay Cordis-free.
 - `./terminal` and `./instance` are no longer package exports; use
   `ctx.succinix.terminal.create` / `ctx.succinix.ensureInstance`.
+- `onServerReady` / `onServerClosed` / `onCommand` are not config callbacks;
+  consume `ctx.succinix.onServerReady`, `ctx.succinix.onServerClosed`, and
+  `succinix/*` events instead.
 - The page-level HostManager is a module singleton; fiber reload must not
   restart the host. `shutdown()` or page unload is the only hard host teardown.
 - Rebuild the engine package with `node scripts/build-engine-package.mjs` after
   touching `src/plugin/`; it regenerates `packages/engine/assets/sha256.json`
   and validates the exports snapshot.
+- `docs/PLAN-cordis.md` is now a historical execution archive. Current
+  integration docs are `docs/SDK.md`, `docs/PLUGIN.md`, `docs/MIGRATION.md`,
+  and `docs/cordis-contract.md`.
+- Actual npm publish and deprecation of `0.4.0` / `0.1.x` are release-owner
+  actions; do not publish unless the user explicitly requests it.
 
 ## Explicitly Not Implemented (do not force)
 
@@ -57,10 +66,15 @@ Browser-environment limits are accepted as-is. Do not build simulations with no 
 - `npx tsc -p tsconfig.json --noEmit` → 0 errors
 - `node scripts/build-host.mjs` → succeeds
 - `npm run build` → succeeds
+- `npm run lint` → 0 errors
+- `npm run test` → all unit tests pass
+- `npm run check:docs` → no broken local references
 - `npm run check:plugin-boundaries` → core dirs have no `cordis` imports and
   every `src/plugin/` file carries an invariant marker
 - `npm run check:engine-package` → builds the package, writes
   `packages/engine/assets/sha256.json`, validates exports, and runs
   `npm pack --dry-run`
+- `npm run test:e2e` → full browser pipeline including the external
+  `examples/cordis-app` contract (run escalated when browser access is needed)
 - Dev server starts at `localhost:7892` with COOP/COEP headers
 - Static self-check: `grep -n '✅\|❌\|🎉\|GREEN' src/ index.html` → no matches

@@ -1,375 +1,343 @@
-# Succinix Engine — SDK Form Design (recommendation)
+# Succinix Engine — Cordis Plugin Integration
 
-> Status: **shipped** — `@succinix/engine` is published on npm (own `0.1.x` line; the
-> **0.4.0 app release** adds the `./terminal` + `./instance` exports below, i.e. Terminal
-> SDK, multi-instance and multi-user in one release). This document started as the SDK form-design recommendation
-> (Form A: same-page npm embedding) and now doubles as the integration reference for
-> hosts. See [PROTOCOL.md](./PROTOCOL.md) for the wire contract and
-> [FEATURES.md](./FEATURES.md) for the capability matrix.
+> Status: **0.5.0 plugin form (release-ready)**. `@succinix/engine` is a Cordis
+> plugin and the only public integration surface. The old 0.4.0 standalone SDK
+> exports (`createTerminalExecutor`, `./terminal`, `./instance`) are removed;
+> see [MIGRATION.md](MIGRATION.md).
 
-## Target scenario
+`@succinix/engine` gives any Cordis application a browser-native Unix sandbox
+inside a WebContainer: a real Node runtime (`node|npm|npx`), a built-in
+Pyodide Python (`python|python3|pip|pip3`), and a Lifo Unix userland for
+everything else. The container filesystem is shared with the host application.
 
-> **"Embed the Succinix engine into different people's frontend projects to provide a
-> sandbox."**
+This document is the integration reference. For the wire protocol, see
+[PROTOCOL.md](PROTOCOL.md). For the capability matrix, see
+[FEATURES.md](FEATURES.md). For third-party plugin authoring, see
+[PLUGIN.md](PLUGIN.md).
 
-The host app already runs in a Chromium browser and can create a WebContainer. It wants a
-Unix-like shell / command executor for its users — with a real Node runtime and a Unix
-userland, sharing the app's files — without building that itself.
+## Install
 
-## The three candidate forms
+```bash
+npm install @succinix/engine@0.5.0
+npm install cordis @webcontainer/api   # peer dependencies
+```
 
-### Form A — npm package `@succinix/engine`
+`@succinix/engine` requires `cordis >= 4.0.0-rc.8` and
+`@webcontainer/api ^1.6.4`.
 
-Package the engine directory (browser client + the two in-container host assets) and
-publish it. A consumer installs it and does:
+## Quick start
 
 ```ts
+import { Context } from 'cordis';
+import engine from '@succinix/engine';
 import { WebContainer } from '@webcontainer/api';
-import { createTerminalExecutor } from '@succinix/engine';
+
+const ctx = new Context();
+const fiber = ctx.plugin(engine, {
+  container: { mode: 'external' },
+  defaultInstance: {
+    instanceId: 'default',
+    persistence: { dbName: 'my-app', storeKey: 'default' },
+  },
+  terminal: { timeoutMs: 120000, bootGate: false },
+});
+await fiber;
 
 const wc = await WebContainer.boot();
-const term = createTerminalExecutor();
-await term.boot(wc, {
-  onServerReady: (port, url) => app.recordPreview(port, url),
-  onServerClosed: (port) => app.dropPreview(port),
-});
+await ctx.succinix.attach(wc);
+await ctx.succinix.ensureInstance('default', { executor: {} });
 
-const r = await term.exec('node -e "console.log(1+1)"');   // runtime: "node"
-const r2 = await term.exec('grep -i foo file.txt');        // runtime: "lifo"
-await term.dispose();
+const node = await ctx.succinix.executor.exec('node -e "console.log(1+1)"');
+const lifo = await ctx.succinix.executor.exec('grep -i foo file.txt');
+
+await ctx.succinix.shutdown();
+await fiber.dispose();
 ```
 
-The `TerminalExecutor` facade is the **complete ecosystem surface** (P1-3):
+The plugin registers itself as `succinix`; consumers declare
+`inject: ['succinix']` or use `ctx.get('succinix', false)`. The published
+`.d.ts` augments `Context['succinix']` and the Cordis `Events` map.
 
-| Method | Purpose |
-| --- | --- |
-| `boot(wc, opts?)` | Inject host assets, spawn the host, wait until it answers `ping`. |
-| `exec(cmd, opts?)` | Run one command (unified routing); a timeout returns `{ ok:false, timedOut:true }` instead of throwing. |
-| `spawn(cmd, opts?)` | Background long-running process (node family); returns `{ pid }`. |
-| `listProcesses()` | Snapshot of the unified process table (`ps`). |
-| `kill(pid)` | SIGTERM a table entry; returns `true` on success. |
-| `ping()` | Host liveness probe. |
-| `pingDirect(timeoutMs?)` | Watchdog probe that **bypasses the serialized queue** — usable while a long command occupies it. `true`=alive, `false`=timeout, `null`=channel busy (skip the round, neutral). |
-| `respawn()` | Restart the host: kill old → re-inject assets → spawn fresh → wait ready. Preserves the single-host invariant. |
-| `dispose()` | Release resources (kill host, clear refs). Idempotent. |
+## Package exports
 
-> **Two execution surfaces, one host** (P1-3). The Succinix app's own terminal additionally
-> uses the lower-level `TerminalClient` (from `bootEngineHost`) for its command path, because
-> its command handlers rely on raw protocol semantics (`exec` throwing on timeout, the
-> `processes`/`killed`/`cwd` fields, a `client` handle in command contexts). Both surfaces
-> drive the **same** host and the **same** `/cmd.json` channel; they are deliberately not the
-> same object. Embedders should use `createTerminalExecutor()`.
-
-- **How it embeds:** as a library, same page, same origin, same WebContainer.
-- **Integration depth:** deep — the engine shares the app's container filesystem, so the
-  app and the sandbox see the same files. This is the product's core differentiator.
-- **Isolation:** medium — no iframe boundary. Command isolation comes from the Lifo
-  sandbox + the host process model, not from a separate document/global. Untrusted
-  *node* code runs as a real child process (WebContainer's own sandbox).
-- **Performance:** best — direct file-RPC on the shared filesystem, no serialization bridge.
-- **Bundle size:** engine client is tiny; the host daemon (`host.js`, ~15 KB as of 0.4.0 —
-  grew with per-instance/per-user host routing) must be served as a static asset (bundled or
-  fetched from the package), and `lifo-core.js` (~1 MB) loads lazily on first Lifo command.
-- **Maintenance:** one repo, one version; host and client ship together. Versioned by npm.
-
-### Form B — iframe sandbox (Succinix as a deployed page)
-
-Deploy Succinix as a standalone sandbox page; the host app embeds it with an `<iframe>`
-and talks to it over `postMessage`.
-
-- **How it embeds:** an iframe + a message bridge (command → result, port events relayed).
-- **Integration depth:** shallow — files do not auto-share. The app must sync content into
-  and out of the sandbox explicitly.
-- **Isolation:** strong — separate origin, document, CSS, globals. Best for untrusted
-  code or when the app cannot afford a WebContainer of its own... but the sandbox still
-  needs *its own* WebContainer, so the app pays the container cost twice if it also boots one.
-- **Performance:** a bridge (postMessage + JSON serialization per command) on top of the
-  sandbox's own file-RPC. More moving parts, longer round trips.
-- **Bundle size:** nothing in the host app; the sandbox page is deployed once.
-- **Maintenance:** run/deploy/version the sandbox page independently; keep the bridge
-  schema in sync.
-
-### Form C — scaffolding `create-succinix-app`
-
-A CLI/template that generates a "host + engine" project skeleton (Vite host app, engine
-pre-wired, optional terminal UI, port registry, PROTOCOL-aware client).
-
-- Not an alternative to A/B — it is the **onboarding** for them. Reduces the "how do I
-  wire boot + a terminal + ports?" blank page.
-
-## Comparison
-
-| Dimension        | A — npm package                       | B — iframe sandbox                   | C — scaffold              |
-|------------------|---------------------------------------|--------------------------------------|---------------------------|
-| Integration depth| deep (shared filesystem)              | shallow (explicit sync)              | — (onboarding for A/B)    |
-| Isolation        | medium (Lifo + process model)         | strong (document/origin boundary)    | —                         |
-| Performance      | best (direct file-RPC)                | bridge overhead + double container   | —                         |
-| Bundle size      | engine small; host assets to serve    | none in app; sandbox deployed once   | —                         |
-| Maintenance      | one repo, npm-versioned               | sandbox page + bridge schema         | template tests            |
-| Fits "embed into different frontends" | **yes** (same-page, best UX) | yes, but forfeits shared FS | accelerates A adoption |
-
-## Recommendation: **Form A**, then evolve toward B and C
-
-**Recommended primary form is A (`@succinix/engine`).** The target scenario is same-page
-embedding: a frontend that already has a WebContainer wants a sandbox *in* its page,
-sharing its files. A gives:
-
-- **The shared-filesystem experience intact** — the app's `wc.fs`, Node child processes,
-  and Lifo commands all see one tree. This is Succinix's reason to exist and only survives
-  in a same-page integration.
-- **The lowest latency and simplest operational surface** — no bridge, no second
-  container, no separately deployed page to keep alive.
-- **A clean extension boundary** — the engine already exposes the whole protocol through
-  `TerminalExecutor`; a future postMessage adapter (Form B) can sit *on top of* it without
-  changing the engine.
-
-**Form B is the fallback for hard isolation.** If a consumer later needs a strong document
-boundary (untrusted code, hostile CSS, or a host app that cannot itself boot a
-WebContainer), a `@succinix/sandbox-page` + bridge package can wrap the same engine. It is
-a *distribution* choice, not a different engine.
-
-**Form C is the growth lever** — a template so new consumers get a working host + engine
-app in one command.
-
-## Landing roadmap
-
-1. **Now (this task, POC):** engine decoupled into `src/engine/`, clean public API,
-   authoritative protocol doc, this design doc. Same repo, same build (vite bundles the
-   engine into the Succinix bundle); the directory/API boundary is what enables the split.
-2. **Stage 1 — split the package (Form A).**
-   - Prerequisites: engine has no runtime dependency on the Succinix app layer (done in
-     this task: logging is injected via `onCommand`, no `persist`/`log`/`config` imports).
-   - Publish `@succinix/engine` from `src/engine/` + the host assets (`public/host.js`,
-     `public/lifo-core.js`); the consumer serves those two files (or we fetch from a CDN).
-   - Define a release/versioning flow and a smoke test against an external Vite app.
-
-> **Status — implemented (TASK-S2):** the package structure landed locally in
-> `packages/engine/` as `@succinix/engine@0.1.0`: build-artifact publish (clean ESM
-> `dist/` + `.d.ts`), host assets shipped in-package and exposed as `./host.js` /
-> `./lifo-core.js` subpath exports, `npm pack --dry-run` + an offline consumer typecheck
-> verified. Publishing is intentionally deferred (release agent).
-3. **Stage 2 — postMessage bridge (Form B, optional).**
-   - Prerequisites: Form A shipped; define the bridge schema as a 1:1 mapping of the
-     file-RPC protocol (request id → result, port events relayed); document COOP/COEP
-     requirements for the sandbox page.
-   - Ship as an adapter + a deployable sandbox page (`@succinix/sandbox`).
-4. **Stage 3 — scaffold (Form C).**
-   - Prerequisites: Form A API stable, PROTOCOL/SDK docs complete, CI runs the template
-     tests.
-   - `create-succinix-app` generates the host + engine skeleton and wires `boot`, a
-     terminal (optional), and the port registry.
-
-Each stage is gated on the previous one; none of them changes the wire protocol
-(see [PROTOCOL.md](./PROTOCOL.md), version 1).
-
-## Current state
-
-- `src/engine/index.ts` — public API: `TerminalClient`, `createTerminalExecutor()`,
-  `bootEngineHost`, `waitForHostReady`, types (`TerminalExecutor`, `ExecResult`,
-  `TerminalExecutorOptions`, `ProcInfo`).
-- `src/engine/client.ts` — file-RPC client (log-decoupled via `onCommand`).
-- `src/engine/host/`, `host-procs.ts`, `lifo-core.ts` — in-container host daemon and
-  process registry, built to `public/host.js` + `public/lifo-core.js`.
-- `docs/PROTOCOL.md` — the authoritative wire contract.
-- This document — the SDK form decision.
-
-## Terminal SDK (embedding a terminal session, 0.4.0)
-
-Since 0.4.0 the package exposes `@succinix/engine/terminal` — a UI-free terminal
-interaction core for hosts that want a full terminal experience (history, Tab
-completion, real Ctrl+C interrupt, command queue, prompt with cwd tracking)
-without bundling xterm. The host brings its own rendering: `TerminalOutput` is a
-two-method contract (`write(data)` / `clear()`), so an xterm adapter is a ~10-line
-shim.
-
-```ts
-import { SuccinixTerminalSession, type TerminalRpc } from '@succinix/engine/terminal';
-import { createTerminalExecutor, type ExecResult } from '@succinix/engine';
-
-const executor = createTerminalExecutor();
-await executor.boot(wc); // inject host.js + spawn + wait ready (once per page)
-
-const rpc: TerminalRpc = {
-  exec: (cmd, _opts, timeoutMs) => executor.exec(cmd, { timeoutMs }),
-  spawn: (cmd, _opts, timeoutMs) => executor.spawn(cmd, { timeoutMs }),
-  listProcesses: () => executor.listProcesses(),
-  kill: (pid) => executor.kill(pid),
-  ping: () => executor.ping(),
-  pingDirect: (t) => executor.pingDirect(t),
-  interruptDirect: (t) => executor.interruptDirect(t),
-};
-
-const session = new SuccinixTerminalSession(rpc, { write: (d) => term.write(d), clear: () => term.clear() }, {
-  localHandlers: { hello: async (ctx, args) => `hello ${args.join(' ')}\n` },
-});
-term.onData((d) => session.handleData(d));
-await session.boot(); // unlock input gate + first prompt
-```
-
-### Contracts
-
-- **`TerminalRpc`** — narrow RPC surface: `exec` (required), plus optional
-  `spawn` / `listProcesses` / `kill` / `ping` / `pingDirect` / `interruptDirect` /
-  `readdir`. `createTerminalExecutor()` satisfies it natively (see
-  [engine index](./PROTOCOL.md)); optional methods degrade safely (e.g. no
-  `readdir` → Tab completion falls back to command names only; no
-  `interruptDirect` → Ctrl+C clears the queue without signaling the host).
-- **`TerminalOutput`** — `{ write(data: string): void; clear(): void }`. The SDK
-  never imports xterm; rendering (colors, font, scrollback) belongs to the host.
-- **Local command injection** — `localHandlers: Record<string, (ctx, args) => ...>`.
-  Built-ins are `help` / `clear` / `pwd` / `echo`; a host-provided handler overrides
-  the built-in with the same name. Commands not in the table go to the RPC unchanged
-  (the host answers `unknown command` semantics).
-- **Boot steps configuration** — `createTerminalBoot(ui, { steps, testMode?, retry?,
-  hostReadyDeadlineMs?, onCommand? })` runs the full boot flow (environment check,
-  WebContainer.boot with retry, host injection/spawn, snapshot restore, workspace
-  init, autostart) with `N/M` progress counting. `steps: string[]` labels the fixed
-  sequence; dynamic steps carry their own messages. The standalone app uses
-  `DEFAULT_BOOT_STEPS` (8 base steps + autostart services).
-
-### Division of labor
-
-- `createTerminalExecutor()` is the **imperative channel** (Agent/host plumbing):
-  boot/exec/spawn/ps/kill/ping/respawn.
-- `SuccinixTerminalSession` is the **interactive session**: it owns line editing,
-  history, completion, queueing, cwd-following prompts and the boot gate, and
-  renders command results through `TerminalOutput`.
-- `createTerminalBoot()` is the **boot orchestrator**: step labels/progress/retry
-  parameterization for hosts that want the same boot UX as the standalone app.
-
-### Packaging notes
-
-- `@succinix/engine/terminal` bundles `session` + `boot` (ESM, `@webcontainer/api`
-  external as a peer dependency). `grep "node:" dist/terminal.js` is empty — the
-  terminal layer is browser-only, like the engine itself.
-- The host owns one executor per page (single host invariant); create multiple
-  sessions over the same RPC channel when you need several terminal views.
-
-## Multi-instance embedding (0.4.0)
-
-Since 0.4.0 the package exposes `@succinix/engine/instance` — an aggregate factory
-that assembles a full per-instance stack in one call: booted executor, terminal
-session, snapshot persistence and service views.
-
-```ts
-import { createSuccinixInstance } from '@succinix/engine/instance';
-import type { WebContainer } from '@webcontainer/api';
-
-const wc = await WebContainer.boot();
-const inst = await createSuccinixInstance({
-  wc,
-  instanceId: 'alice', // user/tenant id; 'default' (or '') = standalone behavior
-  output: { write: (d) => term.write(d), clear: () => term.clear() }, // required
-});
-term.onData((d) => inst.terminal.handleData(d));
-await inst.terminal.boot();
-
-await inst.executor.exec('node -v');      // imperative channel, routed per instance
-await inst.snapshot.save();               // per-instance persistence key
-const states = await inst.services.list(); // per-instance service view
-await inst.restart();                     // instance-level reset (clear state + rebuild session)
-await inst.dispose();                     // releases session + executor (shared host untouched)
-```
-
-`SuccinixInstance` exposes `instanceId`, `client` (the per-instance RPC client),
-`terminal` (session; `restart()` swaps in a fresh one), `executor`, `persist`,
-`ports` (port → preview URL view), `snapshot {save, restore}`, `services
-{list, start, stop}`, `restart()` and `dispose()`.
-
-### Isolation model (DM-11)
-
-Organizational isolation only — **not a security boundary**. One shared host
-daemon per page; instances split directories, state, snapshots and process views.
-
-| Dimension | Cross-container (two tabs/pages) | Same-page (multiple instances) |
-| --- | --- | --- |
-| Runtime (host, Node, Lifo) | fully separate | shared single host |
-| Filesystem / interactive cwd | fully separate | shared (Lifo cwd is page-level) |
-| Persistent state / snapshots | fully separate | per-instance keys |
-| Services + port previews | fully separate | per-instance expected-port registry |
-| Process table (`ps`) / `kill` | fully separate | filtered by `instanceId`; cross-instance/user `kill` rejected (host routing) |
-| RPC channel / watchdog | one per page | one shared per page |
-
-### Sharing rules (same page)
-
-- **One RPC channel per WebContainer** — `/cmd.json` is a single-slot mailbox.
-  Create one `TerminalClient` per instance (each stamped with its own
-  `instanceId`); the channel (queue, request ids, write timing) is shared
-  automatically per `wc`. Never boot several hosts on one page.
-- **One watchdog per page, host-level** — `createSuccinixInstance` never creates a
-  watchdog; wire it once per page (e.g. `startHostWatchdog`) and let all
-  instances share it.
-- **`rpc` option** — pass the page's already-booted client to reuse its host;
-  when omitted the factory boots its own host (single-instance pages, or each tab
-  of a multi-tab demo — identical to the standalone app).
-
-### Host-style wiring (one instance per container / per user)
-
-Recommended embedding: one WebContainer per user session, one instance per
-container — each user gets full runtime isolation from the aggregate API:
-
-```ts
-async function userSession(userId: string) {
-  const wc = await WebContainer.boot();
-  const inst = await createSuccinixInstance({
-    wc,
-    instanceId: userId,
-    home: `/workspace/users/${userId}`, // per-user home (browser wc.fs view)
-    output: render(userId),
-  });
-  await runApplicationBootSteps(instBoot, {
-    wc,
-    client: inst.client,
-    ports: inst.ports,
-    instanceId: userId,
-    userHome: `/workspace/users/${userId}`, // seeds home + session cwd
-  });
-  startHostWatchdog(inst.executor, wc); // once per page
-  return inst;
+```jsonc
+{
+  "exports": {
+    ".": {
+      "types": "./dist/plugin/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./host.js": "./assets/host.js",
+    "./lifo-core.js": "./assets/lifo-core.js",
+    "./assets/*": "./assets/*",
+    "./package.json": "./package.json"
+  }
 }
 ```
 
-Same-page multi-instance is supported (each instance needs its own client with
-its own `instanceId` and its own `output`), but per DM-11 the shared runtime
-means interactive Lifo cwd and long-running processes are page-level, not
-per-instance.
+- `.` is the plugin entry: `{ name: 'succinix', apply, Config }`, plus types.
+- `./host.js`, `./lifo-core.js`, and `./assets/*` are static assets for the
+  host daemon, Lifo kernel, Pyodide runtime, and `sha256.json`.
+- There is no `./terminal` or `./instance` subpath in 0.5.0.
 
-### Multi-user semantics (0.4.0, U1)
+## Container modes
 
-`userId` and `instanceId` are the same field — a user is an instance with a home
-directory. The demo URL `?user=<id>` is an alias of `?instance=<id>` that
-additionally seeds a per-user home.
+### Internal mode
 
-- **Home convention**: `/workspace/users/<id>` (browser `wc.fs` view; the root
-  `/workspace/users` is overridable). Pass `home` to the factory — the session
-  starts inside the home (Lifo view `/workspace/workspace/users/<id>`) and the
-  prompt renders it as `~` (`alice@succinix:~$`).
-- **Home init**: `runApplicationBootSteps({ userHome })` (or `ensureUserHome`)
-  creates the directory on first boot, seeds a `.succinix` marker file with the
-  user id, and writes the session-cwd state file so the host resumes in the home
-  after refresh.
-- **Process view**: `ps` with a user/instance id returns only that user's
-  processes plus `system`. `kill` from a non-default instance rejects processes
-  not owned by it (`permission denied: process <pid> is not owned by instance
-  '<id>'`), including every `system` process. The default instance (`guest` /
-  standalone app) keeps the pre-0.4.0 behavior: full process table, kill
-  anything.
-- **Identity**: the standalone app remains `guest`-only. Embed hosts pass a
-  `promptPrefix` (e.g. `alice@succinix:`) and a `userId` for `whoami`.
-- **Isolation caveat**: organizational only — process ownership is a
-  cwd/scope heuristic, not a security boundary (see AGENTS.md "Explicitly Not
-  Implemented").
+The plugin boots the WebContainer itself, with retries:
 
-### statePrefix caveat
+```ts
+const wc = await ctx.succinix.boot({
+  instanceId: 'default',
+  executor: {},
+});
+```
 
-`statePrefix` overrides where browser-side state files live (default
-`/workspace/.succinix-<id>`; default instance = `/etc`). Host-side attribution
-(process filtering, kill authorization, `ps`) uses the built-in
-`.succinix-<id>` prefix, so when you override the prefix keep `instanceId` naming
-aligned with it (e.g. `instanceId: 'users/alice'` maps host-side to
-`/workspace/.succinix-users/alice`).
+### External mode
 
-## Version strategy (TASK-S1/S2 decision)
+The host application owns the WebContainer and hands it to the plugin. The
+plugin still injects `host.js`, spawns the host daemon, and manages host
+readiness:
 
-- **Main project** releases on the `0.x` line (`0.2.0` → `0.3.0` → `0.4.0`, continuity with WebUnix history). 0.4.0 ships the Terminal SDK, multi-instance and multi-user surfaces; the version bump itself is part of the release step (F phase).
-- **`@succinix/engine`** ships independently on its own line (`0.1.x`, decoupled first release; the 0.4.0 release adds the `./terminal` and `./instance` exports) — the package is a new artifact with its own version lifecycle.
+```ts
+const wc = await WebContainer.boot();
+await ctx.succinix.attach(wc, { executor: {} });
+```
+
+`attach()` and `boot()` are mutually exclusive. Switching modes after the
+container is ready throws `ERR_MODE_MISMATCH`.
+
+## Configuration
+
+`SuccinixConfig` is serializable and synchronously validated. It has no
+function fields; runtime hooks are service arguments or event subscriptions.
+
+```ts
+export interface SuccinixConfig {
+  hostJsUrl?: string;        // default '/host.js'
+  lifoCoreUrl?: string;      // default '/lifo-core.js'
+  pythonAssetsUrl?: string;  // default '/pyodide/'
+  resultTtlMs?: number;
+  container?: {
+    mode?: 'internal' | 'external';
+    bootRetries?: number;
+    bootIntervalMs?: number;
+    hostReadyDeadlineMs?: number;
+  };
+  defaultInstance?: {
+    instanceId?: string;
+    statePrefix?: string;
+    home?: string;
+    persistence?: { dbName?: string; storeKey?: string };
+  };
+  terminal?: {
+    cwd?: string;
+    timeoutMs?: number;
+    bootGate?: boolean;
+    history?: boolean;
+    tabComplete?: boolean;
+    interrupt?: boolean;
+    promptPrefix?: string;
+  };
+  capabilities?: {
+    defaultAllow?: boolean;
+    rules?: Array<{ pattern: string; allow: boolean }>;
+  };
+  lifecycle?: {
+    disposeMode?: 'soft' | 'hard';
+    flushOnPageHide?: boolean;
+  };
+  assets?: {
+    integrity?: boolean;     // default true
+  };
+}
+```
+
+Invalid values produce a `ValidationError`; the plugin keeps its last valid
+configuration and records the reason in `ctx.succinix.state.lastError`.
+
+## Service surface
+
+`ctx.succinix` is the complete service contract:
+
+| Member | Purpose |
+| --- | --- |
+| `state` | Plugin state: version, container, host, instances, capabilities, `configRevision`, `lastError` |
+| `container` | Current container handle: `mode`, `state`, `wc`, `hostPid`, `startedAt` |
+| `executor` | Default-instance `TerminalExecutor`: `exec`, `spawn`, `listProcesses`, `kill`, `ping`, `pingDirect`, `interruptDirect`, `respawn` |
+| `terminal` | `terminal.create(output, opts?)` returns a UI-free terminal session |
+| `snapshot` | `save`, `restore`, `meta`, `clear` for the default instance |
+| `persist` | Persistence context (snapshot keys, force save) |
+| `workspace` | `restore`, `flush`, `list`, plus `stateRoot` and `home` |
+| `ports` | `list`, `ready`, `expect`, `release`, `hasConflict`, `onServerReady`, `onServerClosed` |
+| `services` | Declarative service management: `list`, `read`, `status`, `start`, `stop`, `enable`, `disable`, `add`, `remove`, `autostart`, `ensureFiles` |
+| `capabilities` | Local capability registry: `check`, `list`, `define` |
+| `instance` | Default `SuccinixInstance` or `null` |
+| `boot` | Boot an internal WebContainer |
+| `attach` | Adopt an external WebContainer |
+| `ensureInstance` | Create or reuse an instance (`createSuccinixInstance` replacement) |
+| `getInstance` | Read an existing instance |
+| `releaseInstance` | Dispose and remove an instance |
+| `listProcesses` | Process table snapshot for the default or a named instance |
+| `on` | Typed domain event subscription |
+| `onServerReady` / `onServerClosed` | Port event subscriptions |
+| `dispose` | Soft teardown (fiber dispose) |
+| `shutdown` | Hard teardown (host kill) |
+| `reconfigure` | Validate and apply a new configuration |
+
+Accessing `executor`, `snapshot`, `persist`, `workspace`, or `services` before
+the default instance exists fails fast with a state-backed error.
+
+## Instances
+
+`ensureInstance(containerId, opts)` creates a per-instance stack on the shared
+page host:
+
+```ts
+const alice = await ctx.succinix.ensureInstance('alice', {
+  home: '/workspace/alice',
+  persistence: { dbName: 'my-app', storeKey: 'alice' },
+  executor: {},
+});
+
+await alice.executor.exec('node -v');
+await alice.snapshot.save(true);
+await alice.workspace.flush('manual');
+```
+
+Instance state roots, snapshot keys, service/port views, and process views are
+partitioned per `containerId`. This is organizational isolation, not a security
+boundary.
+
+## Terminal sessions
+
+The host brings its own rendering. `TerminalOutput` is a two-method contract:
+
+```ts
+const session = ctx.succinix.terminal.create({
+  write: (data) => term.write(data),
+  clear: () => term.clear(),
+});
+
+term.onData((data) => session.handleData(data));
+await session.boot();
+```
+
+`SuccinixTerminalSession` owns history, Tab completion, command queueing,
+Ctrl+C interrupt, and cwd-following prompts. xterm is not a dependency.
+
+## Ports and services
+
+Port events arrive through `succinix/server-ready` and
+`succinix/server-closed`, or the convenience subscriptions:
+
+```ts
+ctx.succinix.onServerReady(({ port, url, instanceId }) => {
+  app.recordPreview(port, url, instanceId);
+});
+```
+
+`ctx.succinix.ports` is the canonical page-level view. `expect(port)` /
+`release(port)` attribute a port to an instance before spawning.
+
+Declarative services are managed with `ctx.succinix.services`:
+
+```ts
+await ctx.succinix.services.ensureFiles();
+await ctx.succinix.services.add('web', 'node server.js', 3001);
+const start = await ctx.succinix.services.start('web');
+const status = await ctx.succinix.services.status('web');
+await ctx.succinix.services.stop('web');
+```
+
+## Capabilities
+
+The plugin ships a lightweight capability registry with the pattern set:
+
+```text
+terminal.exec, terminal.spawn, terminal.kill, terminal.interrupt,
+fs.read, fs.write, workspace.restore, workspace.flush, workspace.list
+```
+
+```ts
+if (!ctx.succinix.capabilities.check('terminal.exec')) {
+  throw new Error('execution is not allowed');
+}
+
+const dispose = ctx.succinix.capabilities.define('fs.write', () => isAllowed());
+```
+
+When the host provides a `capability` service, the plugin registers the same
+patterns there. The registry defaults to allow; `capabilities.defaultAllow`
+and `capabilities.rules` override it.
+
+## Lifecycle and hot reload
+
+- The HostManager is a page-level module singleton, not a Cordis fiber.
+- Fiber reload (`fiber.update`) re-runs `apply` without restarting the host;
+  `ctx.succinix.state.host.startedAt` stays stable.
+- `dispose()` is soft by default: instances and subscriptions are released,
+  the host stays alive.
+- `shutdown()` flushes instances, kills the host, clears page registries, and
+  sets `containerState` to `disposed`.
+- `lifecycle.disposeMode: 'hard'` makes fiber dispose also shut the host down.
+- `pagehide` / `beforeunload` trigger shutdown; `flushOnPageHide` keeps the
+  page alive while flushing the snapshot.
+- `reconfigure(next)` validates synchronously, increments `configRevision`,
+  and emits `succinix/state` with `reason: 'config'`. Config changes that
+  alter host asset paths or the container mode first run a shutdown.
+
+## Events
+
+Typed events are available through `ctx.succinix.on` and Cordis `ctx.on`:
+
+| Event | Payload |
+| --- | --- |
+| `succinix/state` | `{ state, reason, changed }` |
+| `succinix/server-ready` | `{ port, url?, instanceId? }` |
+| `succinix/server-closed` | `{ port, instanceId? }` |
+| `succinix/command` | command telemetry: id, instance, runtime, exit, duration |
+| `succinix/instance` | `{ containerId, state: 'created' \| 'released' }` |
+| `succinix/workspace` | `{ instanceId, reason, savedAt? }` |
+| `succinix/process` | `{ instanceId, processes }` (polled aggregate) |
+
+## Assets and integrity
+
+The package ships `assets/host.js`, `assets/lifo-core.js`, `assets/pyodide/*`,
+and `assets/sha256.json`. Serve them as static files or import them with Vite:
+
+```ts
+import hostJsUrl from '@succinix/engine/host.js?url';
+import lifoCoreUrl from '@succinix/engine/lifo-core.js?url';
+
+const fiber = ctx.plugin(engine, {
+  hostJsUrl,
+  lifoCoreUrl,
+  pythonAssetsUrl: '/pyodide/',
+});
+```
+
+With `assets.integrity: true` (default), `host.js` and `lifo-core.js` are
+verified against `sha256.json` before injection.
+
+## Requirements and limitations
+
+- Chromium-only (Chrome/Edge); WebContainers does not support Firefox, Safari,
+  or mobile.
+- The page must be cross-origin isolated:
+  `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: credentialless`.
+- Ports are virtual previews; there is no real inbound network.
+- No interactive REPL stdin; file-based RPC is the channel.
+- Lifo does not support symlinks or hard links.
+- `chmod` semantics and permission bits are not simulated.
+- Precise OS-level memory/CPU stats are unavailable; estimates are labeled.
+
+## Related documents
+
+- [MIGRATION.md](MIGRATION.md) — 0.4.0 to 0.5.0 guide
+- [PLUGIN.md](PLUGIN.md) — third-party Cordis plugin integration
+- [cordis-contract.md](cordis-contract.md) — authoritative contract snapshot
+- [PROTOCOL.md](PROTOCOL.md) — file-RPC wire contract (v1)
+- [FEATURES.md](FEATURES.md) — supported capabilities

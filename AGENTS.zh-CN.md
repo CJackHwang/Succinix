@@ -41,8 +41,8 @@
   页面卸载是唯一的硬关闭路径。
 - 改动 `src/plugin/` 后用 `node scripts/build-engine-package.mjs` 重建引擎包；
   它会重新生成 `packages/engine/assets/sha256.json` 并校验 exports 快照。
-- `docs/PLAN-cordis.md` 现在是历史执行档案。当前集成文档为 `docs/SDK.md`、
-  `docs/PLUGIN.md`、`docs/MIGRATION.md`、`docs/cordis-contract.md`。
+- 当前集成文档为 `docs/SDK.md`、`docs/PLUGIN.md`、`docs/MIGRATION.md`、
+  `docs/cordis-contract.md`。
 - 实际 npm publish 与 `0.4.0` / `0.1.x` deprecate 属 release-owner 动作；
   用户未明确要求时不发布。
 

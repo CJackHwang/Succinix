@@ -41,9 +41,8 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - Rebuild the engine package with `node scripts/build-engine-package.mjs` after
   touching `src/plugin/`; it regenerates `packages/engine/assets/sha256.json`
   and validates the exports snapshot.
-- `docs/PLAN-cordis.md` is now a historical execution archive. Current
-  integration docs are `docs/SDK.md`, `docs/PLUGIN.md`, `docs/MIGRATION.md`,
-  and `docs/cordis-contract.md`.
+- Current integration docs are `docs/SDK.md`, `docs/PLUGIN.md`,
+  `docs/MIGRATION.md`, and `docs/cordis-contract.md`.
 - Actual npm publish and deprecation of `0.4.0` / `0.1.x` are release-owner
   actions; do not publish unless the user explicitly requests it.
 

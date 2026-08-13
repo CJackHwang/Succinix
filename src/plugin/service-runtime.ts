@@ -10,7 +10,7 @@ import {
   type TerminalOutput,
   type TerminalSessionOptions,
 } from '../terminal/index.js';
-import { fetchAssetText, loadAssetManifest, type AssetManifest } from './assets.js';
+import { assetManifestUrl, fetchAssetText, loadAssetManifest, type AssetManifest } from './assets.js';
 import type { ResolvedSuccinixConfig } from './config.js';
 import type { SuccinixPluginState } from './state.js';
 import type {
@@ -190,11 +190,7 @@ export async function loadBootAssets(
   }
   let manifest: AssetManifest | undefined;
   if (config.assets.integrity) {
-    try {
-      manifest = await loadAssetManifest('/assets/sha256.json');
-    } catch {
-      /* manifest is optional when the host app does not publish it */
-    }
+    manifest = await loadAssetManifest(assetManifestUrl(config.hostJsUrl));
   }
   const [hostSrc, lifoCoreSrc] = await Promise.all([
     hooks.hostSrc ?? fetchAssetText(config.hostJsUrl, manifest?.['host.js'], config.assets.integrity),

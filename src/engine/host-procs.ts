@@ -37,6 +37,8 @@ interface ProcEntry extends Omit<ProcInfo, 'scope' | 'containerId'> {
   cwd?: string;
   /** M5：RPC 请求显式携带的实例 id（非默认实例时登记）；归属判定的权威依据 */
   instanceId?: string;
+  /** 可选的 SIGKILL 兜底定时器（killProcess 的 forceAfterMs 使用） */
+  forceKillTimer?: ReturnType<typeof setTimeout>;
 }
 
 const table = new Map<number, ProcEntry>();
@@ -106,6 +108,10 @@ export function registerProcess(cmd: string, child: ChildProcess, cwd?: string, 
   child.on('close', (code) => {
     entry.status = 'exited';
     entry.exitCode = code;
+    if (entry.forceKillTimer) {
+      clearTimeout(entry.forceKillTimer);
+      entry.forceKillTimer = undefined;
+    }
   });
   prune();
   return pid;
@@ -177,7 +183,9 @@ export interface KillResult {
 }
 
 // 终止真实子进程；不在表内（或本就是 Lifo 侧进程）时明确返回"仅支持列表"，不假装支持。
-export function killProcess(pid: number): KillResult {
+// forceAfterMs 可选：SIGTERM 后若进程在宽限期内仍未退出，由 host 自动升级 SIGKILL，
+// 供 service/db stop 这类需要确定性终止的调用方使用；普通 kill 不传，保持 Linux 语义。
+export function killProcess(pid: number, forceAfterMs?: number): KillResult {
   const entry = table.get(pid);
   if (!entry) {
     return { killed: false, message: `process ${pid} not in process table; Lifo-side processes are list-only (kill not supported)` };
@@ -185,7 +193,13 @@ export function killProcess(pid: number): KillResult {
   if (entry.status === 'exited') {
     return { killed: false, message: `process ${pid} already exited (exit=${entry.exitCode ?? '?'}), nothing to kill` };
   }
-  const ok = entry.child.kill();
+  const ok = entry.child.kill('SIGTERM');
+  if (ok && typeof forceAfterMs === 'number' && forceAfterMs > 0 && !entry.forceKillTimer) {
+    entry.forceKillTimer = setTimeout(() => {
+      entry.forceKillTimer = undefined;
+      if (entry.status === 'running') entry.child.kill('SIGKILL');
+    }, forceAfterMs);
+  }
   return ok
     ? { killed: true, message: `SIGTERM sent to process ${pid}` }
     : { killed: false, message: `failed to send signal to process ${pid}` };

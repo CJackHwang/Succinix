@@ -1396,10 +1396,12 @@ commit：
   补齐；HostManager 复用路径补齐 state 同步与端口订阅；`docs/manageability.md`、
   `docs/replay-support.md` 产出（replay 结论：restricted replay supported）。
 - C5 外部 demo + SunamAI 契约复验：完成。`examples/cordis-app/` 独立 Vite app 只依赖
-  `cordis` + `@succinix/engine` 发布物；`scripts/cordis-app-e2e.mjs` 32 项浏览器契约全绿
+  `cordis` + `@succinix/engine` 发布物；`scripts/cordis-app-e2e.mjs` 浏览器契约全绿
   （node/lifo/python、多实例单 host、快照/workspace、端口、服务、fiber reload、
   inject/fallback、attach/boot mismatch、shutdown/dispose/reapply、资产 SHA）。
-  C6 追加迁移面示例后为 33 项。
+  契约报告归档到 `examples/cordis-app/.e2e-report/contract.json`，当前 36 项全绿：
+  C6 追加迁移面示例、`persist.force`、`fiber.update` 的 `configRevision`，以及
+  restart-required `fiber.update` 先 shutdown 再 reload。
 - C6 发布 + 文档迁移：完成。`CHANGELOG.md` 0.5.0 breaking 清单、`docs/MIGRATION.md`
   迁移指南、`docs/SDK.md` / `docs/SDK.zh-CN.md` 插件化重写、`docs/PLUGIN.md`、
   `docs/cordis-contract.md` 新增；README / FEATURES 中英文与 `packages/engine/README.md`
@@ -1408,6 +1410,17 @@ commit：
   未改）；
   `AGENTS.md` 收尾并归档本计划。实际 npm publish/deprecate 未执行（release-owner
   动作，用户未明确要求）。
+- 后续审计修复（2026-08-13）：`service stop` / `db stop` 改为确认进程退出后才报告
+  成功，host `kill` 新增可选 `forceAfterMs`（SIGTERM 宽限期后升级 SIGKILL）；
+  `instance-demo` 增加实例级 `service stop` 断言（28 checks）；`run-e2e` 对
+  scenarios 的 npm install 偶发 flake 自动重试一次。
+- 后续审计修复（2026-08-13，第二轮）：`pythonAssetsUrl` 可配置，Python 资产注入
+  统一收归插件层；原生 terminal 会话同样注入（修复 S11/S14 raw-terminal 资产未注入
+  回归），并保留调用方 `beforeRpc` 钩子（`src/plugin/executor-runtime.ts`）；
+  `plugin/services.ts` 体积回落通过抽取 `executor-runtime.ts` 与
+  `services-service.ts`，`audit:files` 通过。全量单测、AGENTS 门禁与
+  `npm run test:e2e` 全绿（scenarios 14/14、lang-verify 32/32、instance-demo
+  28/28、instance-routing 27/27、cordis-app 36/36）。
 
 ---
 

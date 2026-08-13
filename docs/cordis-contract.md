@@ -19,9 +19,9 @@ The contract suite covers the ten required areas from the C5/C6 plan:
 | 3 | Service surface | `state`, `container`, `executor`, `terminal`, `snapshot`, `persist`, `workspace`, `ports`, `services`, `capabilities`, `instance`, lifecycle methods |
 | 4 | Runtime execution | real Node, Lifo, and packaged Pyodide Python commands in the container |
 | 5 | Multi-instance single host | `ensureInstance` reuses the page host; `startedAt` and `wc` stay stable |
-| 6 | Snapshot / workspace | save, restore, flush, and list work on the shared container filesystem |
+| 6 | Snapshot / workspace | save, restore, flush, list, and explicit `persist.force` work on the shared container filesystem |
 | 7 | Ports and services | `server-ready` subscription, `ports.ready`, declarative service start/status/stop |
-| 8 | Reload semantics | `reconfigure` increments `configRevision`; `fiber.update` preserves the host and restores services |
+| 8 | Reload semantics | `reconfigure` and `fiber.update` both increment `configRevision`; hot `fiber.update` preserves the host, restart-required `fiber.update` shuts it down before reapply, and services can be restored after reload |
 | 9 | Mode mismatch and teardown | `attach`/`boot` mismatch throws `ERR_MODE_MISMATCH`; shutdown, fiber dispose, and reapply behave correctly |
 | 10 | Asset integrity | `sha256.json` matches the served `host.js`; `lifo-core.js` manifest entry is present |
 

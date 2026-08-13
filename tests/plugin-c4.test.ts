@@ -153,6 +153,26 @@ describe('state events and telemetry (C4)', () => {
 });
 
 describe('reload and subscription isolation (C4)', () => {
+  it('fiber.update increments configRevision and keeps one host', async () => {
+    const { ctx, fiber, wc } = await bootEngine();
+    const before = ctx.succinix.state.configRevision;
+    fiber.update({ resultTtlMs: 7000 });
+    await fiber;
+    expect(ctx.succinix.state.configRevision).toBe(before + 1);
+    expect(wc.spawnCalls).toHaveLength(1);
+  });
+
+  it('fiber.update shuts the host down before restart-required config changes', async () => {
+    const { ctx, fiber } = await bootEngine();
+    expect(ctx.succinix.state.host.startedAt).toBeTypeOf('number');
+    const before = ctx.succinix.state.configRevision;
+    fiber.update({ hostJsUrl: '/other-host.js' });
+    await fiber;
+    expect(ctx.succinix.state.configRevision).toBe(before + 1);
+    expect(ctx.succinix.state.host.startedAt).toBeNull();
+    expect(getHostManager().handle().state).toBe('disposed');
+  });
+
   it('fiber dispose clears subscriptions and reload does not stack port hooks', async () => {
     const first = await bootEngine();
     await first.ctx.succinix.ensureInstance('default', {
@@ -165,7 +185,7 @@ describe('reload and subscription isolation (C4)', () => {
     first.ctx.succinix.onServerReady((payload) => oldState.push(payload));
     const beforeKeys = new Set(hooks.keys());
     expect(beforeKeys.has('succinix')).toBe(true);
-    const hostProc = first.ctx.succinix.container.hostPid;
+    const hostStartedAt = first.ctx.succinix.container.startedAt;
 
     await first.fiber.dispose();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -180,7 +200,7 @@ describe('reload and subscription isolation (C4)', () => {
     reloaded.ctx.succinix.onServerReady(() => {});
     expect(hooks.size).toBe(beforeKeys.size);
     expect(hooks.has('succinix')).toBe(true);
-    expect(reloaded.ctx.succinix.container.hostPid).toBe(hostProc);
+    expect(reloaded.ctx.succinix.container.startedAt).toBe(hostStartedAt);
     (reloaded.ctx.succinix.container.wc as unknown as { emitServerReady(port: number, url: string): void })
       .emitServerReady(8181, 'https://preview/8181');
     expect(oldState).toHaveLength(0);
@@ -195,7 +215,7 @@ describe('failure isolation (C4)', () => {
       executor: BOOT_HOOKS,
     });
     const manager = getHostManager();
-    const hostPid = booted.ctx.succinix.container.hostPid;
+    const hostStartedAt = booted.ctx.succinix.container.startedAt;
     await booted.fiber.dispose();
     expect(manager.handle().state).toBe('ready');
 
@@ -215,7 +235,7 @@ describe('failure isolation (C4)', () => {
     await goodFiber;
     await ctx.succinix.boot({ executor: BOOT_HOOKS });
     expect(ctx.get('succinix', false)).toBeTruthy();
-    expect(ctx.succinix.container.hostPid).toBe(hostPid);
+    expect(ctx.succinix.container.startedAt).toBe(hostStartedAt);
   });
 
   it('invalid engine config fails into FAILED, keeps the page host, and recovers after reapply', async () => {

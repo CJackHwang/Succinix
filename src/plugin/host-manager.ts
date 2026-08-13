@@ -9,6 +9,7 @@ import {
 import { sleep } from '../engine/sleep.js';
 import { pagePorts } from '../engine/ports.js';
 import { instancePorts } from '../instance/ports.js';
+import type { SuccinixConfig } from './config.js';
 import { invariant } from './invariant.js';
 
 export type HostContainerState = 'unattached' | 'booting' | 'ready' | 'disposed';
@@ -41,6 +42,9 @@ export class HostManager {
   private wc: WebContainer | null = null;
   private hostProc: WebContainerProcess | null = null;
   private startedAt: number | null = null;
+  private configRevision = 0;
+  private serviceApplied = false;
+  private lastRawConfig: SuccinixConfig | null = null;
 
   handle(): HostManagerHandle {
     return {
@@ -53,7 +57,44 @@ export class HostManager {
   }
 
   hostPid(): number | null {
+    // WebContainerProcess does not expose a stable browser-side pid. Keep the
+    // state field honest: consumers must not treat a synthetic pid as exact.
     return null;
+  }
+
+  /** First apply starts at 0; every later apply/reload gets a new revision. */
+  nextConfigRevision(): number {
+    if (!this.serviceApplied) {
+      this.serviceApplied = true;
+      return 0;
+    }
+    this.configRevision += 1;
+    return this.configRevision;
+  }
+
+  /** Claim a revision and record the config that owns it. */
+  beginService(config: SuccinixConfig): number {
+    const revision = this.nextConfigRevision();
+    this.markAppliedConfig(config);
+    return revision;
+  }
+
+  /** Keep the page singleton in sync after an in-place reconfigure. */
+  markConfigRevision(revision: number, config?: SuccinixConfig): void {
+    if (revision > this.configRevision) this.configRevision = revision;
+    this.serviceApplied = true;
+    if (config) this.markAppliedConfig(config);
+  }
+
+  /** Last raw config accepted by any service instance on this page. */
+  appliedConfig(): SuccinixConfig | null {
+    return this.lastRawConfig;
+  }
+
+  /** Record the config that is now authoritative for the page singleton. */
+  markAppliedConfig(config: SuccinixConfig): void {
+    this.lastRawConfig = config;
+    this.serviceApplied = true;
   }
 
   getHostProc(): WebContainerProcess | null {
@@ -72,6 +113,11 @@ export class HostManager {
 
   /** Hard shutdown: kill the host and reset page-level state. */
   async shutdown(): Promise<void> {
+    this.shutdownSync();
+  }
+
+  /** Synchronous kill/reset used by restart-required fiber updates. */
+  shutdownSync(): void {
     if (this.hostProc) {
       try {
         this.hostProc.kill();
@@ -92,11 +138,14 @@ export class HostManager {
     this.wc = null;
     this.hostProc = null;
     this.startedAt = null;
+    this.configRevision = 0;
+    this.serviceApplied = false;
+    this.lastRawConfig = null;
   }
 
   private async ensureHost(wc: WebContainer, opts: HostManagerBootOptions): Promise<void> {
     invariant(wc && typeof wc.spawn === 'function', 'HostManager requires a WebContainer');
-    if (this.state === 'ready' && this.mode === opts.mode) return;
+    if (this.state === 'ready' && this.mode === opts.mode && this.hostProc) return;
     if ((this.state === 'ready' || this.state === 'booting') && this.mode && this.mode !== opts.mode) {
       throw new Error(`ERR_MODE_MISMATCH: cannot switch from ${this.mode} to ${opts.mode} mode`);
     }

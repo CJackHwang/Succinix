@@ -184,10 +184,12 @@ configuration and records the reason in `ctx.succinix.state.lastError`.
 | `onServerReady` / `onServerClosed` | Port event subscriptions |
 | `dispose` | Soft teardown (fiber dispose) |
 | `shutdown` | Hard teardown (host kill) |
+| `flush` | Best-effort snapshot flush for every live instance |
 | `reconfigure` | Validate and apply a new configuration |
 
-Accessing `executor`, `snapshot`, `persist`, `workspace`, or `services` before
-the default instance exists fails fast with a state-backed error.
+Accessing `executor`, `terminal`, `snapshot`, `persist`, `workspace`, or
+`services` before the default instance exists fails fast with a state-backed
+error.
 
 ## Instances
 
@@ -275,18 +277,25 @@ and `capabilities.rules` override it.
 ## Lifecycle and hot reload
 
 - The HostManager is a page-level module singleton, not a Cordis fiber.
-- Fiber reload (`fiber.update`) re-runs `apply` without restarting the host;
-  `ctx.succinix.state.host.startedAt` stays stable.
+- `container.hostPid` / `state.host.pid` is always `null` in the browser
+  because WebContainer processes expose no pid; `startedAt` is the stable
+  host-identity token across soft reloads.
+- Fiber reload (`fiber.update`) re-runs `apply`. Hot fields keep
+  `ctx.succinix.state.host.startedAt` stable; restart-required fields shut the
+  host down before the fiber re-applies.
 - `dispose()` is soft by default: instances and subscriptions are released,
   the host stays alive.
 - `shutdown()` flushes instances, kills the host, clears page registries, and
   sets `containerState` to `disposed`.
 - `lifecycle.disposeMode: 'hard'` makes fiber dispose also shut the host down.
-- `pagehide` / `beforeunload` trigger shutdown; `flushOnPageHide` keeps the
-  page alive while flushing the snapshot.
+- `flushOnPageHide` enables a best-effort flush on `pagehide`; `beforeunload`
+  always triggers best-effort shutdown. Browser unload cannot await async work.
 - `reconfigure(next)` validates synchronously, increments `configRevision`,
   and emits `succinix/state` with `reason: 'config'`. Config changes that
   alter host asset paths or the container mode first run a shutdown.
+- Every successful `reconfigure` or fiber reapply increments
+  `configRevision`; the page-level HostManager keeps the counter monotonic
+  across soft reloads.
 
 ## Events
 

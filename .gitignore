@@ -28,6 +28,7 @@ dist/
 dist-ssr/
 public/host.js
 public/lifo-core.js
+public/sha256.json
 public/python/
 public/pyodide/
 
@@ -35,6 +36,7 @@ public/pyodide/
 packages/engine/dist/
 packages/engine/assets/
 examples/cordis-app/public/
+examples/cordis-app/.e2e-report/
 
 # Local environment variables
 .env

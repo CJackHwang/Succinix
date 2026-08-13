@@ -41,6 +41,7 @@ The browser writes a JSON object to `/cmd.json`:
   "opts": {             // command-specific options (optional)
     "command": "...",   // full command string (run / spawn)
     "pid": 1234,        // target process id (kill)
+    "forceAfterMs": 5000, // optional SIGKILL fallback grace for kill (service/db stop)
     "cwd": "/workspace/proj", // target session cwd (setCwd; optional)
     "timeout": 30000    // host-side timeout in ms (run / spawn; optional)
   }
@@ -52,7 +53,7 @@ The browser writes a JSON object to `/cmd.json`:
 | `run`       | Execute one command (unified routing)          | `command`, `timeout` |
 | `spawn`     | Start a background long-running process (node) | `command`, `timeout` |
 | `ps`        | List the process table                         | —                    |
-| `kill`      | Terminate a real child process                 | `pid`                |
+| `kill`      | Terminate a real child process                 | `pid`, optional `forceAfterMs` |
 | `interrupt` | Kill the current foreground `run` child (Ctrl+C) | —                  |
 | `cwd`       | Return the session working directory           | —                    |
 | `setCwd`    | Explicitly set the session working directory   | `cwd`                |
@@ -240,7 +241,9 @@ settling the result, so result files are bounded even for huge dumps.
     security isolation. For hard semantics, switch to explicit declaration (the
     spawner passes `scope` at spawn time).
 - **`kill`** sends SIGTERM to a table entry; the entry flips to `exited` on the child's
-  `close` event. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
+  `close` event. When `opts.forceAfterMs` is set, the host escalates to SIGKILL after
+  that grace period if the entry is still running, so lifecycle stop paths can guarantee
+  termination. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
   `close` never fires in that case.
 - **Lifo-side processes are list-only** — they are not in the table and `kill` reports
   the "not in process table" message rather than pretending to terminate them.

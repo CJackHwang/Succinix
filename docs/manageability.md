@@ -13,7 +13,8 @@ commands for self-verification; full plugin-management UI belongs to the host
 - `version`
 - `containerMode`: `internal` or `external`
 - `containerState`: `unattached`, `booting`, `ready`, or `disposed`
-- `host`: `{ pid, startedAt }`
+- `host`: `{ pid, startedAt }`; browser `pid` is always `null` (WebContainer
+  processes expose no pid), so use `startedAt` as the stable host token
 - `instances`: `Array<{ instanceId, state }>`
 - `capabilities`
 - `configRevision`

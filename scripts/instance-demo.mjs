@@ -150,9 +150,11 @@ async function main() {
 
     // C5b：db start 实例模式 —— 停掉 service 后走 db 命令的 --data-dir 路径（M4 数据隔离 +
     // M5 mapDataDirArgs 浏览器视角映射），数据目录必须落在实例状态根下。
-    await A.run('service stop tinbase', 30000);
+    const aStop = await A.run('service stop tinbase', 30000);
     const aDb = await A.run('db start', 120000);
     const aDbOut = String(aDb.output ?? '');
+    const aStopOut = String(aStop.output ?? '');
+    check(checks, 'service stop tinbase (instance mode)', aStop.handled === true && aStopOut.includes('stopped'), aStopOut.trim().slice(0, 120));
     let aDbPort = false;
     for (let i = 0; i < 45 && !aDbPort; i++) {
       aDbPort = (await A.eval('window.__succinixScenario.ports.has(3001)')) === true;

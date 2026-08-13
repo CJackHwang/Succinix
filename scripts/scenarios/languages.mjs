@@ -184,7 +184,8 @@ async function s13(h) {
 
   // 3. npm i -D typescript tsx vitest（真实 npm 安装工具链 —— 重活，给足超时）
   const inst = await h.run('npm i -D typescript tsx vitest', 240000);
-  check(checks, 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok} ${String(inst.stderr || inst.stdout || '').trim().split('\n').slice(-1)[0].slice(0, 80)}`);
+  const instDetail = [inst.error, inst.exitCode, inst.thrown, String(inst.stderr || inst.stdout || '').trim().slice(0, 120)].filter((v) => v !== undefined && v !== null && v !== '').join(' | ');
+  check(checks, 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok}${instDetail ? ` ${instDetail}` : ''}`);
 
   // 4. 写 TS 源码 + tsconfig（浏览器 FS = 项目目录，与 host 会话 cwd 同一份文件）
   await h.evalValue(`window.__succinixScenario.wc.fs.mkdir('/s13-proj/src', { recursive: true })`);
@@ -244,7 +245,8 @@ async function s14(h) {
   const init = await h.run('npm init -y', 120000);
   check(checks, 'S14 npm init -y', init.ok === true, `ok=${init.ok}`);
   const inst = await h.run('npm i -D typescript', 240000);
-  check(checks, 'S14 npm i -D typescript', inst.ok === true, `ok=${inst.ok}`);
+  const instDetail = [inst.error, inst.exitCode, inst.thrown, String(inst.stderr || inst.stdout || '').trim().slice(0, 120)].filter((v) => v !== undefined && v !== null && v !== '').join(' | ');
+  check(checks, 'S14 npm i -D typescript', inst.ok === true, `ok=${inst.ok}${instDetail ? ` ${instDetail}` : ''}`);
 
   // tsc 编译引号文件 → node 跑产物（引号保真贯通编译）
   const tsconfig = JSON.stringify({ compilerOptions: { outDir: 'dist', rootDir: 'src', target: 'ES2022', module: 'commonjs', strict: true }, include: ['src'] }, null, 2);

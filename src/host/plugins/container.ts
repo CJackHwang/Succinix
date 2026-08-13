@@ -7,8 +7,6 @@ import {
   DEFAULT_INSTANCE_ID,
   checkEnvironment,
   detectSystemInfo,
-  ensurePythonRuntime,
-  tokenize,
   userHomePath,
   type TerminalClient,
 } from '@succinix/engine';
@@ -88,11 +86,6 @@ async function startHostApp(ctx: Context): Promise<AppShell | null> {
       terminal: {
         promptPrefix: request.userMode ? `${request.id}@succinix:` : undefined,
         localHandlers,
-        beforeRpc: async (cmd) => {
-          if (tokenize(cmd.trim()).some((t) => t === 'python' || t === 'python3' || t === 'pip' || t === 'pip3')) {
-            await ensurePythonRuntime(wc);
-          }
-        },
         onCommand: logger.onCommand,
         onCommandError: logger.onCommandError,
         onPrompt: benchMarkPrompt,

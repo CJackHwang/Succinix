@@ -42,9 +42,8 @@ plugin owns lifecycle semantics:
   page-level HostManager keeps the host process alive.
 - `ctx.succinix.shutdown()` is the hard teardown: it flushes instances, kills
   the host, clears subscriptions, and resets the page-level singleton state.
-- Page `pagehide` / `beforeunload` triggers a shutdown (unless
-  `lifecycle.flushOnPageHide` is enabled, in which case `pagehide` flushes
-  without a hard shutdown).
+- With `lifecycle.flushOnPageHide` enabled, `pagehide` triggers a best-effort
+  flush; `beforeunload` always triggers best-effort shutdown.
 
 ### Configuration style
 

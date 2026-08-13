@@ -39,6 +39,7 @@ Browser (TerminalClient)                Container (node host.js)
   "opts": {             // 命令特定选项（可选）
     "command": "...",   // 完整命令字符串（run / spawn）
     "pid": 1234,        // 目标进程 id（kill）
+    "forceAfterMs": 5000, // kill 的可选 SIGKILL 兜底宽限（service/db stop）
     "cwd": "/workspace/proj", // 目标会话 cwd（setCwd；可选）
     "timeout": 30000    // host 侧超时毫秒（run / spawn；可选）
   }
@@ -50,7 +51,7 @@ Browser (TerminalClient)                Container (node host.js)
 | `run`    | 执行一条命令（统一路由）                          | `command`、`timeout` |
 | `spawn`  | 启动后台长驻进程（node）                        | `command`、`timeout` |
 | `ps`     | 列出进程表                                     | —                    |
-| `kill`   | 终止真实子进程                                 | `pid`                |
+| `kill`   | 终止真实子进程                                 | `pid`、可选 `forceAfterMs` |
 | `interrupt` | 终止当前前台 `run` 子进程（Ctrl+C）           | —                    |
 | `cwd`    | 返回会话工作目录                               | —                    |
 | `setCwd` | 显式设置会话工作目录                           | `cwd`                |
@@ -212,8 +213,10 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
     长得像系统资产就会被标为 `system`）。仅用于 **UI 展示、查询过滤与组织性 kill 授权**——
     不可作为真实权限 / 安全隔离的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传
     `scope`）。
-- **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。失败 spawn（如
-  ENOENT）显式标记 `exited`，因为该情况下 `close` 永不触发。
+- **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。设置
+  `opts.forceAfterMs` 时，host 在宽限期后若条目仍为 `running` 则升级 SIGKILL，保证
+  service/db stop 这类生命周期路径能确定终止。失败 spawn（如 ENOENT）显式标记 `exited`，
+  因为该情况下 `close` 永不触发。
 - **Lifo 侧进程仅可列出**——它们不在表中，`kill` 报 "not in process table" 消息而非假装终止。
 
 ## 6. 端口事件（Port events）

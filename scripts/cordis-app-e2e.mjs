@@ -3,7 +3,7 @@
 // standalone demo, build it, and run its Cordis contract suite in headless
 // Chrome. This proves the demo consumes only the packed artifact.
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
 import { connectPageCDP } from './lib/cdp.mjs';
@@ -105,6 +105,10 @@ async function main() {
       check(item.name, item.ok === true, item.detail);
     }
     console.log(`  Checks: ${contractResult.passed}/${contractResult.checks.length} passed`);
+    const reportDir = join(DEMO, '.e2e-report');
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(join(reportDir, 'contract.json'), JSON.stringify(contractResult, null, 2));
+    note(`contract report archived at examples/cordis-app/.e2e-report/contract.json`);
   } finally {
     preview.kill('SIGTERM');
   }

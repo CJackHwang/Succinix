@@ -9,6 +9,7 @@ import {
   instanceStateRoot,
   setDbActivePort,
   tinbaseDataDir,
+  waitForProcessExit,
 } from '@succinix/engine';
 import { AMBER, RED, RESET } from '../theme.js';
 import { sleep } from '../util.js';
@@ -224,8 +225,12 @@ export async function dbStop(ctx: CommandContext): Promise<void> {
     return;
   }
   const pid = Number(proc.pid);
-  const k = await ctx.client.terminal(`kill ${pid}`);
+  const k = await ctx.client.terminal(`kill ${pid}`, { forceAfterMs: 10000 });
   if (k.ok && k.killed) {
+    if (!(await waitForProcessExit(ctx.client, pid))) {
+      term.writeln(`${RED}tinbase: failed to stop: process ${pid} still running${RESET}`);
+      return;
+    }
     term.writeln(`tinbase stopped (pid=${pid}); database data persisted in workspace (.tinbase)`);
     // 用记录端口清理注册表（运行中改 settings 不影响 stop 的正确端口）
     const port = dbActivePortFor(inst) ?? (await resolveDbPort(wc.fs, inst, ctx.statePrefix));

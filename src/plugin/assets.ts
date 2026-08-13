@@ -1,5 +1,6 @@
 // invariant: asset URL resolution + SHA-256 integrity (C2 wires loader hooks).
 import type { FileSystemAPI } from '@webcontainer/api';
+import { ensurePythonRuntime, PYTHON_RUNTIME_DIR } from '../engine/index.js';
 import type { ResolvedSuccinixConfig } from './config.js';
 import { invariantObject } from './invariant.js';
 
@@ -20,6 +21,12 @@ export function assetUrls(config: ResolvedSuccinixConfig): { host: string; lifoC
     lifoCore: config.lifoCoreUrl,
     python: config.pythonAssetsUrl,
   };
+}
+
+/** Derive the SHA-256 manifest path from the host asset URL. */
+export function assetManifestUrl(hostJsUrl: string): string {
+  const slash = hostJsUrl.lastIndexOf('/');
+  return `${slash >= 0 ? hostJsUrl.slice(0, slash + 1) : ''}sha256.json`;
 }
 
 export interface AssetInjectOptions {
@@ -52,12 +59,6 @@ export async function fetchAssetText(url: string, expectedSha?: string, integrit
   if (!response.ok) throw new Error(`asset fetch failed: ${url} (HTTP ${response.status})`);
   const source = await response.text();
   return (await verifySha(source, integrity ? expectedSha : undefined, url)) as string;
-}
-
-async function fetchAssetBinary(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`asset fetch failed: ${url} (HTTP ${response.status})`);
-  return new Uint8Array(await response.arrayBuffer());
 }
 
 async function assetExists(fs: FileSystemAPI, path: string): Promise<boolean> {
@@ -95,7 +96,9 @@ export async function injectHostAssets(
 ): Promise<{ host: boolean; lifoCore: boolean }> {
   const integrity = options.integrity ?? config.assets.integrity;
   let manifest: AssetManifest | undefined = options.manifest;
-  if (!manifest && integrity && options.manifestUrl) manifest = await loadAssetManifest(options.manifestUrl);
+  if (!manifest && integrity) {
+    manifest = await loadAssetManifest(options.manifestUrl ?? assetManifestUrl(config.hostJsUrl));
+  }
   const host = await injectAssetOnce(fs, '/host.js', config.hostJsUrl, manifest?.['host.js'], integrity);
   const lifoCore = await injectAssetOnce(fs, '/lifo-core.js', config.lifoCoreUrl, manifest?.['lifo-core.js'], integrity);
   return { host, lifoCore };
@@ -114,14 +117,6 @@ export async function injectPythonAssets(
   fs: FileSystemAPI,
   config: ResolvedSuccinixConfig
 ): Promise<string[]> {
-  const base = config.pythonAssetsUrl.replace(/\/+$/, '');
-  const written: string[] = [];
-  for (const file of PYTHON_ASSETS) {
-    const path = `/usr/lib/succinix/python/${file}`;
-    if (await assetExists(fs, path)) continue;
-    const data = await fetchAssetBinary(`${base}/${file}`);
-    await writeAsset(fs, path, data);
-    written.push(path);
-  }
-  return written;
+  await ensurePythonRuntime({ fs }, config.pythonAssetsUrl);
+  return PYTHON_ASSETS.map((file) => `${PYTHON_RUNTIME_DIR}/${file}`);
 }

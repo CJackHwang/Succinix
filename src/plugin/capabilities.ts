@@ -18,12 +18,22 @@ interface HostCapabilityService {
 }
 
 export class SuccinixCapabilityRegistry {
-  private readonly defaultAllow: boolean;
+  private defaultAllow: boolean;
   private readonly rules = new Map<string, boolean>();
   private readonly checkers = new Map<SuccinixCapabilityPattern, () => boolean>();
 
   constructor(config: CapabilityConfig) {
     this.defaultAllow = config.defaultAllow;
+    for (const rule of config.rules) {
+      this.rules.set(rule.pattern, rule.allow);
+    }
+  }
+
+  /** Replaces the configured rules in place so host capability hooks stay live. */
+  configure(config: CapabilityConfig): void {
+    this.defaultAllow = config.defaultAllow;
+    this.rules.clear();
+    this.checkers.clear();
     for (const rule of config.rules) {
       this.rules.set(rule.pattern, rule.allow);
     }

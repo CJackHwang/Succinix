@@ -12,7 +12,8 @@
 // TASK16: minify:true 压缩体积。keepNames 默认 false —— 若 Lifo 依赖
 // Function.name 出现运行时错误，改回 keepNames:true（体积略增）或记录原因回退。
 import { build } from 'esbuild';
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // host 入口在 src/engine/host/ 下，源码里对 lifo-core 的相对导入是 '../lifo-core.js'；
@@ -104,5 +105,12 @@ await downloadPyodideAssets();
 
 // 版本锁定记录（注入容器时供自检/文档引用，避免硬编码漂移）。
 writeFileSync('public/pyodide/PYODIDE_VERSION', `${PYODIDE_VERSION}\n`);
+
+// Host/lifo SHA-256 manifest for the browser-side asset integrity check.
+const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+writeFileSync(
+  'public/sha256.json',
+  `${JSON.stringify({ 'host.js': sha256('public/host.js'), 'lifo-core.js': sha256('public/lifo-core.js') }, null, 2)}\n`
+);
 
 console.log(`host.js + lifo-core.js + python daemon (Pyodide ${PYODIDE_VERSION}) built → public/`);

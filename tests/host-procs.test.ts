@@ -1,7 +1,7 @@
 // host-procs.ts 单元测试（TASK-CISOL R1）：进程归属判定 + 登记时记录 cwd → ps() 附加 scope/containerId。
 import type { ChildProcess } from 'node:child_process';
 import { describe, it, expect, vi } from 'vitest';
-import { classifyProcess, registerProcess, listProcesses, instanceIdFromPath } from '../src/engine/host-procs.js';
+import { classifyProcess, registerProcess, listProcesses, instanceIdFromPath, killProcess } from '../src/engine/host-procs.js';
 
 /** 最小 ChildProcess 替身（registerProcess 只依赖 pid / on / kill）。 */
 function fakeChild(pid: number): ChildProcess {
@@ -100,6 +100,21 @@ describe('registerProcess + listProcesses（登记记录 cwd → ps 附带归属
     const view = listProcesses().find((entry) => entry.pid === 1006);
     expect(view?.scope).toBe('unknown');
     expect(view?.containerId).toBeUndefined();
+  });
+
+  it('killProcess escalates to SIGKILL after the requested grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild(2001);
+      registerProcess('node server.js', child);
+      const res = killProcess(2001, 500);
+      expect(res.killed).toBe(true);
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      await vi.advanceTimersByTimeAsync(501);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -35,7 +35,9 @@ export function dispatchKill(req: CommandRequest): void {
     }, inst);
     return;
   }
-  const r = killProcess(pid);
+  const rawForce = Number(req.opts?.forceAfterMs);
+  const forceAfterMs = Number.isFinite(rawForce) && rawForce > 0 ? rawForce : undefined;
+  const r = killProcess(pid, forceAfterMs);
   writeResult(req.id, { ok: r.killed, killed: r.killed, message: r.message }, inst);
 }
 

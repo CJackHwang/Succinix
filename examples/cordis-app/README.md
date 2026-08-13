@@ -11,8 +11,10 @@ The demo verifies the published artifact contract in a real browser:
 - node, lifo, and python execution
 - multi-instance reuse of the page host
 - snapshot save/restore and workspace flush/list
+- explicit `persist.force` execution
 - port subscription and declarative services
-- fiber reload without host restart
+- fiber reload without host restart for hot fields, restart-required shutdown,
+  and `configRevision` increments
 - shutdown, dispose, and reapply recovery
 - asset SHA-256 integrity
 

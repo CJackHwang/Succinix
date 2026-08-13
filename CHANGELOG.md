@@ -47,6 +47,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Succinix app is now a Cordis host that consumes the engine plugin.
 - `docs/PLAN-cordis.md` is archived as the historical execution record.
+- `ctx.succinix.flush()` flushes every live instance for best-effort page
+  lifecycle handling; `persist.force` and shutdown flush now emit
+  `succinix/workspace` events.
+- Python runtime injection honors `pythonAssetsUrl` through
+  `ensurePythonRuntime(wc, assetsBase)` and the plugin executor path.
+
+### Fixed
+
+- `workspace` now fails fast with `state.lastError` before the default
+  instance exists, matching the other default-instance services.
+- Service/db stop waits for the child process to exit before reporting
+  success; host `kill` supports optional `forceAfterMs` with SIGKILL
+  escalation.
+- `configRevision` stays monotonic across `fiber.update`, and restart-required
+  updates shut the host down before the fiber reapplies.
 
 > Release note: this entry documents the release-ready package. Actual npm
 > publish and deprecation of `0.4.0` / `0.1.x` are executed by the release

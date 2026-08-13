@@ -17,13 +17,14 @@ const STEPS = [
   { name: 'bench (performance)', args: ['scripts/bench.mjs', '--skip-build'] },
   { name: 'scenarios (14 real-workflow scenarios)', args: ['scripts/scenarios.mjs', '--skip-build'] },
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },
-  { name: 'instance-demo (multi-instance + multi-user, 27 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
+  { name: 'instance-demo (multi-instance + multi-user, 28 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
   { name: 'instance-routing (same-page instance routing, R5)', args: ['scripts/instance-routing.mjs', '--skip-build'] },
   { name: 'cordis-app (external Cordis demo contract)', args: ['scripts/cordis-app-e2e.mjs'] },
 ];
 
-// flake 策略（R6）：deploy gate 已知偶发 flake，自动重试一次；其余步骤失败即记，不重试。
-const RETRY_ONCE = new Set(['scripts/verify-deploy.mjs']);
+// flake 策略（R6）：deploy gate 与 scenarios 的 npm install 已知偶发 flake，
+// 自动重试一次；其余步骤失败即记，不重试。
+const RETRY_ONCE = new Set(['scripts/verify-deploy.mjs', 'scripts/scenarios.mjs']);
 
 let exitCode = 0;
 

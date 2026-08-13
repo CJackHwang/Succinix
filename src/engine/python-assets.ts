@@ -9,27 +9,21 @@ import type { FileSystemAPI } from '@webcontainer/api';
 
 export const PYTHON_RUNTIME_DIR = '/usr/lib/succinix/python';
 
-interface PythonAssetSpec {
-  /** 容器内路径 */
-  path: string;
-  /** 构建资产 URL（vite 静态资源，public/pyodide/） */
-  url: string;
-}
-
-const PYTHON_ASSETS: PythonAssetSpec[] = [
-  { path: `${PYTHON_RUNTIME_DIR}/python-daemon.js`, url: '/pyodide/python-daemon.js' },
-  { path: `${PYTHON_RUNTIME_DIR}/pyodide.mjs`, url: '/pyodide/pyodide.mjs' },
-  { path: `${PYTHON_RUNTIME_DIR}/pyodide.asm.mjs`, url: '/pyodide/pyodide.asm.mjs' },
-  { path: `${PYTHON_RUNTIME_DIR}/pyodide.asm.wasm`, url: '/pyodide/pyodide.asm.wasm' },
-  { path: `${PYTHON_RUNTIME_DIR}/python_stdlib.zip`, url: '/pyodide/python_stdlib.zip' },
-  { path: `${PYTHON_RUNTIME_DIR}/pyodide-lock.json`, url: '/pyodide/pyodide-lock.json' },
+const PYTHON_ASSETS: ReadonlyArray<string> = [
+  'python-daemon.js',
+  'pyodide.mjs',
+  'pyodide.asm.mjs',
+  'pyodide.asm.wasm',
+  'python_stdlib.zip',
+  'pyodide-lock.json',
 ];
 
 let injecting: Promise<void> | null = null;
 
 // 确保 python 资产已注入。已注入（python-daemon.js 可读）直接返回；否则注入全部资产。
 // 并发调用复用同一个注入 Promise（去重，防止两个 python 命令同时触发重复写）。
-export async function ensurePythonRuntime(wc: { fs: FileSystemAPI }): Promise<void> {
+// assetsBase 默认指向 vite public 的 /pyodide/；插件把 config.pythonAssetsUrl 传入即可。
+export async function ensurePythonRuntime(wc: { fs: FileSystemAPI }, assetsBase = '/pyodide/'): Promise<void> {
   try {
     await wc.fs.readFile(`${PYTHON_RUNTIME_DIR}/python-daemon.js`, 'utf8');
     return;
@@ -37,22 +31,25 @@ export async function ensurePythonRuntime(wc: { fs: FileSystemAPI }): Promise<vo
     /* 未注入 */
   }
   if (!injecting) {
-    injecting = doInject(wc.fs).finally(() => {
+    injecting = doInject(wc.fs, assetsBase).finally(() => {
       injecting = null;
     });
   }
   return injecting;
 }
 
-async function doInject(fs: FileSystemAPI): Promise<void> {
+async function doInject(fs: FileSystemAPI, assetsBase: string): Promise<void> {
+  const base = assetsBase.replace(/\/+$/, '') + '/';
   for (const asset of PYTHON_ASSETS) {
-    const resp = await fetch(asset.url);
+    const url = `${base}${asset}`;
+    const resp = await fetch(url);
     if (!resp.ok) {
-      throw new Error(`python asset fetch failed: ${asset.url} (HTTP ${resp.status})`);
+      throw new Error(`python asset fetch failed: ${url} (HTTP ${resp.status})`);
     }
     const buf = new Uint8Array(await resp.arrayBuffer());
-    const parent = asset.path.slice(0, asset.path.lastIndexOf('/'));
+    const path = `${PYTHON_RUNTIME_DIR}/${asset}`;
+    const parent = path.slice(0, path.lastIndexOf('/'));
     await fs.mkdir(parent, { recursive: true });
-    await fs.writeFile(asset.path, buf);
+    await fs.writeFile(path, buf);
   }
 }

@@ -1,15 +1,22 @@
 // invariant: soft dispose vs hard shutdown, port subscriptions, instance cleanup.
+import type { Context } from 'cordis';
 import { WebContainer, type WebContainer as WebContainerType } from '@webcontainer/api';
 import type { EngineBootHooks } from '../engine/index.js';
 import { pagePorts } from '../engine/ports.js';
 import { instancePorts } from '../instance/ports.js';
 import { clearActivePorts, clearDbActivePorts } from '../services/index.js';
 import { SuccinixCapabilityRegistry } from './capabilities.js';
-import type { ResolvedSuccinixConfig } from './config.js';
+import { requiresRestart, type ResolvedSuccinixConfig, type SuccinixConfig } from './config.js';
 import type { HostManager } from './host-manager.js';
 import { loadBootAssets } from './service-runtime.js';
 import type { SuccinixPluginState, SuccinixStateReason } from './state.js';
-import type { BootOptions, EnsureInstanceOptions, SuccinixInstance, SuccinixPortEvent } from './types.js';
+import type {
+  BootOptions,
+  EnsureInstanceOptions,
+  SuccinixInstance,
+  SuccinixPortEvent,
+  SuccinixWorkspaceEvent,
+} from './types.js';
 
 export interface ServiceLifecycleDeps {
   instances: Map<string, SuccinixInstance>;
@@ -22,6 +29,7 @@ export interface ServiceLifecycleDeps {
   resolvedConfig(): ResolvedSuccinixConfig;
   emitState(reason: SuccinixStateReason): void;
   publish<K extends 'succinix/server-ready' | 'succinix/server-closed'>(event: K, payload: SuccinixPortEvent): void;
+  publishWorkspace(instanceId: string, reason: SuccinixWorkspaceEvent['reason'], savedAt?: number): void;
 }
 
 export class ServiceLifecycle {
@@ -33,6 +41,28 @@ export class ServiceLifecycle {
 
   resetShutdownState(): void {
     this.shutdownDone = false;
+  }
+
+  /** Synchronous hard shutdown for restart-required fiber updates. */
+  shutdownNow(): void {
+    if (this.shutdownDone) return;
+    this.shutdownDone = true;
+    this.clearServiceSubscriptions();
+    this.deps.capabilities().reset();
+    this.deps.handlers.clear();
+    this.deps.manager.shutdownSync();
+    this.deps.state.containerState = 'disposed';
+    this.deps.state.host = { pid: null, startedAt: null };
+    this.deps.state.lastError = null;
+  }
+
+  /** Cordis fiber.update bypasses reconfigure(); guard restart-required configs. */
+  bindUpdateGuard(ctx: Context, appliedConfig: () => SuccinixConfig | null): void {
+    ctx.on('internal/update', (nextConfig: SuccinixConfig, _noSave: boolean, next: () => void) => {
+      const previous = appliedConfig();
+      if (previous && requiresRestart(previous, nextConfig)) this.shutdownNow();
+      next();
+    });
   }
 
   private resumeReady(): void {
@@ -106,7 +136,14 @@ export class ServiceLifecycle {
       this.deps.emitState('error');
       throw new Error(this.deps.state.lastError);
     }
-    await this.runManagerBoot(wc, 'internal', opts.executor ?? {});
+    try {
+      await this.runManagerBoot(wc, 'internal', opts.executor ?? {});
+    } catch (error) {
+      this.deps.state.containerState = 'unattached';
+      this.deps.state.lastError = `host boot failed: ${String(error)}`;
+      this.deps.emitState('error');
+      throw error;
+    }
     return this.deps.manager.handle().wc ?? wc;
   }
 
@@ -127,7 +164,14 @@ export class ServiceLifecycle {
     this.deps.state.containerState = 'booting';
     this.deps.state.lastError = null;
     this.deps.emitState('boot');
-    await this.runManagerBoot(wc, 'external', opts.executor ?? {});
+    try {
+      await this.runManagerBoot(wc, 'external', opts.executor ?? {});
+    } catch (error) {
+      this.deps.state.containerState = 'unattached';
+      this.deps.state.lastError = `host boot failed: ${String(error)}`;
+      this.deps.emitState('error');
+      throw error;
+    }
   }
 
   bindPortEvents(): void {
@@ -176,9 +220,26 @@ export class ServiceLifecycle {
     }
   }
 
+  /** Best-effort flush of every live instance; pagehide and shutdown use this. */
+  async flush(): Promise<void> {
+    const wc = this.deps.manager.handle().wc;
+    if (!wc) return;
+    await Promise.all([...this.deps.instances.values()].map(async (instance) => {
+      try {
+        await instance.persist.force(wc.fs, 'flush');
+        this.deps.publishWorkspace(instance.instanceId, 'flush', Date.now());
+      } catch {
+        /* page unload cannot block on persistence errors */
+      }
+    }));
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.deps.resolvedConfig().lifecycle.disposeMode === 'hard') {
+      await this.flush();
+    }
     await this.clearInstances();
     this.clearServiceSubscriptions();
     this.deps.capabilities().reset();
@@ -194,10 +255,7 @@ export class ServiceLifecycle {
   async shutdown(): Promise<void> {
     if (this.shutdownDone) return;
     this.shutdownDone = true;
-    const wc = this.deps.manager.handle().wc;
-    if (wc) {
-      await Promise.all([...this.deps.instances.values()].map((instance) => instance.persist.force(wc.fs).catch(() => {})));
-    }
+    await this.flush();
     await this.clearInstances();
     this.clearServiceSubscriptions();
     this.deps.capabilities().reset();

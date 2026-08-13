@@ -24,5 +24,6 @@ export {
   listServiceStates,
   startService,
   stopService,
+  waitForProcessExit,
 } from './lifecycle.js';
 export type { ServiceDef, ServiceState, ServiceContext, ServiceActionResult } from './types.js';

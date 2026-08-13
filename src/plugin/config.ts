@@ -178,7 +178,11 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
   }),
   terminal: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'terminal must be an object';
-    const t = v as { timeoutMs?: unknown; bootGate?: unknown; history?: unknown; tabComplete?: unknown; interrupt?: unknown; promptPrefix?: unknown };
+    const t = v as { cwd?: unknown; timeoutMs?: unknown; bootGate?: unknown; history?: unknown; tabComplete?: unknown; interrupt?: unknown; promptPrefix?: unknown };
+    if (t.cwd !== undefined) {
+      const error = isString(t.cwd, 'terminal.cwd');
+      if (error) return error;
+    }
     if (t.timeoutMs !== undefined) {
       const error = isIntegerRange(t.timeoutMs, 'terminal.timeoutMs', 1, 600000);
       if (error) return error;

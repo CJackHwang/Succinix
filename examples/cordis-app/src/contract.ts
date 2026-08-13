@@ -216,7 +216,7 @@ export async function runContract(): Promise<ContractResult> {
     add(checks, 'lifo executes in the container', lifo.ok && String(lifo.stdout ?? '').includes('lifo-ok'), String(lifo.stdout ?? '').trim());
 
     if (!wc) throw new Error('boot did not return a WebContainer');
-    await ensurePythonRuntime(wc);
+    await ensurePythonRuntime(wc, config.pythonAssetsUrl);
     const python = await ctx.succinix.executor.exec('python -c "print(6*7)"', { timeoutMs: 120000 });
     add(checks, 'python executes via packaged assets', python.ok && String(python.stdout ?? '').includes('42'), String(python.stdout ?? '').trim());
 
@@ -267,6 +267,8 @@ export async function runContract(): Promise<ContractResult> {
     await ctx.succinix.workspace.flush('contract');
     const workspaceList = await ctx.succinix.workspace.list();
     add(checks, 'workspace list returns instance metadata', Array.isArray(workspaceList) && workspaceList.length >= 1);
+    await ctx.succinix.persist.force(ctx.succinix.container.wc!.fs, 'contract');
+    add(checks, 'persist.force executes explicitly', true);
 
     await ctx.succinix.services.ensureFiles();
     await ctx.succinix.services.add(
@@ -291,6 +293,12 @@ export async function runContract(): Promise<ContractResult> {
     add(checks, 'reconfigure increments configRevision', ctx.succinix.state.configRevision === beforeRevision + 1, `rev=${ctx.succinix.state.configRevision}`);
     engineFiber.update({ ...config, terminal: { timeoutMs: 45000, bootGate: false } });
     await engineFiber;
+    add(
+      checks,
+      'fiber.update increments configRevision',
+      ctx.succinix.state.configRevision === beforeRevision + 2,
+      `rev=${ctx.succinix.state.configRevision}`
+    );
     await ctx.succinix.boot();
     await ctx.succinix.ensureInstance('demo', {
       persistence: { dbName: 'cordis-app-contract', storeKey: `${storeKey}-reload` },
@@ -307,6 +315,23 @@ export async function runContract(): Promise<ContractResult> {
         String(reloadCheck.stdout ?? '').includes('reload-ok'),
       String(reloadCheck.stdout ?? '').trim()
     );
+  });
+
+  await withSection(checks, 'restart-required fiber update', async () => {
+    if (!engineFiber) throw new Error('engine fiber is not loaded');
+    const beforeRevision = ctx.succinix.state.configRevision;
+    engineFiber.update({ ...config, hostJsUrl: '/host.js?restart=1' });
+    await engineFiber;
+    add(
+      checks,
+      'restart-required fiber.update shuts the host down',
+      ctx.succinix.state.configRevision === beforeRevision + 1 &&
+        ctx.succinix.state.host.startedAt === null &&
+        ['disposed', 'unattached'].includes(ctx.succinix.state.containerState),
+      `rev=${ctx.succinix.state.configRevision} state=${ctx.succinix.state.containerState}`
+    );
+    engineFiber.update(config);
+    await engineFiber;
   });
 
   await withSection(checks, 'shutdown and external mode', async () => {

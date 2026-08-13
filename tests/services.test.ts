@@ -20,6 +20,7 @@ import {
   listServiceStates,
   startService,
   stopService,
+  waitForProcessExit,
   type ServiceContext,
 } from '../src/services/index.js';
 import { instancePorts } from '../src/instance/ports.js';
@@ -356,6 +357,26 @@ describe('services start/stop lifecycle', () => {
     const res = await stopService(ctx, 'tinbase');
     expect(res.ok).toBe(true);
     expect(res.message).toContain('stopped');
+    const killCall = fake.terminalCalls.find((c) => c.command === 'kill 7');
+    expect(killCall?.opts?.forceAfterMs).toBeGreaterThan(0);
+  });
+
+  it('waitForProcessExit confirms exit and reports timeout honestly', async () => {
+    const f = fs();
+    let alive = true;
+    const fake = new FakeClient({
+      terminal: () => ({ ok: true, processes: alive ? [{ pid: 7, cmd: 'npx tinbase start', status: 'running' }] : [] }),
+    });
+    const ctx = makeCtx(fake, f);
+    const exited = waitForProcessExit(ctx.client, 7, 1000);
+    alive = false;
+    expect(await exited).toBe(true);
+
+    const stuck = new FakeClient({
+      terminal: () => ({ ok: true, processes: [{ pid: 8, cmd: 'npx tinbase start', status: 'running' }] }),
+    });
+    const stuckCtx = makeCtx(stuck, f);
+    expect(await waitForProcessExit(stuckCtx.client, 8, 250)).toBe(false);
   });
 
   it('stopService reports unknown service and not-running service', async () => {

@@ -16,10 +16,12 @@ import {
 } from '../src/plugin/capabilities.js';
 import { invariant, invariantString } from '../src/plugin/invariant.js';
 import {
+  assetManifestUrl,
   fetchAssetText,
   injectAssetOnce,
   sha256Hex,
 } from '../src/plugin/assets.js';
+import { loadBootAssets } from '../src/plugin/service-runtime.js';
 import type { Context as CordisContext } from 'cordis';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import { FakeWebContainer, asWebContainer } from './helpers/fake-webcontainer.js';
@@ -179,6 +181,16 @@ describe('capabilities (C2)', () => {
     expect(registry.check('fs.read')).toBe(false);
   });
 
+  it('configure replaces rules in place so host hooks stay attached', () => {
+    const registry = new SuccinixCapabilityRegistry({ defaultAllow: true, rules: [] });
+    registry.configure({ defaultAllow: false, rules: [] });
+    expect(registry.check('fs.read')).toBe(false);
+    expect(registry.list()).toHaveLength(9);
+    registry.configure({ defaultAllow: true, rules: [{ pattern: 'fs.write', allow: false }] });
+    expect(registry.check('fs.read')).toBe(true);
+    expect(registry.check('fs.write')).toBe(false);
+  });
+
   it('integrates with an optional host capability service', () => {
     const defined: string[] = [];
     const host = {
@@ -245,6 +257,17 @@ describe('assets (C2)', () => {
     expect(await injectAssetOnce(fs as never, '/host.js', '/host.js', undefined, false)).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fs.raw('/host.js')).toBe('// host.js');
+  });
+
+  it('derives the asset manifest URL from the host asset URL', () => {
+    expect(assetManifestUrl('/engine/host.js')).toBe('/engine/sha256.json');
+    expect(assetManifestUrl('/host.js')).toBe('/sha256.json');
+    expect(assetManifestUrl('https://cdn.example/path/host.js')).toBe('https://cdn.example/path/sha256.json');
+  });
+
+  it('loadBootAssets enforces the manifest when integrity is enabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, text: async () => '' })));
+    await expect(loadBootAssets(resolveConfig({ hostJsUrl: '/engine/host.js' }))).rejects.toThrow(/asset manifest fetch failed/);
   });
 });
 
@@ -359,6 +382,16 @@ describe('lifecycle and single host (C2)', () => {
     expect(wc.hostProc.kill).toHaveBeenCalledTimes(1);
   });
 
+  it('hard dispose flushes instances before killing the host', async () => {
+    const { ctx, wc, fiber } = await bootInternal({ lifecycle: { disposeMode: 'hard' } });
+    await ensureDefault(ctx, 'hard-dispose-key');
+    const events: string[] = [];
+    ctx.succinix.on('succinix/workspace', (payload) => events.push(payload.reason));
+    await fiber.dispose();
+    await vi.waitFor(() => expect(wc.hostProc.kill).toHaveBeenCalledTimes(1));
+    expect(events).toContain('flush');
+  });
+
   it('host boot failure records lastError', async () => {
     wcApi.boot.mockRejectedValue(new Error('wc boot exploded'));
     const loaded = await loadPlugin();
@@ -366,12 +399,59 @@ describe('lifecycle and single host (C2)', () => {
     expect(loaded.ctx.succinix.state.lastError).toContain('wc boot exploded');
     await loaded.fiber.dispose();
   });
+
+  it('host spawn failure records lastError and retry succeeds', async () => {
+    const wc = new FakeWebContainer();
+    wcApi.boot.mockResolvedValue(asWebContainer(wc));
+    const loaded = await loadPlugin();
+    wc.spawn.mockImplementation(async (prog: string, args: string[]) => {
+      wc.spawnCalls.push({ prog, args });
+      throw new Error('spawn exploded');
+    });
+    await expect(loaded.ctx.succinix.boot({ executor: BOOT_HOOKS })).rejects.toThrow(/spawn exploded/);
+    expect(loaded.ctx.succinix.state.containerState).toBe('unattached');
+    expect(loaded.ctx.succinix.state.lastError).toContain('spawn exploded');
+    expect(wc.spawnCalls).toHaveLength(3);
+
+    wc.spawn.mockImplementation(async (prog: string, args: string[]) => {
+      wc.spawnCalls.push({ prog, args });
+      return wc.hostProc;
+    });
+    await loaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
+    expect(loaded.ctx.succinix.state.containerState).toBe('ready');
+    expect(wc.spawnCalls).toHaveLength(4);
+  });
+
+  it('pagehide flushes without hard shutdown and beforeunload shuts down', async () => {
+    const listeners = new Map<string, EventListener>();
+    vi.stubGlobal('window', {
+      addEventListener: vi.fn((type: string, callback: EventListener) => listeners.set(type, callback)),
+      removeEventListener: vi.fn(),
+    });
+    try {
+      const { ctx, wc } = await bootInternal({ lifecycle: { flushOnPageHide: true } });
+      await ensureDefault(ctx, 'pagehide-key');
+      const flushEvents: string[] = [];
+      ctx.succinix.on('succinix/workspace', (payload) => flushEvents.push(payload.reason));
+      expect(wc.hostProc.kill).not.toHaveBeenCalled();
+      listeners.get('pagehide')?.({} as Event);
+      await vi.waitFor(() => expect(flushEvents).toContain('flush'));
+      expect(wc.hostProc.kill).not.toHaveBeenCalled();
+      expect(ctx.succinix.state.containerState).toBe('ready');
+      listeners.get('beforeunload')?.({} as Event);
+      await vi.waitFor(() => expect(wc.hostProc.kill).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('service surface (C2)', () => {
   it('default services fail fast before ensureInstance', async () => {
     const { ctx, fiber } = await bootInternal();
     expect(() => ctx.succinix.executor).toThrow(/not available/);
+    expect(() => ctx.succinix.workspace).toThrow(/not available/);
+    expect(() => ctx.succinix.services).toThrow(/not available/);
     expect(ctx.succinix.state.lastError).toContain('not available');
     await fiber.dispose();
   });
@@ -381,6 +461,16 @@ describe('service surface (C2)', () => {
     const instance = await ensureDefault(ctx);
     expect(ctx.succinix.instance).toBe(instance);
     expect(ctx.succinix.executor).toBe(instance.executor);
+  });
+
+  it('releasing the default instance fails fast until it is recreated', async () => {
+    const { ctx } = await bootInternal();
+    await ensureDefault(ctx, 'release-key');
+    await ctx.succinix.releaseInstance('default');
+    expect(() => ctx.succinix.executor).toThrow(/not available/);
+    expect(() => ctx.succinix.workspace).toThrow(/not available/);
+    const recreated = await ensureDefault(ctx, 'release-key-2');
+    expect(ctx.succinix.executor).toBe(recreated.executor);
   });
 
   it('terminal.create returns a session bound to the default instance', async () => {
@@ -410,6 +500,15 @@ describe('service surface (C2)', () => {
     expect(await ctx.succinix.persist.meta()).toBeNull();
   });
 
+  it('persist.force emits a workspace flush event', async () => {
+    const { ctx } = await bootInternal();
+    await ensureDefault(ctx, 'persist-event-key');
+    const events: Array<{ instanceId: string; reason: string }> = [];
+    ctx.succinix.on('succinix/workspace', (payload) => events.push(payload));
+    await ctx.succinix.persist.force(ctx.succinix.container.wc!.fs, 'direct');
+    expect(events).toContainEqual(expect.objectContaining({ instanceId: 'default', reason: 'flush' }));
+  });
+
   it('workspace restore/flush/list work', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'workspace-key');
@@ -418,6 +517,40 @@ describe('service surface (C2)', () => {
     expect(list[0]).toMatchObject({ instanceId: 'default' });
     await ctx.succinix.workspace.restore();
     expect(ctx.succinix.workspace.stateRoot).toBe('');
+  });
+
+  it('python commands inject assets from pythonAssetsUrl', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url);
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) } as Response;
+    }));
+    const { ctx } = await bootInternal({ pythonAssetsUrl: '/custom-py/' });
+    await ensureDefault(ctx, 'python-url-key');
+    await ctx.succinix.executor.exec('python -c "print(1)"', { timeoutMs: 30000 });
+    expect(urls).toContain('/custom-py/python-daemon.js');
+    expect(urls).toContain('/custom-py/pyodide.mjs');
+    vi.unstubAllGlobals();
+  });
+
+  it('raw instance terminal injects python assets and chains user beforeRpc', async () => {
+    const urls: string[] = [];
+    const order: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url);
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) } as Response;
+    }));
+    const { ctx } = await bootInternal({ pythonAssetsUrl: '/custom-py/' });
+    await ctx.succinix.ensureInstance('default', {
+      persistence: { dbName: 'plugin-c2', storeKey: 'python-terminal-url-key' },
+      executor: BOOT_HOOKS,
+      terminal: { beforeRpc: async () => { order.push('user'); } },
+    });
+    const result = await ctx.succinix.instance!.terminal.rpcExec('python --version', 30000);
+    expect('error' in result).toBe(false);
+    expect(order).toEqual(['user']);
+    expect(urls).toContain('/custom-py/python-daemon.js');
+    vi.unstubAllGlobals();
   });
 
   it('services list/start/stop fail gracefully on unknown services', async () => {
@@ -430,6 +563,20 @@ describe('service surface (C2)', () => {
     expect(started.ok).toBe(false);
     const stopped = await ctx.succinix.services.stop('missing');
     expect(stopped.ok).toBe(false);
+  });
+
+  it('services honors the default instance statePrefix', async () => {
+    const { ctx, wc } = await bootInternal({
+      defaultInstance: { instanceId: 'demo', statePrefix: '/custom' },
+    });
+    await ctx.succinix.ensureInstance('demo', {
+      statePrefix: '/custom',
+      persistence: { dbName: 'plugin-c2', storeKey: 'services-prefix' },
+      executor: BOOT_HOOKS,
+    });
+    await ctx.succinix.services.ensureFiles();
+    expect(wc.fs.raw('/customdemo/etc/succinix.services')).toBeDefined();
+    expect(wc.fs.raw('/workspace/.succinix-demo/etc/succinix.services')).toBeUndefined();
   });
 
   it('listProcesses returns the process table and emits process event', async () => {
@@ -574,6 +721,14 @@ describe('state events and reconfigure (C2)', () => {
     expect(ctx.succinix.state.configRevision).toBe(1);
     expect(wc.spawnCalls.length).toBe(1);
     expect(events.some((event) => event.reason === 'config' && event.changed.includes('configRevision'))).toBe(true);
+  });
+
+  it('reconfigure updates the capability registry in place', async () => {
+    const { ctx } = await bootInternal();
+    const registry = ctx.succinix.capabilities;
+    await ctx.succinix.reconfigure({ capabilities: { defaultAllow: false, rules: [] } });
+    expect(ctx.succinix.capabilities).toBe(registry);
+    expect(ctx.succinix.capabilities.check('fs.read')).toBe(false);
   });
 
   it('restart-required reconfigure shuts the host down', async () => {

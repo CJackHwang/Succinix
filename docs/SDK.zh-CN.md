@@ -180,10 +180,11 @@ export interface SuccinixConfig {
 | `onServerReady` / `onServerClosed` | 端口事件订阅 |
 | `dispose` | 软收尾（fiber dispose） |
 | `shutdown` | 完全关闭（kill host） |
+| `flush` | 对所有存活实例做尽力而为的快照落盘 |
 | `reconfigure` | 校验并应用新配置 |
 
-默认实例未创建时访问 `executor`、`snapshot`、`persist`、`workspace` 或
-`services` 会快速失败，并附带 state 原因。
+默认实例未创建时访问 `executor`、`terminal`、`snapshot`、`persist`、
+`workspace` 或 `services` 会快速失败，并附带 state 原因。
 
 ## 实例
 
@@ -268,17 +269,22 @@ const dispose = ctx.succinix.capabilities.define('fs.write', () => isAllowed());
 ## 生命周期与热重载
 
 - HostManager 是页面级模块单例，不属于 Cordis fiber。
-- fiber reload（`fiber.update`）重新执行 `apply`，但不重启 host；
-  `ctx.succinix.state.host.startedAt` 保持不变。
+- `container.hostPid` / `state.host.pid` 在浏览器中始终为 `null`，因为
+  WebContainer 进程不暴露 pid；软重载间用 `startedAt` 作为稳定的 host 身份标记。
+- fiber reload（`fiber.update`）重新执行 `apply`。热更新字段保持
+  `ctx.succinix.state.host.startedAt` 稳定；需要重启的字段会在 fiber 重新
+  apply 前先关闭 host。
 - `dispose()` 默认软收尾：释放实例与订阅，host 保留。
 - `shutdown()` 强制 flush、kill host、清页面注册表，并置
   `containerState` 为 `disposed`。
 - `lifecycle.disposeMode: 'hard'` 让 fiber dispose 同时关闭 host。
-- `pagehide` / `beforeunload` 触发 shutdown；`flushOnPageHide` 只 flush
-  快照而不关机。
+- `flushOnPageHide` 在 `pagehide` 时触发尽力而为的 flush；
+  `beforeunload` 总是触发尽力而为的 shutdown。浏览器卸载无法等待异步操作。
 - `reconfigure(next)` 同步校验、递增 `configRevision` 并广播
   `succinix/state`（`reason: 'config'`）。改变 host 资产路径或容器模式的
   配置会先执行 shutdown。
+- 每次成功的 `reconfigure` 或 fiber 重新 apply 都会递增 `configRevision`；
+  页面级 HostManager 保证该计数在软重载间单调递增。
 
 ## 事件
 

@@ -211,6 +211,7 @@ export interface SuccinixService {
 
   dispose(): Promise<void>;
   shutdown(): Promise<void>;
+  flush(): Promise<void>;
   reconfigure(next: SuccinixConfig): Promise<void>;
 }
 

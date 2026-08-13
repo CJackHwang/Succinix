@@ -10,6 +10,9 @@ import { portsView, renderCommand, resolvePreviewPort } from './ports.js';
 import type { ServiceContext, ServiceDef, ServiceState, ServiceActionResult } from './types.js';
 
 const PORT_WAIT_MS = 30000;
+// 停止服务：SIGTERM 后等待进程退出；host 侧 forceAfterMs 同时会在宽限期后升级 SIGKILL。
+const EXIT_WAIT_MS = 10000;
+const EXIT_WAIT_BUFFER_MS = 5000;
 
 // TASK19：npx 服务缺包安装 —— node_modules 不随快照持久，刷新/重开容器后 npx <pkg> 的包必然缺失。
 // 若服务命令以 npx 开头且 /workspace/node_modules/<pkg> 不存在，先真实 npm install（与 dbStart 的安装路径一致），
@@ -200,7 +203,25 @@ export async function startService(ctx: ServiceContext, name: string): Promise<S
 
 // 停止服务：查进程表 → kill；端口注册表条目由 host 的 port close 事件自动移除（现有逻辑）。
 // kill 是异步的：返回前有界等待进程退出，消除 stop 后立即 status 仍看到 running 的竞态。
-const EXIT_WAIT_MS = 5000;
+// 若 SIGTERM 后仍存活，host 会按 forceAfterMs 升级 SIGKILL，stop 只在确认退出后报告成功。
+export async function waitForProcessExit(
+  client: ServiceContext['client'],
+  pid: number,
+  timeoutMs = EXIT_WAIT_MS + EXIT_WAIT_BUFFER_MS
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const ps = await client.terminal('ps');
+      const procs = Array.isArray(ps.processes) ? ps.processes : [];
+      if (!procs.some((p) => Number(p.pid) === pid && p.status === 'running')) return true;
+    } catch {
+      /* 进程表瞬时不可达：继续轮询，不误报 */
+    }
+    await sleep(100);
+  }
+  return false;
+}
 
 export async function stopService(ctx: ServiceContext, name: string): Promise<ServiceActionResult> {
   const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
@@ -217,20 +238,16 @@ export async function stopService(ctx: ServiceContext, name: string): Promise<Se
   }
 
   try {
-    const k = await ctx.client.terminal(`kill ${proc.pid}`);
+    const k = await ctx.client.terminal(`kill ${proc.pid}`, { forceAfterMs: EXIT_WAIT_MS });
     if (!k.ok || !k.killed) {
       const why = k.message ?? 'unknown reason';
       void log('WARN', `service stop failed: ${name} (${why})`);
       return { ok: false, message: `failed to stop '${name}': ${why}` };
     }
-    // 有界等待：SIGTERM 已发，轮询进程表直到该 pid 不再是 running（或超时兜底）。
-    const deadline = Date.now() + EXIT_WAIT_MS;
-    while (Date.now() < deadline) {
-      const ps = await ctx.client.terminal('ps');
-      const procs = Array.isArray(ps.processes) ? ps.processes : [];
-      const alive = procs.find((p) => Number(p.pid) === proc.pid && p.status === 'running');
-      if (!alive) break;
-      await sleep(100);
+    // 有界等待：SIGTERM（必要时 SIGKILL）已发，确认进程不再 running 才清理注册表。
+    if (!(await waitForProcessExit(ctx.client, proc.pid))) {
+      void log('WARN', `service stop failed: ${name} (pid ${proc.pid} still running)`);
+      return { ok: false, message: `failed to stop '${name}': process ${proc.pid} still running` };
     }
     void log('INFO', `service stop: ${name} pid=${proc.pid}`);
     const inst = ctx.instanceId ?? DEFAULT_INSTANCE_ID;

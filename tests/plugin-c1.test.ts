@@ -53,6 +53,7 @@ describe('synchronous config schema', () => {
   it('rejects invalid and unknown fields', () => {
     const bad = checkSync(Config, { resultTtlMs: 0, mystery: true });
     expect('issues' in bad && bad.issues).toBeTruthy();
+    expect('issues' in checkSync(Config, { terminal: { cwd: 42 } })).toBe(true);
   });
 
   it('rejects async validators explicitly', () => {

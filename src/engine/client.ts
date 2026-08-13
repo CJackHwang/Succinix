@@ -104,7 +104,7 @@ export class TerminalClient {
     } else {
       const killMatch = /^kill\s+(\d+)$/.exec(trimmed);
       if (killMatch) {
-        res = await this.exec('kill', { pid: Number(killMatch[1]) }, timeoutMs);
+        res = await this.exec('kill', { pid: Number(killMatch[1]), ...opts }, timeoutMs);
       } else {
         // TASK23：setCwd <dir> 协议命令（显式设置会话 cwd；cd 命令的自动同步已覆盖交互路径）。
         const setCwdMatch = /^setCwd\s+(.+)$/.exec(trimmed);

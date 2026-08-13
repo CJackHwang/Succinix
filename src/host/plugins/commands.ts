@@ -1,10 +1,10 @@
 // app plugin: local command context built from the engine instance handle.
-import type { Context } from 'cordis';
-import type { CommandContext, SuccinixPluginSummary } from '../../commands.js';
+import type { Context } from '@deepseek-ai/cordis';
+import type { CommandContext, SuccinixPluginSummary } from '../../commands/index.js';
 import {
   DEFAULT_INSTANCE_ID,
   type LocalCommandHandler,
-  type SuccinixService,
+  type SuccinixHostService,
 } from '@succinix/engine';
 import { makeLocalHandlers } from '../../app/local-commands.js';
 import type { AppCommandsService, AppShell } from '../types.js';
@@ -19,7 +19,7 @@ function pluginSummaries(ctx: Context): SuccinixPluginSummary[] {
   }));
 }
 
-function buildCommandContext(shell: AppShell, succinix: SuccinixService | undefined, plugins: SuccinixPluginSummary[]): CommandContext {
+function buildCommandContext(shell: AppShell, host: SuccinixHostService | undefined, plugins: SuccinixPluginSummary[]): CommandContext {
   return {
     wc: shell.wc,
     client: shell.client,
@@ -33,8 +33,8 @@ function buildCommandContext(shell: AppShell, succinix: SuccinixService | undefi
     userId: shell.userId,
     onInstanceReset: shell.onInstanceReset,
     onInstanceStop: shell.onInstanceStop,
-    succinixState: succinix?.state,
-    succinixPlugins: plugins,
+    engineState: host?.state,
+    pluginSummaries: plugins,
   };
 }
 
@@ -44,14 +44,14 @@ export function apply(ctx: Context): void {
   let shell: AppShell | null = null;
   const context = () => {
     if (!shell) throw new Error('succinix-app-commands: shell is not attached');
-    const succinix = ctx.get('succinix', undefined) as SuccinixService | undefined;
-    return buildCommandContext(shell, succinix, pluginSummaries(ctx));
+    const host = ctx.get('succinix-host', undefined) as SuccinixHostService | undefined;
+    return buildCommandContext(shell, host, pluginSummaries(ctx));
   };
   const service: AppCommandsService = {
     attach(next: AppShell) {
       shell = next;
-      const succinix = ctx.get('succinix', undefined) as SuccinixService | undefined;
-      return buildCommandContext(next, succinix, pluginSummaries(ctx));
+      const host = ctx.get('succinix-host', undefined) as SuccinixHostService | undefined;
+      return buildCommandContext(next, host, pluginSummaries(ctx));
     },
     makeHandlers(): Record<string, LocalCommandHandler> {
       return makeLocalHandlers(context);

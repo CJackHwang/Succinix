@@ -1,4 +1,4 @@
-// invariant: service definitions and autostart helpers for ctx.succinix.services.
+// invariant: service definitions and autostart helpers for the app host seam.
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import type {
   SuccinixInstance,

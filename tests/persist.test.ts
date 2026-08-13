@@ -1,4 +1,4 @@
-// src/persist.ts 单元测试：排除规则 / 签名门控 / force 语义 / 空目录去重（N2）（mock FS + fake IDB）。
+// src/persist/index.ts 单元测试：排除规则 / 签名门控 / force 语义 / 空目录去重（N2）（mock FS + fake IDB）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
@@ -9,7 +9,7 @@ import {
   getSnapshotMeta,
   isAgeForced,
   AUTO_SNAPSHOT_FORCE_INTERVAL_MS,
-} from '../src/persist.js';
+} from '../src/persist/index.js';
 
 // persist 的 dbPromise 是模块级缓存，跨测试引用同一个 fake；beforeEach 用 reset() 清状态。
 const idb = installFakeIDB();

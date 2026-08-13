@@ -1,5 +1,5 @@
 // 本地命令适配层：LOCAL_COMMAND_NAMES + makeLocalHandlers（O2 拆分）。
-import { tryHandleLocalCommand, type CommandContext } from '../commands.js';
+import { tryHandleLocalCommand, type CommandContext } from '../commands/index.js';
 import type { LocalCommandHandler } from '@succinix/engine';
 import { termShimFor } from './output.js';
 

@@ -3,7 +3,7 @@ import type { Terminal } from '@xterm/xterm';
 import type { TerminalClient } from '@succinix/engine';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import type { SuccinixTerminalSession } from '@succinix/engine';
-import type { TestResult } from '../tests.js';
+import type { TestResult } from '../selftest/index.js';
 import { AMBER, RED, RESET } from '../theme.js';
 
 export interface ScenarioServices {

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { processBelongsToInstance } from '../src/services/index.js';
 import { InstancePortRegistry } from '../src/instance/ports.js';
 import { tinbaseDataDir, DEFAULT_INSTANCE_ID } from '../src/instance/paths.js';
-import { rebootMode } from '../src/commands.js';
+import { rebootMode } from '../src/commands/index.js';
 
 describe('service 进程归属过滤（M4）', () => {
   const own = { scope: 'container', containerId: '.succinix-c-1' };

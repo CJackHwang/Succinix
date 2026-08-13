@@ -26,9 +26,10 @@ The following properties are stable by design and can be relied on during replay
 - **Command telemetry is recorded.** succinix/command events carry `id`,
   `instanceId`, `command`, `runtime`, `exitCode`, `startedAt`, `durationMs`,
   `pid`, `timedOut`, and `error`. These events are the audit trail for replay.
-- **Snapshot restore is explicit.** `ctx.succinix.snapshot.restore()` and
-  `ctx.succinix.workspace.restore()` restore the known filesystem state before
-  a replay begins.
+- **Snapshot restore is explicit.** `host.snapshot.restore()` and
+  `host.workspace.restore()` restore the known filesystem state before a
+  replay begins. `host` is the internal `succinix-host` seam
+  (`ctx.get('succinix-host', false)`).
 
 ## Non-Deterministic Boundary
 

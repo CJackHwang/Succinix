@@ -1,4 +1,4 @@
-// invariant: canonical ctx.succinix.ports service over page-level registries.
+// invariant: internal ports facade over page-level registries.
 import { pagePorts } from '../engine/ports.js';
 import { instancePorts } from '../instance/ports.js';
 import type { SuccinixPortsService } from './types.js';

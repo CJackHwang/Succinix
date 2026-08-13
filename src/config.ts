@@ -3,7 +3,7 @@
 // 随快照持久化（persist.ts 遍历 / 时天然收录，重启保留）。
 // 解析要健壮：空行 / # 注释跳过；值可含 =（按第一个 = 切分）；读取失败一律按空处理。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { getPersist } from './persist.js';
+import { getPersist } from './persist/index.js';
 import { ensureParentDir } from './util.js';
 import { DEFAULT_INSTANCE_ID, statePath } from './instance/paths.js';
 

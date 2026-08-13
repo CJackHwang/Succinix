@@ -130,6 +130,39 @@ function registerRealBinaryCommands(
   for (const name of ['pip', 'pip3']) {
     sandbox.commands.register(name, async (ctx) => pythonForward(ctx, ['-m', 'pip', ...ctx.args]));
   }
+
+  // dsh ctx.sandbox wrapper: top-level argv confinement marker for the Lifo
+  // execution world. This is not a security boundary; it reports the mode and
+  // fails closed for real Node subprocesses, which cannot be fenced per call.
+  sandbox.commands.register('succinix-sandbox', async (ctx) => {
+    const args = ctx.args;
+    const modeIndex = args.indexOf('--mode');
+    const rootIndex = args.indexOf('--workspace');
+    const mode = modeIndex >= 0 ? args[modeIndex + 1] : undefined;
+    const workspace = rootIndex >= 0 ? args[rootIndex + 1] : undefined;
+    if (mode !== 'read-only' && mode !== 'workspace-write') {
+      ctx.stderr.write(`sandbox unavailable: unsupported mode ${mode ?? '(missing)'}\n`);
+      return 126;
+    }
+    if (typeof workspace !== 'string' || !workspace.startsWith('/workspace')) {
+      ctx.stderr.write('sandbox unavailable: invalid workspace root\n');
+      return 126;
+    }
+    const afterRoot = rootIndex >= 0 ? rootIndex + 2 : modeIndex + 2;
+    const command = args.slice(afterRoot).join(' ');
+    if (!command || classifyPrefix(command) === 'node') {
+      ctx.stderr.write(`sandbox unavailable for mode ${mode}: real node subprocesses cannot be confined\n`);
+      return 126;
+    }
+    if (typeof ctx.executeCaptureResult !== 'function') {
+      ctx.stderr.write('sandbox unavailable: Lifo runner is not ready\n');
+      return 126;
+    }
+    const r = await ctx.executeCaptureResult(command, { cwd: ctx.cwd });
+    ctx.stdout.write(r.stdout);
+    ctx.stderr.write(r.stderr);
+    return r.code;
+  });
 }
 
 // 延迟预热：host 模块加载完成 + 首批 ping 响应后启动内核加载（见上注释）。

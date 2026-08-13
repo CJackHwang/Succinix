@@ -1,6 +1,6 @@
-// 构建 @succinix/engine@0.5.0 包目录（packages/engine/）。不 publish。
+// 构建 @succinix/engine@0.6.0 包目录（packages/engine/）。不 publish。
 // 产物：
-//   dist/index.js        插件入口 ESM bundle（cordis/@webcontainer/api external）
+//   dist/index.js        插件入口 ESM bundle（@deepseek-ai/cordis/@webcontainer/api external）
 //   dist/plugin/**/*.d.ts  tsc declaration 产物（rootDir=src）
 //   assets/host.js       容器内 host daemon（复制自 public/host.js）
 //   assets/lifo-core.js  Lifo 内核懒加载资产（复制自 public/lifo-core.js）
@@ -27,7 +27,7 @@ for (const file of [hostJs, lifoCoreJs]) {
   }
 }
 
-// 1) 插件入口 bundle。cordis 与 @webcontainer/api 是 peerDependency，保持 external；
+// 1) 插件入口 bundle。@deepseek-ai/cordis 与 @webcontainer/api 是 peerDependency，保持 external；
 //    @standard-schema/spec 已声明为 runtime dependency，同样 external。
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
@@ -38,7 +38,7 @@ await build({
   format: 'esm',
   target: 'es2022',
   outfile: join(distDir, 'index.js'),
-  external: ['cordis', '@webcontainer/api', '@standard-schema/spec'],
+  external: ['@deepseek-ai/cordis', '@webcontainer/api', '@standard-schema/spec'],
   logLevel: 'info',
 });
 
@@ -69,7 +69,7 @@ const manifest = {
 };
 writeFileSync(join(assetsDir, 'sha256.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
-// 4) 导出面快照校验（0.5.0 只保留五个键）。
+// 4) 导出面快照校验（0.6.0 只保留五个键）。
 const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
 const expectedExports = new Set(['.', './host.js', './lifo-core.js', './assets/*', './package.json']);
 const actualExports = new Set(Object.keys(pkg.exports ?? {}));
@@ -77,4 +77,4 @@ if (actualExports.size !== expectedExports.size || [...expectedExports].some((ke
   throw new Error(`package exports mismatch: expected [${[...expectedExports].join(', ')}], got [${[...actualExports].join(', ')}]`);
 }
 
-console.log('@succinix/engine 0.5.0 package built → packages/engine/ (dist/ + assets/)');
+console.log('@succinix/engine 0.6.0 package built → packages/engine/ (dist/ + assets/)');

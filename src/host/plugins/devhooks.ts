@@ -1,5 +1,5 @@
 // app plugin: bench/scenario/test window handles.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { benchMode, scenarioMode, installDevHooks, scenarioRun } from '../../app/dev-hooks.js';
 import type { AppDevhooksService, AppShell } from '../types.js';
 

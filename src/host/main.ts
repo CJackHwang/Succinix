@@ -1,6 +1,6 @@
 // Succinix host app entry: a Cordis Context composed from @succinix/engine and
 // the app-level plugins below.
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import { appPlugins, engineConfig, enginePluginEntry } from './plugins.js';
 
 async function main(): Promise<void> {

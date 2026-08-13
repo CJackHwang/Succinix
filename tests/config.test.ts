@@ -20,7 +20,7 @@ import {
   listSettings,
   SETTING_KEYS,
 } from '../src/config.js';
-import { clearSnapshot } from '../src/persist.js';
+import { clearSnapshot } from '../src/persist/index.js';
 
 const fs = () => new FakeFS() as unknown as FileSystemAPI;
 

@@ -9,6 +9,33 @@
 
 ## [Unreleased]
 
+### 破坏性变更（Breaking）
+
+- **移除 `ctx.succinix` 单键服务面。** 引擎现按 dsh 0.1.0-rc.6 提供
+  `ctx.fs`、`ctx.sandbox`、`ctx.terminals`、`ctx.sessionPersistence`
+  四个服务键；旧键不再保留，也不提供弃用过渡期。
+- **Cordis 基线切换为 `@deepseek-ai/cordis@4.0.1`。**
+- **命令上下文中的 `ctx.succinixState` / `ctx.succinixPlugins` 重命名**
+  为 `succinixState` / `succinixPlugins`，不再带 `ctx.` 服务前缀。
+- **`ctx.fs` 对齐 dsh 错误与身份契约：** 12 个原语、13 个错误码、
+  `sandboxMode`、`sandboxPolicy`、opaque `targetKey`、LF-normalized
+  outcome，以及有上限且不截断的 `readBytes`。
+- **`ctx.sandbox.confine` fail-closed：** 只接受 `read-only` 与
+  `workspace-write`；受限模式下真实 `node|npm|npx` 子进程抛
+  `SANDBOX_UNAVAILABLE`。
+- **`ctx.terminals` 变为 owner-scoped registry：** 固定信号白名单、
+  每会话单个 in-flight send、幂等且等待 quiescent 的 `kill`。
+- **`ctx.sessionPersistence` 变为 event-sourced JSONL 镜像：** 连续 seq、
+  仅截尾 repair、raw artifact 与 opaque revision。
+
+### 新增（Added）
+
+- 入库 dsh 0.1.0-rc.6 契约快照：`docs/contracts/dsh-0.1.0-rc.6/`。
+- 新增 `scripts/check-dsh-shapes.mjs` 与 `scripts/check-dsh-keys.mjs`，
+  并接入 `npm run check`。
+- 四个 dsh 服务的单测与浏览器 e2e 覆盖，含外部
+  `examples/cordis-app` 契约。
+
 ## [0.4.0] — 2026-08-10
 
 ### 新增（Added）

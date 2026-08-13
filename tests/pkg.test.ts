@@ -1,4 +1,4 @@
-// src/pkg.ts 单元测试：来源判定 / 命令构造 / 列表与搜索渲染（mock 网络 client + mock FS）。
+// src/pkg/index.ts 单元测试：来源判定 / 命令构造 / 列表与搜索渲染（mock 网络 client + mock FS）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB, FakeClient } from './helpers/fakes.js';
 import type { WebContainer } from '@webcontainer/api';
@@ -14,7 +14,7 @@ import {
   packageInfo,
   type PkgContext,
 } from '../src/pkg/index.js';
-import { clearSnapshot } from '../src/persist.js';
+import { clearSnapshot } from '../src/persist/index.js';
 
 function makeCtx(fake: FakeClient, f: FakeFS): PkgContext {
   return {

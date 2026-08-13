@@ -1,18 +1,18 @@
 // C1 包形态测试：exports 快照 / 插件对象 / 同步 schema / singleton reset / 类型增强。
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Context, type Events } from 'cordis';
+import { Context, type Events } from '@deepseek-ai/cordis';
 import { describe, expect, it, beforeEach } from 'vitest';
 import plugin, { apply, Config, requiresRestart } from '../src/plugin/index.js';
 import { getHostManager, resetPageSingletons } from '../src/plugin/host-manager.js';
 import { checkSync, type Schema } from '../src/plugin/schema.js';
-import type { SuccinixService } from '../src/plugin/types.js';
+import { hostOf } from './helpers/fakes.js';
 
 beforeEach(() => {
   resetPageSingletons();
 });
 
-describe('engine 0.5.0 package shape', () => {
+describe('engine 0.6.0 package shape', () => {
   it('exports only the single-track keys', () => {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'packages/engine/package.json'), 'utf8')) as {
       version: string;
@@ -21,8 +21,8 @@ describe('engine 0.5.0 package shape', () => {
       dependencies: Record<string, string>;
     };
     expect(Object.keys(pkg.exports)).toEqual(['.', './host.js', './lifo-core.js', './assets/*', './package.json']);
-    expect(pkg.version).toBe('0.5.0');
-    expect(pkg.peerDependencies.cordis).toBe('>=4.0.0-rc.8');
+    expect(pkg.version).toBe('0.6.0');
+    expect(pkg.peerDependencies['@deepseek-ai/cordis']).toBe('^4.0.1');
     expect(pkg.dependencies['@standard-schema/spec']).toBe('^1.1.0');
   });
 
@@ -32,12 +32,16 @@ describe('engine 0.5.0 package shape', () => {
     expect(apply).toBe(plugin.apply);
   });
 
-  it('provides ctx.succinix when loaded', async () => {
+  it('provides dsh service keys and the internal host seam when loaded', async () => {
     const ctx = new Context();
     const fiber = ctx.plugin(plugin, {});
     await fiber;
-    expect(ctx.succinix.state.version).toBe('0.5.0');
-    expect(ctx.succinix.state.containerMode).toBe('internal');
+    expect(ctx.fs).toBeDefined();
+    expect(ctx.sandbox).toBeDefined();
+    expect(ctx.terminals).toBeDefined();
+    expect(ctx.sessionPersistence).toBeDefined();
+    expect(hostOf(ctx).state.version).toBe('0.6.0');
+    expect(hostOf(ctx).state.containerMode).toBe('internal');
     await fiber.dispose();
   });
 });
@@ -85,11 +89,13 @@ describe('page singletons', () => {
 });
 
 describe('type augmentation', () => {
-  it('ctx.succinix and succinix/* events compile through cordis types', () => {
-    const serviceFor = (ctx: Context): SuccinixService => ctx.succinix;
+  it('dsh keys, host seam, and succinix/* events compile through cordis types', () => {
+    const serviceFor = (ctx: Context): ReturnType<typeof hostOf> => hostOf(ctx);
+    const fsFor = (ctx: Context): typeof ctx.fs => ctx.fs;
     const statePayload = (): Parameters<Events['succinix/state']>[0] =>
       null as unknown as Parameters<Events['succinix/state']>[0];
     expect(typeof serviceFor).toBe('function');
+    expect(typeof fsFor).toBe('function');
     expect(typeof statePayload).toBe('function');
   });
 });

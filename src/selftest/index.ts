@@ -1,4 +1,4 @@
-// selftest 聚合导出（O5 拆分）：src/tests.ts 兼容 shim 由此转发。
+// selftest 聚合导出（O5 拆分）：自检套件的统一入口。
 export * from './runner.js';
 export * from './kernel.js';
 export * from './filesystem.js';

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 插件边界门禁（C1）：
-//   1. src/engine|terminal|instance|persist|services 不得 import cordis；
+//   1. src/engine|terminal|instance|persist|services 不得 import cordis / @deepseek-ai/cordis；
 //   2. src/plugin/ 每个文件必须包含 invariant 标记或显式豁免。
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CORE_DIRS = ['src/engine', 'src/terminal', 'src/instance', 'src/persist', 'src/services'];
 const PLUGIN_DIR = join(ROOT, 'src', 'plugin');
-const CORDIS_IMPORT_RE = /from\s+['"]cordis['"]|import\s*\(\s*['"]cordis['"]|require\s*\(\s*['"]cordis['"]/;
+const CORDIS_IMPORT_RE = /from\s+['"](?:@deepseek-ai\/)?cordis['"]|import\s*\(\s*['"](?:@deepseek-ai\/)?cordis['"]|require\s*\(\s*['"](?:@deepseek-ai\/)?cordis['"]/;
 
 function filesUnder(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -28,7 +28,7 @@ for (const dir of CORE_DIRS) {
   for (const file of filesUnder(abs)) {
     const text = readFileSync(file, 'utf8');
     if (CORDIS_IMPORT_RE.test(text)) {
-      failures.push(`${file.replace(ROOT, '.')} must not import cordis`);
+      failures.push(`${file.replace(ROOT, '.')} must not import cordis or @deepseek-ai/cordis`);
     }
   }
 }
@@ -45,4 +45,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  ${failure}`);
   process.exit(1);
 }
-console.log('[  OK  ] plugin boundaries: core dirs have no cordis imports; plugin files have invariant markers');
+console.log('[  OK  ] plugin boundaries: core dirs have no cordis/@deepseek-ai/cordis imports; plugin files have invariant markers');

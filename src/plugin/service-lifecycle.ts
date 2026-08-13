@@ -1,5 +1,5 @@
 // invariant: soft dispose vs hard shutdown, port subscriptions, instance cleanup.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { WebContainer, type WebContainer as WebContainerType } from '@webcontainer/api';
 import type { EngineBootHooks } from '../engine/index.js';
 import { pagePorts } from '../engine/ports.js';
@@ -61,7 +61,7 @@ export class ServiceLifecycle {
     ctx.on('internal/update', (nextConfig: SuccinixConfig, _noSave: boolean, next: () => void) => {
       const previous = appliedConfig();
       if (previous && requiresRestart(previous, nextConfig)) this.shutdownNow();
-      next();
+      return next();
     });
   }
 

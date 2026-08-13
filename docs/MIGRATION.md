@@ -1,47 +1,58 @@
 # Succinix Engine Migration Guide
 
-This guide moves an existing `@succinix/engine` consumer from the **0.4.0
-standalone SDK form** to the **0.5.0 Cordis plugin form**. The 0.5.0 package is
-single-track: the only public integration surface is the `succinix` Cordis
-plugin and the services it provides as `ctx.succinix`.
+This guide moves an existing `@succinix/engine` consumer to the **0.6.0 dsh
+service form**. The 0.6.0 package is single-track: it is a Cordis plugin for
+`@deepseek-ai/cordis@4.0.1` and provides `ctx.fs`, `ctx.sandbox`,
+`ctx.terminals`, and `ctx.sessionPersistence`. The 0.4.0 standalone SDK exports
+and the 0.5.0 single-key `succinix` service are removed.
 
-The migration is breaking by design. It changes the public exports, the
-lifecycle ownership, the configuration style, and the way runtime callbacks
-are consumed. The wire protocol (file RPC over `/cmd.json`) is unchanged.
+The migration is breaking by design. It changes the public exports, the service
+keys, the lifecycle ownership, the configuration style, and the way runtime
+callbacks are consumed. The wire protocol (file RPC over `/cmd.json`) is
+unchanged.
 
 ## What changed
 
-### Exports
+### Service keys
 
-| 0.4.0 | 0.5.0 |
+| 0.4.0 / 0.5.0 | 0.6.0 |
 | --- | --- |
-| `import { createTerminalExecutor } from '@succinix/engine'` | apply the Cordis plugin, then use `ctx.succinix.executor` |
-| `import { SuccinixTerminalSession } from '@succinix/engine/terminal'` | `ctx.succinix.terminal.create(output)` |
-| `import { createSuccinixInstance } from '@succinix/engine/instance'` | `ctx.succinix.ensureInstance(containerId, opts)` |
-| `boot(wc, { onServerReady })` callback configuration | `ctx.succinix.onServerReady(handler)` or `ctx.on('succinix/server-ready', handler)` |
-| `boot(wc, { onServerClosed })` callback configuration | `ctx.succinix.onServerClosed(handler)` or `ctx.on('succinix/server-closed', handler)` |
-| `pagePorts` | `ctx.succinix.ports` (canonical ports view) |
+| `createTerminalExecutor()` / single-key `succinix` service | apply the plugin, then use `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, and `ctx.sessionPersistence` |
+| `ctx.fs` command facade (`exec` / `spawn` / `ps` / `kill`) | `ctx.fs` for files and `ctx.sandbox.confine` for confined argv; process management stays behind the `succinix-host` seam |
+| `terminal.create(output)` | `ctx.terminals` owner-scoped registry for dsh consumers; the app-level session remains behind the host seam |
+| `snapshot` / `persist` facade | `ctx.sessionPersistence` event-sourced log; snapshot remains an internal host capability |
+| `boot(wc, { onServerReady })` callback configuration | `succinix-host` seam (`host.boot` / `host.attach`) plus `host.onServerReady` or `succinix/server-ready` events |
+| `pagePorts` | `host.ports` behind the host seam |
 
-The root export of `@succinix/engine@0.5.0` is the plugin object
+The root export of `@succinix/engine@0.6.0` is the plugin object
 `{ name: 'succinix', apply, Config }`. The `./terminal` and `./instance`
 subpath exports are removed. The only remaining subpath exports are
 `./host.js`, `./lifo-core.js`, `./assets/*`, and `./package.json`.
+
+### Dependency baseline
+
+The engine now peers on `@deepseek-ai/cordis ^4.0.1` instead of upstream
+`cordis`. Consumer projects must install the dsh fork:
+
+```bash
+npm install @succinix/engine@0.6.0 @deepseek-ai/cordis @webcontainer/api
+```
 
 ### Lifecycle ownership
 
 In 0.4.0, the consumer owned the host lifecycle through
 `createTerminalExecutor()` and `dispose()` killed the host. In 0.5.0, the
-plugin owns lifecycle semantics:
+plugin owned the lifecycle but exposed a monolithic service. In 0.6.0:
 
-- `ctx.succinix.boot()` boots a WebContainer in **internal** mode.
-- `ctx.succinix.attach(wc)` adopts a host-owned WebContainer in **external**
-  mode. The plugin still injects and spawns the in-container host daemon.
+- `host.boot()` boots a WebContainer in **internal** mode.
+- `host.attach(wc)` adopts a host-owned WebContainer in **external** mode. The
+  plugin still injects and spawns the in-container host daemon.
 - `attach()` and `boot()` are mutually exclusive; switching modes throws
   `ERR_MODE_MISMATCH`.
 - Fiber reload / dispose is **soft** by default (`disposeMode: 'soft'`): the
   page-level HostManager keeps the host process alive.
-- `ctx.succinix.shutdown()` is the hard teardown: it flushes instances, kills
-  the host, clears subscriptions, and resets the page-level singleton state.
+- `host.shutdown()` is the hard teardown: it flushes instances, kills the
+  host, clears subscriptions, and resets the page-level singleton state.
 - With `lifecycle.flushOnPageHide` enabled, `pagehide` triggers a best-effort
   flush; `beforeunload` always triggers best-effort shutdown.
 
@@ -57,13 +68,13 @@ ports and events, and pass `output`, `terminal`, `executor`, `bootSteps`, and
 ### 1. Install peers
 
 ```bash
-npm install @succinix/engine@0.5.0 cordis @webcontainer/api
+npm install @succinix/engine@0.6.0 @deepseek-ai/cordis @webcontainer/api
 ```
 
 ### 2. Apply the plugin
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 
 const ctx = new Context();
@@ -73,17 +84,18 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 ```
 
-The package `.d.ts` augments `Context['succinix']` and the `Events` map, so
-`ctx.succinix` and `ctx.on('succinix/...')` type-check once the plugin is
-imported.
+The package `.d.ts` augments `Context['fs']`, `Context['sandbox']`,
+`Context['terminals']`, and `Context['sessionPersistence']`, so injected dsh
+keys and `succinix/*` events type-check once the plugin is imported.
 
 ### 3. Give the plugin a container
 
 **External mode** (the host application owns the WebContainer):
 
 ```ts
+const host = ctx.get('succinix-host', false)!;
 const wc = await WebContainer.boot();
-await ctx.succinix.attach(wc, {
+await host.attach(wc, {
   executor: {},
 });
 ```
@@ -91,7 +103,7 @@ await ctx.succinix.attach(wc, {
 **Internal mode** (the plugin boots the WebContainer):
 
 ```ts
-const wc = await ctx.succinix.boot({
+const wc = await host.boot({
   instanceId: 'default',
   executor: {},
 });
@@ -100,18 +112,18 @@ const wc = await ctx.succinix.boot({
 ### 4. Create the default instance
 
 ```ts
-const inst = await ctx.succinix.ensureInstance('default', {
+const inst = await host.ensureInstance('default', {
   home: '/workspace',
   persistence: { dbName: 'my-app', storeKey: 'default' },
   executor: {},
 });
 ```
 
-`ctx.succinix.executor`, `snapshot`, `persist`, `workspace`, `ports`, and
-`services` operate on this default instance. Multiple instances reuse the same
-page-level host.
+`host.executor`, `snapshot`, `persist`, `workspace`, `ports`, and `services`
+operate on this default instance. Multiple instances reuse the same page-level
+host.
 
-### 5. Replace `createTerminalExecutor()`
+### 5. Replace command execution
 
 ```ts
 // Before (0.4.0)
@@ -119,34 +131,51 @@ const term = createTerminalExecutor();
 await term.boot(wc);
 const result = await term.exec('node -e "console.log(1+1)"');
 
-// After (0.5.0)
-const result = await ctx.succinix.executor.exec('node -e "console.log(1+1)"');
+// After (0.6.0)
+const result = await host.executor.exec('node -e "console.log(1+1)"');
 ```
 
-### 6. Replace `@succinix/engine/terminal`
+For file access, use `ctx.fs`:
 
 ```ts
-import type { TerminalOutput } from '@succinix/engine';
+const target = await ctx.fs.resolve('/workspace/hello.txt');
+await ctx.fs.writeText(target, 'hello\n');
+const text = await ctx.fs.readText(target);
+```
 
-const output: TerminalOutput = {
+### 6. Replace the terminal API
+
+dsh consumers use the owner-scoped `ctx.terminals`:
+
+```ts
+const agent: Agent = { id: SessionId('agent-1'), status: 'idle', ctx: {} };
+host.registerAgent(agent);
+
+const session = await ctx.terminals.spawn(agent, {
+  type: 'succinix',
+  name: 'shell',
+});
+```
+
+The old UI-free session still exists behind the host seam for the app shell:
+
+```ts
+const session = host.terminal.create({
   write: (data) => term.write(data),
   clear: () => term.clear(),
-};
-const session = ctx.succinix.terminal.create(output);
+});
 term.onData((data) => session.handleData(data));
 await session.boot();
 ```
 
-The host still owns rendering; the plugin never imports xterm.
-
-### 7. Replace `createSuccinixInstance()`
+### 7. Replace instance creation
 
 ```ts
 // Before (0.4.0)
 const inst = await createSuccinixInstance({ wc, instanceId: 'alice' });
 
-// After (0.5.0)
-const inst = await ctx.succinix.ensureInstance('alice', {
+// After (0.6.0)
+const inst = await host.ensureInstance('alice', {
   home: '/workspace/alice',
   persistence: { dbName: 'my-app', storeKey: 'alice' },
   executor: {},
@@ -160,10 +189,10 @@ The returned `SuccinixInstance` keeps the familiar shape: `instanceId`,
 ### 8. Replace `onServerReady` / `onServerClosed`
 
 ```ts
-const unsubReady = ctx.succinix.onServerReady(({ port, url, instanceId }) => {
+const unsubReady = host.onServerReady(({ port, url, instanceId }) => {
   app.recordPreview(port, url, instanceId);
 });
-const unsubClosed = ctx.succinix.onServerClosed(({ port, instanceId }) => {
+const unsubClosed = host.onServerClosed(({ port, instanceId }) => {
   app.dropPreview(port, instanceId);
 });
 ```
@@ -195,12 +224,12 @@ cp node_modules/@succinix/engine/assets/* public/
 Any 0.4.0 option that was a function must move to a service argument or an
 event subscription:
 
-| 0.4.0 config callback | 0.5.0 replacement |
+| 0.4.0 config callback | 0.6.0 replacement |
 | --- | --- |
-| `onServerReady` | `ctx.succinix.onServerReady` / `succinix/server-ready` |
-| `onServerClosed` | `ctx.succinix.onServerClosed` / `succinix/server-closed` |
-| `onCommand` | `ctx.succinix.on('succinix/command')` |
-| terminal `TerminalOutput` | passed to `ctx.succinix.terminal.create(output)` |
+| `onServerReady` | `host.onServerReady` / `succinix/server-ready` |
+| `onServerClosed` | `host.onServerClosed` / `succinix/server-closed` |
+| `onCommand` | `ctx.on('succinix/command')` |
+| terminal `TerminalOutput` | passed to `host.terminal.create(output)` |
 
 ## Runnable example
 
@@ -211,7 +240,7 @@ and is executed as part of the external demo contract
 It verifies the migration mapping without booting a container:
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 
 const ctx = new Context();
@@ -221,9 +250,12 @@ const fiber = ctx.plugin(engine, {
 });
 await fiber;
 
-const service = ctx.succinix;
-// executor, terminal, snapshot, persist, workspace, ports, services,
-// capabilities, instance, and container all exist on the service surface.
+const legacyGone = ctx.get('succinix', false) === undefined;
+const host = ctx.get('succinix-host', false);
+const fs = ctx.get('fs', false);
+const sandbox = ctx.get('sandbox', false);
+const terminals = ctx.get('terminals', false);
+const persistence = ctx.get('sessionPersistence', false);
 
 await fiber.dispose();
 ```

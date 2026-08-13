@@ -143,6 +143,22 @@ export class SuccinixTerminalSession {
     this.queue.length = 0;
   }
 
+  /** 是否正在执行前台命令（PTY 后端等空闲用）。 */
+  isBusy(): boolean {
+    return this.busy;
+  }
+
+  /** 等待当前前台命令队列清空；超时或被 dispose 时返回 false。 */
+  async waitForIdle(timeoutMs = 60000): Promise<boolean> {
+    const start = Date.now();
+    while (this.busy) {
+      if (this.disposed) return false;
+      if (Date.now() - start >= timeoutMs) return false;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    return !this.disposed;
+  }
+
   getPrompt(): string {
     return `${this.options.promptPrefix}${sessionCwdPromptLabel(this.cwd, this.options.home)}$ `;
   }

@@ -14,16 +14,22 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.codex', '.agents']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.codex', '.agents', 'contracts']);
 const EXT_RE = /\.(md|ts|mjs|js|cjs|json|yml|yaml|sh|html|css|tsx|svg|png|ico|txt|wasm|lock)$/;
 // 有意提及已删除文档的引用（MASTER-PLAN-NEXT 开篇说明旧计划文件已删除）。
 const ALLOW_MISSING = new Set(['MASTER-PLAN.md', 'ENGINEERING-REVIEW.md']);
 // 非仓库文件的容器资产 / SDK 导出子路径（描述运行时布局，不存在于仓库根）。
+// succinix/* 是真实内部事件名（反引号写法会被路径候选逻辑命中），不是失效文档链接。
 const ALLOW_NON_REPO = new Set([
   'host.js',
   './host.js',
   'lifo-core.js',
   './lifo-core.js',
+  'public/host.js',
+  'public/lifo-core.js',
+  'packages/engine/assets/sha256.json',
+  'assets/sha256.json',
+  'dist/',
   './terminal',
   './instance',
   'sha256.json',

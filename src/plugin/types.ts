@@ -1,4 +1,4 @@
-// invariant: ctx.succinix service contract + Context/Events type augmentation.
+// invariant: internal succinix-host seam + dsh Context augmentation.
 import type { WebContainer } from '@webcontainer/api';
 import type {
   EngineBootHooks,
@@ -11,7 +11,7 @@ import type {
   SaveResult,
   PersistContext,
   SnapshotMeta,
-} from '../persist.js';
+} from '../persist/index.js';
 import type {
   SuccinixTerminalSession,
   TerminalOutput,
@@ -24,8 +24,23 @@ import type {
   SuccinixPortEvent,
 } from './events.js';
 import type { SuccinixPluginState } from './state.js';
+import type {
+  Agent,
+  FileSystem,
+  SandboxProvider,
+  SessionPersistence,
+  TerminalSessionService,
+} from './dsh-types.js';
 
 export type { SuccinixConfig } from './config.js';
+export type {
+  Agent,
+  FileSystem,
+  SandboxProvider,
+  SessionPersistence,
+  TerminalSessionService,
+} from './dsh-types.js';
+export * from './dsh-types.js';
 export type { SuccinixPluginState, SuccinixStateReason } from './state.js';
 export type {
   SuccinixEventMap,
@@ -49,7 +64,7 @@ export type {
   PersistContext,
   SaveResult,
   SnapshotMeta,
-} from '../persist.js';
+} from '../persist/index.js';
 export type { SuccinixRestartContext } from '../instance/index.js';
 export type {
   SuccinixTerminalSession,
@@ -185,9 +200,13 @@ export interface SuccinixInstance {
   dispose(): Promise<void>;
 }
 
-export interface SuccinixService {
+export interface SuccinixHostService {
   readonly state: SuccinixPluginState;
   readonly container: SuccinixContainerHandle;
+  readonly fs: FileSystem;
+  readonly sandbox: SandboxProvider;
+  readonly terminals: TerminalSessionService;
+  readonly sessionPersistence: SessionPersistence;
   readonly executor: TerminalExecutor;
   readonly terminal: SuccinixTerminalService;
   readonly snapshot: SuccinixSnapshotService;
@@ -204,6 +223,8 @@ export interface SuccinixService {
   getInstance(containerId: string): SuccinixInstance | undefined;
   releaseInstance(containerId: string): Promise<void>;
   listProcesses(containerId?: string): Promise<ProcInfo[]>;
+  registerAgent(owner: Agent): void;
+  unregisterAgent(owner: Agent): void;
 
   on<K extends keyof SuccinixEventMap>(event: K, handler: SuccinixEventHandler<K>): () => void;
   onServerReady(handler: (payload: SuccinixPortEvent) => void): () => void;
@@ -215,8 +236,12 @@ export interface SuccinixService {
   reconfigure(next: SuccinixConfig): Promise<void>;
 }
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Context {
-    succinix: SuccinixService;
+    'succinix-host': SuccinixHostService;
+    fs: FileSystem;
+    sandbox: SandboxProvider;
+    terminals: TerminalSessionService;
+    sessionPersistence: SessionPersistence;
   }
 }

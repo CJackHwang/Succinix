@@ -1,5 +1,5 @@
 // app plugin: host watchdog.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { startHostWatchdog } from '../../app/watchdog.js';
 import type { AppShell, AppWatchdogService } from '../types.js';
 

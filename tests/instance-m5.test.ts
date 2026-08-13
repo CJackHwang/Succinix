@@ -46,7 +46,7 @@ const persistMock = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/persist.js', () => persistMock);
+vi.mock('../src/persist/index.js', () => persistMock);
 
 // ─── 假 wc.fs：写 /cmd.json 时按响应函数生成 /result-<id>.json ───
 function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {

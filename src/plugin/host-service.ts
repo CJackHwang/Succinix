@@ -1,21 +1,15 @@
-// invariant: ctx.succinix service surface (services, lifecycle, events).
-import type { Context } from 'cordis';
-import { ValidationError } from 'cordis';
+// invariant: internal succinix-host lifecycle seam, instance registry, and app
+// observability facades. The public service keys are ctx.fs / ctx.sandbox /
+// ctx.terminals / ctx.sessionPersistence; this object is not provided as
+// the legacy single-key service.
+import type { Context } from '@deepseek-ai/cordis';
+import { ValidationError } from '@deepseek-ai/cordis';
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import {
-  pagePorts,
-  TerminalClient,
-  type ProcInfo,
   type TerminalExecutor,
 } from '../engine/index.js';
-import { createSuccinixInstance as createEngineInstance } from '../instance/index.js';
-import { instancePorts } from '../instance/ports.js';
 import { instanceStateRoot } from '../instance/paths.js';
-import type { PersistContext, SaveResult } from '../persist.js';
-import {
-  clearActivePorts,
-  clearDbActivePorts,
-} from '../services/index.js';
+import type { PersistContext, SaveResult } from '../persist/index.js';
 import type {
   SuccinixTerminalSession,
   TerminalOutput,
@@ -31,18 +25,28 @@ import {
 } from './config.js';
 import { defaultInstanceId, defaultInstanceUnavailable } from './default-instance.js';
 import { ensurePythonForCommand, wrapExecutorWithPython } from './executor-runtime.js';
+import { SuccinixHostInstanceManager } from './host-instance-manager.js';
 import { getHostManager, type HostManager } from './host-manager.js';
-import { invariantString } from './invariant.js';
 import { createPortsService, type SuccinixPortsService } from './ports.js';
 import { checkSync } from './schema.js';
 import { ServiceLifecycle } from './service-lifecycle.js';
 import {
   createTerminalSession,
   createWorkspaceBackend,
-  noOpOutput,
   stateChanged,
 } from './service-runtime.js';
 import { makeServicesService } from './services-service.js';
+import { SuccinixFileSystem } from './fs-service.js';
+import { SuccinixSandboxService } from './sandbox-service.js';
+import { SuccinixTerminalService } from './terminal-service.js';
+import { SuccinixTerminalBackend } from './terminal-backend.js';
+import { SuccinixSessionPersistence } from './persistence-service.js';
+import type {
+  Agent,
+  FileSystem,
+  SandboxProvider,
+  SessionPersistence,
+} from './dsh-types.js';
 import {
   cloneState,
   createInitialState,
@@ -54,16 +58,15 @@ import type {
   SuccinixCommandEvent,
   SuccinixEventMap,
   SuccinixInstance,
+  SuccinixHostService,
   SuccinixPortEvent,
-  SuccinixProcessEvent,
-  SuccinixService,
   SuccinixWorkspaceEvent,
 } from './types.js';
 import { createWorkspaceService, type SuccinixWorkspaceService } from './workspace.js';
 
-export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConfig, rawConfig: SuccinixConfig = {}): SuccinixService {
+export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinixConfig, rawConfig: SuccinixConfig = {}): SuccinixHostService {
   const state = createInitialState();
-  state.version = '0.5.0';
+  state.version = '0.6.0';
   state.containerMode = config.container.mode;
   let resolvedConfig = config;
   let raw = rawConfig;
@@ -77,6 +80,49 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
   const handlers = new Map<string, Set<(payload: unknown) => void>>();
   const portUnsubs = new Set<() => void>();
   let lastState = cloneState(state);
+  const liveOwners = new Set<Agent>();
+  const ownerDisposeHandlers = new Map<Agent, Set<() => void | Promise<void>>>();
+
+  const terminals = new SuccinixTerminalService({
+    isOwnerLive: (owner) => liveOwners.has(owner),
+    onOwnerDispose: (owner, handler) => {
+      let set = ownerDisposeHandlers.get(owner);
+      if (!set) {
+        set = new Set();
+        ownerDisposeHandlers.set(owner, set);
+      }
+      set.add(handler);
+      return () => {
+        set?.delete(handler);
+        if (set?.size === 0) ownerDisposeHandlers.delete(owner);
+      };
+    },
+  });
+  const terminalBackend = new SuccinixTerminalBackend({
+    createSession: (options) =>
+      createTerminalSession(requireDefault(), requireWc(), resolvedConfig.terminal, options.output, options),
+  });
+  const unregisterTerminalBackend = terminals.registerBackend(terminalBackend);
+  const fileSystem: FileSystem = new SuccinixFileSystem({
+    getFs: () => manager.handle().wc?.fs,
+    getClient: () => instances.get(defaultId)?.client,
+    workspaceRoot: '/workspace',
+    hostRoot: '/workspace',
+  });
+  const sandbox: SandboxProvider = new SuccinixSandboxService({
+    available: () => manager.handle().state === 'ready' && manager.handle().wc !== null,
+    workspaceRoot: '/workspace',
+  });
+  const sessionPersistence: SessionPersistence = new SuccinixSessionPersistence({
+    getFs: () => manager.handle().wc?.fs,
+    getClient: () => instances.get(defaultId)?.client,
+    stateRoot: '/workspace/.succinix/sessions',
+    onFlush: async () => {
+      const wc = manager.handle().wc;
+      const instance = instances.get(defaultId);
+      if (wc && instance) await instance.persist.force(wc.fs, 'session-persistence');
+    },
+  });
 
   const publish = <K extends keyof SuccinixEventMap>(event: K, payload: SuccinixEventMap[K]): void => {
     for (const handler of handlers.get(event) ?? []) {
@@ -205,103 +251,48 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
   const boot = (opts: BootOptions = {}): Promise<WebContainerType> => lifecycle.boot(opts);
   const attach = (wc: WebContainerType, opts: EnsureInstanceOptions = {}): Promise<void> => lifecycle.attach(wc, opts);
 
-  const ensureInstance = async (containerId: string, opts: EnsureInstanceOptions = {}): Promise<SuccinixInstance> => {
-    invariantString(containerId, 'containerId');
-    const wc = requireWc();
-    const existing = instances.get(containerId);
-    if (existing) return existing;
+  const instanceManager = new SuccinixHostInstanceManager({
+    instances,
+    state,
+    manager,
+    resolvedConfig: () => resolvedConfig,
+    defaultId: () => defaultId,
+    requireWc,
+    setError,
+    wrapExecutor,
+    pythonBeforeRpc,
+    makeWorkspaceBackend,
+    publish,
+    emitState,
+  });
+  const ensureInstance = instanceManager.ensureInstance.bind(instanceManager);
+  const releaseInstance = instanceManager.releaseInstance.bind(instanceManager);
+  const listProcesses = instanceManager.listProcesses.bind(instanceManager);
 
-    const statePrefix = opts.statePrefix ?? resolvedConfig.defaultInstance.statePrefix;
-    const home = opts.home ?? resolvedConfig.defaultInstance.home;
-    const rpcClient = new TerminalClient(wc, { instanceId: containerId, onCommand: opts.executor?.onCommand });
-    const instance = await createEngineInstance({
-      wc,
-      instanceId: containerId,
-      statePrefix,
-      home,
-      persistence: opts.persistence ?? resolvedConfig.defaultInstance.persistence,
-      output: opts.output ?? noOpOutput,
-      // 会话层也注入 Python 资产：宿主直取 instance.terminal 时不经过 wrapped executor。
-      // 保留消费方自带的 beforeRpc，链式执行。
-      terminal: {
-        ...resolvedConfig.terminal,
-        ...opts.terminal,
-        beforeRpc: pythonBeforeRpc(opts.terminal?.beforeRpc),
-      },
-      executor: {
-        ...opts.executor,
-        instanceId: containerId,
-        resultTtlMs: resolvedConfig.resultTtlMs,
-        hostJsUrl: resolvedConfig.hostJsUrl,
-        lifoCoreUrl: resolvedConfig.lifoCoreUrl,
-        onCommand: opts.executor?.onCommand,
-        onServerReady: (port, url) => opts.executor?.onServerReady?.(port, url),
-        onServerClosed: (port) => opts.executor?.onServerClosed?.(port),
-      },
-      rpc: rpcClient,
-      hostProc: manager.getHostProc() ?? undefined,
-      bootSteps: opts.bootSteps,
-      bootUI: opts.bootUI,
-      onRestart: opts.onRestart,
-    });
-
-    const view: SuccinixInstance = {
-      instanceId: instance.instanceId,
-      client: instance.client,
-      get terminal() {
-        return instance.terminal;
-      },
-      executor: wrapExecutor(containerId, instance.executor),
-      persist: instance.persist,
-      ports: instance.ports,
-      statePrefix,
-      snapshot: instance.snapshot,
-      services: makeServicesService(instance, wc),
-      workspace: createWorkspaceService({
-        stateRoot: instanceStateRoot(containerId, statePrefix),
-        home: home ?? '/workspace',
-        backend: makeWorkspaceBackend(containerId),
-      }),
-      restart: () => instance.restart(),
-      dispose: () => instance.dispose(),
-    };
-
-    instances.set(containerId, view);
-    state.instances.push({ instanceId: containerId, state: 'active' });
-    publish('succinix/instance', { containerId, state: 'created' });
-    emitState('instance');
-    return view;
-  };
-
-  const releaseInstance = async (containerId: string): Promise<void> => {
-    invariantString(containerId, 'containerId');
-    const instance = instances.get(containerId);
-    if (!instance) return;
-    await instance.dispose();
-    pagePorts.unsubscribe(containerId);
-    instancePorts.releaseAll(containerId);
-    clearActivePorts(containerId);
-    clearDbActivePorts(containerId);
-    instances.delete(containerId);
-    state.instances = state.instances.filter((item) => item.instanceId !== containerId);
-    publish('succinix/instance', { containerId, state: 'released' });
-    emitState('instance');
-  };
-
-  const listProcesses = async (containerId?: string): Promise<ProcInfo[]> => {
-    const id = containerId ?? defaultId;
-    const instance = instances.get(id);
-    if (!instance) setError(`instance '${id}' is not available`);
-    const processes = await instance!.executor.listProcesses();
-    const payload: SuccinixProcessEvent = {
-      instanceId: id,
-      processes: processes.map((proc) => ({ pid: proc.pid, status: proc.status, command: proc.cmd })),
-    };
-    publish('succinix/process', payload);
-    return processes;
-  };
-
-  const service: SuccinixService = {
+  const service: SuccinixHostService = {
+    get fs() {
+      return fileSystem;
+    },
+    get sandbox() {
+      return sandbox;
+    },
+    get terminals() {
+      return terminals;
+    },
+    get sessionPersistence() {
+      return sessionPersistence;
+    },
+    registerAgent(owner: Agent): void {
+      if (liveOwners.has(owner)) throw new Error(`agent "${owner.id}" is already registered`);
+      liveOwners.add(owner);
+    },
+    unregisterAgent(owner: Agent): void {
+      if (!liveOwners.delete(owner)) return;
+      for (const handler of ownerDisposeHandlers.get(owner) ?? []) {
+        void handler();
+      }
+      ownerDisposeHandlers.delete(owner);
+    },
     get state() {
       return state;
     },
@@ -408,8 +399,16 @@ export function createSuccinixService(ctx: Context, config: ResolvedSuccinixConf
         portUnsubs.delete(unsubscribe);
       };
     },
-    dispose: () => lifecycle.dispose(),
-    shutdown: () => lifecycle.shutdown(),
+    dispose: async () => {
+      await lifecycle.dispose();
+      unregisterTerminalBackend();
+      await terminals.dispose();
+    },
+    shutdown: async () => {
+      await lifecycle.shutdown();
+      unregisterTerminalBackend();
+      await terminals.dispose();
+    },
     flush: () => lifecycle.flush(),
     reconfigure: async (next: SuccinixConfig) => {
       const result = checkSync(SuccinixConfigSchema, next);

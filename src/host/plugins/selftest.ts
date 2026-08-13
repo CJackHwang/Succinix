@@ -1,6 +1,6 @@
 // app plugin: self-test runner.
-import type { Context } from 'cordis';
-import { runTests } from '../../tests.js';
+import type { Context } from '@deepseek-ai/cordis';
+import { runTests } from '../../selftest/index.js';
 import type { AppSelftestService, AppShell } from '../types.js';
 
 export const name = 'succinix-app-selftest';

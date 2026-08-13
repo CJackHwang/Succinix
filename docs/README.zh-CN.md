@@ -1,7 +1,7 @@
 # Succinix
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.0-black.svg)](../package.json)
+[![Version](https://img.shields.io/badge/version-0.6.0-black.svg)](../package.json)
 [![CI](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml/badge.svg)](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
@@ -27,8 +27,8 @@
 - **端口管理** — 通过 WebContainer `server-ready` 事件探测服务，`ports` 列出端口与预览 URL。
 - **数据库** — `db start` 在容器内启动真实 Postgres（tinbase，PGlite/WASM 引擎）；`db status` / `db stop` 管理它。
 - **持久化** — 工作区（文件、配置、env、settings、工作区）快照到 IndexedDB，boot 时恢复；刷新永不丢用户文件。`snapshot` 命令查看状态 / 手动保存 / 重置。快照以文本为主：二进制/不可读文件跳过（在保存日志中计数报告）；收集大小超过 ~50 MB 的快照跳过并告警而非写入（`snapshot now` 报告 `skipped (over 50MB limit)`）。tinbase 数据库存储（`.tinbase`，PGlite/WASM）整体排除——它是二进制的，纯文本的部分恢复会损坏它；因此 tinbase 数据在会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新（刷新重建全新 store）。
-- **多实例内嵌（0.4.0）** — `?instance=<id>` 以命名实例启动应用：状态文件、快照、服务/端口视图与进程视图按实例（`ps` 过滤、跨实例 `kill` 拒绝）。不同 id 的双 tab 完全隔离（独立 host + IndexedDB 键）。
-- **多用户语义（0.4.0）** — `?user=<id>`（`?instance=<id>` 的别名）额外种子每用户 home（`/workspace/users/<id>`）：会话在 home 内启动、提示符渲染为 `~`、`whoami` 显示用户，状态/快照/进程视图按用户。**组织性隔离，非安全边界**——无真实内核/权限模型；独立应用仍是 `guest` 单用户（见 AGENTS.zh-CN.md）。
+- **多实例内嵌（0.6.0+）** — `?instance=<id>` 以命名实例启动应用：状态文件、快照、服务/端口视图与进程视图按实例（`ps` 过滤、跨实例 `kill` 拒绝）。不同 id 的双 tab 完全隔离（独立 host + IndexedDB 键）。
+- **多用户语义（0.6.0+）** — `?user=<id>`（`?instance=<id>` 的别名）额外种子每用户 home（`/workspace/users/<id>`）：会话在 home 内启动、提示符渲染为 `~`、`whoami` 显示用户，状态/快照/进程视图按用户。**组织性隔离，非安全边界**——无真实内核/权限模型；独立应用仍是 `guest` 单用户（见 AGENTS.zh-CN.md）。
 - **内存管理** — `free` / `top` 提供内存概览（设备 + JS heap；沙箱估算诚实标注），`reboot` 以浏览器重载重启系统（持久化数据存活），`shutdown` 关机，`cache` / `cache clear` 报告与清理可重建缓存（绝不触碰 `/workspace`）。
 - **工作区分拆** — `workspace` 管理多个隔离工作区：每个工作区在独立 `/ws/<name>` 目录，各有文件与状态；`create` / `switch` / `rm` 管理它们，当前工作区记录在 `/ws/.current`（跨刷新持久）。首次 boot 初始化默认 `main` 工作区。
 - **系统配置** — `env` 管理持久环境变量（`/etc/succinix.env`，spawn 时合并进真实 Node 子进程）与 `settings` 管理持久系统设置（`/etc/succinix.settings`）：tinbase 端口（`preview-port`，默认 3001）、初始工作区（`default-workspace`，默认 `main`）、终端字号（`font-size`，实时生效）。两个文件随快照跨刷新持久。
@@ -36,7 +36,7 @@
 - **系统日志（journald 风格）** — 持久日志写入容器 FS 的 `/var/log/succinix.log`（随快照跨刷新持久），格式 `2026-08-05T04:00:00Z [level] message`。采集 boot 事件（`BOOT`）、命令执行（`INFO` 含 `cmd`/`exit`/`runtime`）、服务事件（`INFO`/`WARN`）、快照事件（`INFO`）与错误（`ERROR`）。`log` 读取（`log` 最近 20 行、`log -n <count>` 最近 N 行、`log boot` 仅 BOOT、`log clear` 清空）；文件超 ~200 KB 自动截断保留尾部。交互式 `log -f`（tail -f）有意不实现（POC）。
 - **包管理** — `pkg` 用 apt 风格接口统一两条真实包通道：**lifo**（`lifo list` / `lifo install` / `lifo remove` / `lifo search`——Lifo 扩展包如 `lifo-pkg-git`、`lifo-pkg-ffmpeg`）与 **npm**（真实 Node npm，全生态）。来源自动判定：`lifo-pkg-<name>` 在 npm 存在的包走 lifo 安装，否则走 npm；同名冲突 lifo 优先（工具包）。`pkg list` 合并两通道并带 `SOURCE` 列，`pkg search` 合并两个搜索，`pkg install`/`remove` 回显真实命令输出且绝不吞错。npm 已装列表只读 `node_modules` **顶层目录**（"顶层直装"简化——容器预装运行时依赖也会出现，不解析依赖树）。
 - **虚拟网络视图** — `netstat` 把端口注册表渲染为虚拟监听端口表（`Proto  Local Address  State`，`tcp 127.0.0.1:<port> LISTEN`；`netstat -p` 附加关联进程，按进程命令中的端口号匹配，无匹配显示 `-`），`ip addr` 显示浏览器虚拟网络身份（`lo: virtual loopback`、`eth0: <preview-domain> (virtual)`）。一切诚实标注 `virtual`——不编造接口、IP 或连接。
-- **系统信息与登录横幅** — `uname` 报告诚实的浏览器原生系统身份（`Succinix 0.4.0 js-runtime+webcontainer <api-version> <arch>`；内核标识 `js-runtime+webcontainer`，绝不冒充 Linux 内核；`-a` 追加主机名/OS，`-r` 是 `@webcontainer/api` 运行时版本，`-m` 是从 UA 提取的架构），`motd` 显示/编辑 `/etc/succinix.motd` 登录横幅（随快照持久；默认欢迎行每次 boot 打印，`motd reset` 恢复）。
+- **系统信息与登录横幅** — `uname` 报告诚实的浏览器原生系统身份（`Succinix 0.6.0 js-runtime+webcontainer <api-version> <arch>`；内核标识 `js-runtime+webcontainer`，绝不冒充 Linux 内核；`-a` 追加主机名/OS，`-r` 是 `@webcontainer/api` 运行时版本，`-m` 是从 UA 提取的架构），`motd` 显示/编辑 `/etc/succinix.motd` 登录横幅（随快照持久；默认欢迎行每次 boot 打印，`motd reset` 恢复）。
 - **自检模式** — `?test=1` 在浏览器中运行系统诊断自检。
 
 ## 架构
@@ -101,7 +101,7 @@ Succinix 有分层测试体系，本地与 CI（GitHub Actions）一致。测试
 
 - **Lint** — `npm run lint`（`eslint.config.js` flat config）。`typescript-eslint` recommended + 项目规则：禁 `any`（error）、无遗留 `console.log`（warn；`console.warn`/`error` 按降级日志约定允许，host 侧文件豁免）、无未用变量/导入。门禁：**0 error**。
 - **Typecheck** — `npm run typecheck`（`tsc -p tsconfig.json --noEmit`）。门禁：**0 error**。
-- **单测** — `npm run test`（Vitest，node 环境）覆盖纯逻辑模块 `src/log.ts`、`src/persist.ts`、`src/services.ts`、`src/pkg.ts`、`src/motd.ts`、`src/config.ts`、`src/engine/host-route.ts`、`src/engine/client.ts`（内存 mock，见 `tests/`）；`commands.ts` 纯函数（workspace/uname/netstat/端口匹配/label）也已单测。`npm run test:coverage` 追加 v8 覆盖率门禁：入禁文件 **≥70%** statements/branches/functions/lines。
+- **单测** — `npm run test`（Vitest，node 环境）覆盖纯逻辑模块 `src/log.ts`、`src/persist/index.ts`、`src/services/index.ts`、`src/pkg/index.ts`、`src/motd.ts`、`src/config.ts`、`src/engine/host-route.ts`、`src/engine/client.ts`（内存 mock，见 `tests/`）；`src/commands/index.ts` 纯函数（workspace/uname/netstat/端口匹配/label）也已单测。`npm run test:coverage` 追加 v8 覆盖率门禁：入禁文件 **≥70%** statements/branches/functions/lines。
 - **测试模式 URL 是开发者钩子（P6-19）** — `?test=1`、`?bench=1`、`?scenario=1` **仅供测试**：它们会把内部句柄挂到 `window`（`__succinixResult` / `__succinixBench` / `__succinixScenario`，其中最后一个可驱动真实命令），**绝不可出现在生产链接中**。正常访问不带任何 query 参数，不暴露任何内部对象。
 - **e2e** — `npm run test:e2e` 构建一次，然后在 headless Chrome 里对 `vite preview` 依次跑 CDP 脚本：
   1. `scripts/verify-deploy.mjs` — 部署就绪门禁 + `?test=1` 自检（门禁 **≥71 passed, 0 failed**）；
@@ -118,7 +118,7 @@ Succinix 有分层测试体系，本地与 CI（GitHub Actions）一致。测试
 
 - `npm audit` → **0 漏洞**（全部直接/传递依赖干净）。
 - `npm outdated` → 仅 **`@lifo-sh/core` 0.10.8 → 0.10.9** 有新版本；其余全部最新。不升级（策略），待单独评估。
-- `public/host.js` 经 esbuild 压缩（`scripts/build-host.mjs` 中 `minify: true`）；体积从 1,965,361 B 降到 1,070,913 B（**-45.5%**）。`keepNames: true` 变体 1,106,353 B（**-43.7%**）；采用纯 `minify`，因为完整 `?test=1` 套件对压缩产物通过（Lifo 无依赖 `Function.name` 的会被名称压缩破坏的地方）。
+- `public/host.js` 经 esbuild 压缩（`scripts/build-host.mjs` 中 `minify: true`）；host 守护进程保持轻量（约 16.5 KB），`@lifo-sh/core` 单独打包为 `public/lifo-core.js`（约 1 MB），在首个 Lifo 命令时懒加载。采用纯 `minify`，因为完整 `?test=1` 套件对压缩产物通过（Lifo 无依赖 `Function.name` 的会被名称压缩破坏的地方）。
 
 ### 自检模式
 
@@ -203,7 +203,7 @@ node scripts/verify-deploy.mjs
 
 ## 已验证行为
 
-浏览器运行时验证套件结果（见 `src/tests.ts`）：**76 passed, 0 failed, 5 skipped**（2026-08-10 轮，针对压缩 host bundle；语言生态检查含扩展标准库 import、共享 FS 读写、micropip、`npm i -g` EACCES hint）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
+浏览器运行时验证套件结果（见 `src/selftest/index.ts`）：**76 passed, 0 failed, 5 skipped**（2026-08-10 轮，针对压缩 host bundle；语言生态检查含扩展标准库 import、共享 FS 读写、micropip、`npm i -g` EACCES hint）。5 个 skip 是已知边界（外部网络、symlink 回退、设备内存统计），绝非静默失败。`?test=1` 模式下汇总行与失败列表（若有）在 boot 覆盖层淡出后额外打印到终端（自检结果保持可见）。
 
 - 共享文件系统：浏览器 → Lifo 与 Lifo → 浏览器读写均工作。
 - 路由：`node -e "console.log(21*2)"` → `42`（`runtime=node`）；`npm --version` → 真实 npm 版本；`grep`/`cat`/`wc` → `runtime=lifo`。
@@ -272,20 +272,18 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 ```
 src/
-  main.ts            # 兼容 shim → app/（O2 拆分；xterm 装配、REPL、boot 编排）
-  boot.ts            # 启动序列、系统信息检测、环境预检
+  main.ts            # 入口：Cordis host 装配（xterm、REPL、boot 编排）
+  boot-steps.ts      # 启动序列、系统信息检测、环境预检
   boot-ui.ts         # 居中 DOM 启动覆盖层渲染器（splash/日志/环境失败页）
-  commands.ts        # 兼容 shim → commands/（O1 拆分）
   app/               # xterm 装配、输出、本地命令、日志、自动快照、看门狗、dev hooks
+  host/              # app 级 Cordis 插件（terminal/commands/snapshot/watchdog/selftest/container）
   commands/          # 浏览器侧命令（help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...）
   config.ts          # 系统配置：/etc/succinix.env + /etc/succinix.settings 读写与默认值
   motd.ts            # 登录横幅：/etc/succinix.motd 读写与默认
-  services.ts        # 服务管理：/etc/succinix.services + /etc/succinix.autostart 读写、状态/启动/停止
+  services/          # 服务管理：/etc/succinix.services + /etc/succinix.autostart 读写、状态/启动/停止
   log.ts             # journald 风格系统日志：/var/log/succinix.log 追加/读取/清空/BOOT 过滤
-  pkg.ts             # 包管理：pkg list/search/install/remove/info（lifo + npm 双通道）
-  persist.ts         # 兼容 shim → persist/（O4 拆分）
+  pkg/               # 包管理：pkg list/search/install/remove/info（lifo + npm 双通道）
   persist/           # 快照持久化：排除规则/收集/签名/IndexedDB
-  tests.ts           # 兼容 shim → selftest/（O5 拆分）
   selftest/          # 自检套件（?test=1）：runner + 各域测试（kernel/filesystem/persistence/config/services/packages/process/network/info/languages/smoke）
   engine/            # TerminalExecutor 引擎——已解耦、可复用（见生态）
     index.ts         # 内部核心 barrel，供 src/plugin 使用（不对外导出）
@@ -294,9 +292,9 @@ src/
     host-route.ts    # host 纯逻辑：路由 / 路径映射 / 按实例过滤 + kill 授权
     host-procs.ts    # 统一进程注册表（原 host-procs.ts）
     lifo-core.ts     # 懒加载 @lifo-sh/core 内核入口（打包为 public/lifo-core.js）
-  terminal/          # 终端核心，由 ctx.succinix.terminal.create 消费（无 ./terminal 导出）
-  instance/          # 实例工厂，由 ctx.succinix.ensureInstance 消费（无 ./instance 导出）
-  plugin/            # Cordis 插件入口：服务、生命周期、事件、能力、HostManager
+  terminal/          # 终端核心，由 host terminal facade 消费（无 ./terminal 导出）
+  instance/          # 实例工厂，由 host.ensureInstance 消费（无 ./instance 导出）
+  plugin/            # dsh Cordis 插件入口：服务、生命周期、事件、能力、HostManager
 scripts/
   build-host.mjs     # esbuild 打包容器内 host（host.js + 懒加载 lifo-core.js）
   verify-deploy.mjs  # 部署就绪门禁：build + preview + COOP/COEP + ?test=1 自检
@@ -308,9 +306,9 @@ scripts/
   setup-hooks.mjs    # npm run setup:hooks：把 .git/hooks/pre-commit 接到 pre-commit.sh
 tests/
   log.test.ts        # src/log.ts 的 Vitest 单测（mock FS）
-  persist.test.ts    # ... src/persist.ts（排除/签名/force/空目录，mock FS + fake IDB）
-  services.test.ts   # ... src/services.ts（解析/端口渲染/状态，mock client）
-  pkg.test.ts        # ... src/pkg.ts（来源判定/命令构造，mock 网络）
+  persist.test.ts    # ... src/persist/index.ts（排除/签名/force/空目录，mock FS + fake IDB）
+  services.test.ts   # ... src/services/index.ts（解析/端口渲染/状态，mock client）
+  pkg.test.ts        # ... src/pkg/index.ts（来源判定/命令构造，mock 网络）
   motd.test.ts       # ... src/motd.ts
   config.test.ts     # ... src/config.ts
   helpers/fakes.ts   # 内存 FileSystemAPI / fake IndexedDB / 可脚本化终端客户端
@@ -326,14 +324,15 @@ public/
 ## 生态
 
 Succinix 的命令执行引擎**与 Succinix 应用本身解耦**，并以
-**`@succinix/engine@0.5.0`** 作为单个 Cordis 插件发布。没有独立 SDK API 线：
-消费方应用插件，然后使用 `ctx.succinix` 下的服务。使用方页面启动
-WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时
+**`@succinix/engine@0.6.0`** 作为面向 `@deepseek-ai/cordis@4.0.1` 的单个
+Cordis 插件发布。没有独立 SDK API 线：消费方应用插件，然后使用 dsh 服务
+`ctx.fs`、`ctx.sandbox`、`ctx.terminals` 与 `ctx.sessionPersistence`。
+使用方页面启动 WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时
 （`node|npm|npx`）、内置 Pyodide Python 与 Lifo Unix 用户态（其余一切）——
 无需自己构建任何部分。
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 
 const ctx = new Context();
@@ -343,34 +342,37 @@ const fiber = ctx.plugin(engine, {
 });
 await fiber;
 
-// ctx.succinix.executor、terminal、snapshot、persist、workspace、ports、
-// services、capabilities、instance、container 全部可用。
+const host = ctx.get('succinix-host', false)!;
+await host.boot();
+await host.ensureInstance('default', { executor: {} });
+
+// ctx.fs、ctx.sandbox、ctx.terminals、ctx.sessionPersistence 全部可用；
+// host.executor、host.terminal、host.snapshot、host.ports、host.services
+// 位于内部 succinix-host seam 之后。
 ```
 
-### 插件 API
+### dsh 插件 API
 
 | 服务 | 作用 |
 | --- | --- |
-| `ctx.succinix.executor` | 默认实例 `TerminalExecutor`：`exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` |
-| `ctx.succinix.terminal` | `terminal.create(output)` 返回无 UI 终端会话（历史、补全、Ctrl+C、队列） |
-| `ctx.succinix.ensureInstance(id, opts)` | 创建/复用按实例栈（替代 `createSuccinixInstance`） |
-| `ctx.succinix.snapshot` / `persist` / `workspace` | 快照保存/恢复、持久化、工作区 facade |
-| `ctx.succinix.ports` | 页面级端口视图 + `server-ready` / `server-closed` 订阅（替代 `pagePorts`） |
-| `ctx.succinix.services` | 声明式后台服务管理 |
-| `ctx.succinix.capabilities` | `terminal.*`、`fs.*`、`workspace.*` 能力注册表 |
-| `ctx.succinix.boot` / `attach` | 内部 WebContainer boot / 外部容器接管 |
-| `ctx.succinix.dispose` / `shutdown` | 软收尾 / 完全关闭 host |
+| `ctx.fs` | dsh 文件系统：12 原语、13 个 `FS_*` 错误码、`sandboxMode` |
+| `ctx.sandbox` | dsh sandbox provider：同步 `confine`、node fail-closed |
+| `ctx.terminals` | dsh owner 隔离 PTY registry（精确 `Agent` owner） |
+| `ctx.sessionPersistence` | dsh event-sourced JSONL session log |
+| `host`（`succinix-host`） | 内部生命周期 seam：`boot` / `attach` / `ensureInstance`、`executor`、`terminal`、`snapshot`、`persist`、`workspace`、`ports`、`services`、`capabilities`、`dispose` / `shutdown` |
 
-消费方声明 `inject: ['succinix']`，或用 `ctx.get('succinix', false)` 探测。
-发布物 `.d.ts` 会增强 `Context['succinix']` 与 `succinix/*` 事件表。
+消费方声明 `inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']`，
+或用 `ctx.get('fs', false)` 探测。发布物 `.d.ts` 会增强
+`Context['fs']`、`Context['sandbox']`、`Context['terminals']`、
+`Context['sessionPersistence']` 与 `succinix/*` 事件表。
 
 ### 协议与集成文档
 
 - **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。
-- **[docs/SDK.zh-CN.md](SDK.zh-CN.md)** — 0.5.0 Cordis 插件集成参考：安装、配置、服务面、能力、生命周期、热重载、容器模式。
+- **[docs/SDK.zh-CN.md](SDK.zh-CN.md)** — 0.6.0 dsh Cordis 插件集成参考：安装、配置、dsh 服务、host seam、能力、生命周期、热重载、容器模式。
 - **[docs/PLUGIN.md](PLUGIN.md)** — 第三方 Cordis 插件如何消费/扩展 Succinix。
 - **[docs/cordis-contract.md](cordis-contract.md)** — 权威契约快照与浏览器验证。
-- **[docs/MIGRATION.md](MIGRATION.md)** — 0.4.0 独立 SDK 迁移指南。
+- **[docs/MIGRATION.md](MIGRATION.md)** — 0.4.0 独立 SDK 与 0.5.0 单键形态迁移指南。
 - **[docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)** — 以实测为准的语言支持矩阵。
 
 ### 愿景
@@ -378,7 +380,7 @@ await fiber;
 引擎与驱动 Succinix 终端的代码是同一份，只隔一道干净 Cordis 边界：核心逻辑
 保持 Cordis-free、线上协议有文档、无应用层依赖泄漏进 `src/engine/`。任何已启动
 WebContainer 的 Chromium 前端，都能通过应用 `@succinix/engine` 添加一个共享
-自己文件的 Unix 沙箱。
+自己文件的 dsh 执行世界。
 
 ## 开发档案
 
@@ -408,7 +410,7 @@ WebContainer 的 Chromium 前端，都能通过应用 `@succinix/engine` 添加�
 - [x] 内存管理：`free`/`top` 类命令、缓存清理、reboot 回收内存
 - [x] 工作区分拆：多虚拟目录隔离状态（类似 Sunam 工作区）
 - [x] 虚拟网络视图：`netstat` 虚拟监听端口表 + `ip addr` 诚实虚拟身份
-- [x] Cordis 单轨引擎：`@succinix/engine@0.5.0` 插件 + `ctx.succinix`
+- [x] dsh 单轨引擎：`@succinix/engine@0.6.0` + `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`
 - [ ] SunamAI 集成：`shell_run` 引擎换 TerminalExecutor——**暂缓**（计划为 TASK8；未排期）
 - [ ] 可选：外部访问 WebSocket 隧道
 

@@ -1,7 +1,7 @@
 {
   "name": "succinix",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.6.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -23,6 +23,8 @@
     "build:engine-package": "npm run build:host && node scripts/build-engine-package.mjs",
     "check:plugin-boundaries": "node scripts/check-plugin-boundaries.mjs",
     "check:engine-package": "npm run build:engine-package && cd packages/engine && npm pack --dry-run",
+    "check:dsh-shapes": "node scripts/check-dsh-shapes.mjs --types",
+    "check:dsh-keys": "node scripts/check-dsh-keys.mjs src tests examples",
     "verify:engine-package": "npm run check:engine-package",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
@@ -32,7 +34,7 @@
     "audit:files": "node scripts/audit-file-size.mjs --fail",
     "check:static": "node scripts/check-static.mjs",
     "check:docs": "node scripts/check-docs.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:docs && npm run check:plugin-boundaries && npm run check:engine-package",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:engine-package && npm run check:docs && npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys",
     "check:e2e": "npm run check && npm run test:e2e",
     "setup:hooks": "node scripts/setup-hooks.mjs"
   },
@@ -49,6 +51,7 @@
     "@cordisjs/plugin-loader": "^1.0.0-rc.5",
     "@cordisjs/plugin-logger-console": "^1.0.0",
     "@cordisjs/plugin-timer": "^1.1.2",
+    "@deepseek-ai/cordis": "^4.0.1",
     "@eslint/js": "^10.0.1",
     "@standard-schema/spec": "^1.1.0",
     "@types/node": "^26.1.2",

@@ -1,13 +1,13 @@
 // C3 app plugin lifecycle tests: the host app is a Cordis Context composed from
 // @succinix/engine and the app plugins, with a single page host and one shell.
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import enginePlugin, { type SuccinixConfig } from '../src/plugin/index.js';
 import { appPlugins } from '../src/host/plugins.js';
 import { resolveInstanceRequest } from '../src/host/bootstrap.js';
 import { getHostManager, resetPageSingletons } from '../src/plugin/host-manager.js';
 import { FakeWebContainer, asWebContainer } from './helpers/fake-webcontainer.js';
-import { installFakeIDB } from './helpers/fakes.js';
+import { hostOf, installFakeIDB } from './helpers/fakes.js';
 import type { AppContainerService, AppShellService, AppCommandsService } from '../src/host/types.js';
 
 const wcApi = vi.hoisted(() => ({ boot: vi.fn() }));
@@ -102,7 +102,7 @@ describe('instance request parsing (C3)', () => {
 describe('Cordis app plugin tree (C3)', () => {
   it('loads the engine and every app plugin in one Context', async () => {
     const { ctx } = await loadApp();
-    expect(ctx.get('succinix', false)).toBeTruthy();
+    expect(ctx.get('succinix-host', false)).toBeTruthy();
     for (const name of [
       'succinix-app-terminal',
       'succinix-app-commands',
@@ -119,8 +119,8 @@ describe('Cordis app plugin tree (C3)', () => {
 
   it('container start boots one WebContainer, one host, and one default instance', async () => {
     const { ctx, wc, shell } = await bootApp();
-    expect(ctx.succinix.state.containerState).toBe('ready');
-    expect(ctx.succinix.state.instances).toHaveLength(1);
+    expect(hostOf(ctx).state.containerState).toBe('ready');
+    expect(hostOf(ctx).state.instances).toHaveLength(1);
     expect(wc.spawnCalls).toEqual([{ prog: 'node', args: ['host.js'] }]);
     expect(shell).not.toBeNull();
   });
@@ -151,7 +151,7 @@ describe('Cordis app plugin tree (C3)', () => {
     const again = await container.start();
     expect(again).toBe(shell);
     expect(wc.spawnCalls).toHaveLength(1);
-    expect(ctx.succinix.state.instances).toHaveLength(1);
+    expect(hostOf(ctx).state.instances).toHaveLength(1);
   });
 
   it('scenario devhook exposes the window handle after boot', async () => {
@@ -174,7 +174,7 @@ describe('Cordis app plugin tree (C3)', () => {
   it('engine remains available after an app plugin fiber is disposed', async () => {
     const { ctx, containerFiber } = await bootApp();
     await containerFiber.dispose();
-    expect(ctx.get('succinix', false)).toBeTruthy();
-    expect(ctx.succinix.state.containerState).toBe('ready');
+    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(hostOf(ctx).state.containerState).toBe('ready');
   });
 });

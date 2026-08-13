@@ -1,7 +1,7 @@
 // C2 plugin tests: lifecycle, single-host, service surface, events, capabilities,
 // assets, invariants, and reload semantics.
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import plugin, {
   Config,
   resolveConfig,
@@ -22,8 +22,7 @@ import {
   sha256Hex,
 } from '../src/plugin/assets.js';
 import { loadBootAssets } from '../src/plugin/service-runtime.js';
-import type { Context as CordisContext } from 'cordis';
-import { FakeFS, installFakeIDB } from './helpers/fakes.js';
+import { FakeFS, hostOf, installFakeIDB } from './helpers/fakes.js';
 import { FakeWebContainer, asWebContainer } from './helpers/fake-webcontainer.js';
 
 const wcApi = vi.hoisted(() => ({ boot: vi.fn() }));
@@ -44,7 +43,7 @@ async function bootInternal(config: SuccinixConfig = {}) {
   const wc = new FakeWebContainer();
   wcApi.boot.mockResolvedValue(asWebContainer(wc));
   const loaded = await loadPlugin(config);
-  await loaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
+  await hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS });
   return { ...loaded, wc };
 }
 
@@ -54,12 +53,12 @@ async function attachExternal(config: SuccinixConfig = {}) {
     ...config,
     container: { ...(config.container ?? {}), mode: 'external' },
   });
-  await loaded.ctx.succinix.attach(asWebContainer(wc), { executor: BOOT_HOOKS });
+  await hostOf(loaded.ctx).attach(asWebContainer(wc), { executor: BOOT_HOOKS });
   return { ...loaded, wc };
 }
 
-async function ensureDefault(ctx: CordisContext, storeKey = `plugin-c2-${Math.random()}`) {
-  return ctx.succinix.ensureInstance('default', {
+async function ensureDefault(ctx: Context, storeKey = `plugin-c2-${Math.random()}`) {
+  return hostOf(ctx).ensureInstance('default', {
     persistence: { dbName: 'plugin-c2', storeKey },
     executor: BOOT_HOOKS,
   });
@@ -201,7 +200,7 @@ describe('capabilities (C2)', () => {
     };
     const fakeCtx = {
       get: (name: string, fallback: unknown) => (name === 'capability' ? host : fallback),
-    } as unknown as CordisContext;
+    } as unknown as Context;
     const registry = new SuccinixCapabilityRegistry({ defaultAllow: true, rules: [] });
     const disposers = registerHostCapabilities(fakeCtx, registry);
     expect(defined).toContain('terminal.exec');
@@ -212,7 +211,7 @@ describe('capabilities (C2)', () => {
   it('skips host integration when capability is absent', () => {
     const fakeCtx = {
       get: (name: string, fallback: unknown) => (name === 'capability' ? undefined : fallback),
-    } as unknown as CordisContext;
+    } as unknown as Context;
     const registry = new SuccinixCapabilityRegistry({ defaultAllow: true, rules: [] });
     expect(registerHostCapabilities(fakeCtx, registry)).toEqual([]);
   });
@@ -229,7 +228,7 @@ describe('invariants (C2)', () => {
 
   it('ensureInstance rejects empty container ids', async () => {
     const { ctx, fiber } = await bootInternal();
-    await expect(ctx.succinix.ensureInstance('')).rejects.toThrow(/non-empty string/);
+    await expect(hostOf(ctx).ensureInstance('')).rejects.toThrow(/non-empty string/);
     await fiber.dispose();
   });
 });
@@ -290,7 +289,7 @@ describe('HostManager singleton (C2)', () => {
   it('shutdown resets state and resetPageSingletons detaches the old manager', async () => {
     const { ctx, fiber } = await bootInternal();
     const first = getHostManager();
-    await ctx.succinix.shutdown();
+    await hostOf(ctx).shutdown();
     expect(first.handle().state).toBe('disposed');
     await fiber.dispose();
     resetPageSingletons();
@@ -301,48 +300,48 @@ describe('HostManager singleton (C2)', () => {
 describe('lifecycle and single host (C2)', () => {
   it('boot internal spawns one host and reaches ready', async () => {
     const { ctx, wc } = await bootInternal();
-    expect(ctx.succinix.state.containerState).toBe('ready');
-    expect(ctx.succinix.state.containerMode).toBe('internal');
+    expect(hostOf(ctx).state.containerState).toBe('ready');
+    expect(hostOf(ctx).state.containerMode).toBe('internal');
     expect(wc.spawnCalls).toEqual([{ prog: 'node', args: ['host.js'] }]);
-    expect(ctx.succinix.container.startedAt).toBeGreaterThan(0);
+    expect(hostOf(ctx).container.startedAt).toBeGreaterThan(0);
   });
 
   it('attach external spawns one host and reaches ready', async () => {
     const { ctx, wc } = await attachExternal();
-    expect(ctx.succinix.state.containerState).toBe('ready');
-    expect(ctx.succinix.state.containerMode).toBe('external');
+    expect(hostOf(ctx).state.containerState).toBe('ready');
+    expect(hostOf(ctx).state.containerMode).toBe('external');
     expect(wc.spawnCalls).toEqual([{ prog: 'node', args: ['host.js'] }]);
   });
 
   it('boot is idempotent', async () => {
     const { ctx, wc } = await bootInternal();
-    await ctx.succinix.boot({ executor: BOOT_HOOKS });
+    await hostOf(ctx).boot({ executor: BOOT_HOOKS });
     expect(wc.spawnCalls.length).toBe(1);
   });
 
   it('attach is idempotent', async () => {
     const { ctx, wc } = await attachExternal();
-    await ctx.succinix.attach(asWebContainer(wc), { executor: BOOT_HOOKS });
+    await hostOf(ctx).attach(asWebContainer(wc), { executor: BOOT_HOOKS });
     expect(wc.spawnCalls.length).toBe(1);
   });
 
   it('boot after attach throws ERR_MODE_MISMATCH', async () => {
     const { ctx } = await attachExternal();
-    await expect(ctx.succinix.boot()).rejects.toThrow(/ERR_MODE_MISMATCH/);
+    await expect(hostOf(ctx).boot()).rejects.toThrow(/ERR_MODE_MISMATCH/);
   });
 
   it('attach after boot throws ERR_MODE_MISMATCH', async () => {
     const { ctx, wc } = await bootInternal();
-    await expect(ctx.succinix.attach(asWebContainer(wc))).rejects.toThrow(/ERR_MODE_MISMATCH/);
+    await expect(hostOf(ctx).attach(asWebContainer(wc))).rejects.toThrow(/ERR_MODE_MISMATCH/);
   });
 
   it('multiple instances never spawn a second host', async () => {
     const { ctx, wc } = await bootInternal();
-    await ctx.succinix.ensureInstance('a', { persistence: { dbName: 'plugin-c2', storeKey: 'a' }, executor: BOOT_HOOKS });
-    await ctx.succinix.ensureInstance('b', { persistence: { dbName: 'plugin-c2', storeKey: 'b' }, executor: BOOT_HOOKS });
+    await hostOf(ctx).ensureInstance('a', { persistence: { dbName: 'plugin-c2', storeKey: 'a' }, executor: BOOT_HOOKS });
+    await hostOf(ctx).ensureInstance('b', { persistence: { dbName: 'plugin-c2', storeKey: 'b' }, executor: BOOT_HOOKS });
     expect(wc.spawnCalls.length).toBe(1);
-    expect(ctx.succinix.state.instances).toHaveLength(2);
-    expect(ctx.succinix.getInstance('a')?.instanceId).toBe('a');
+    expect(hostOf(ctx).state.instances).toHaveLength(2);
+    expect(hostOf(ctx).getInstance('a')?.instanceId).toBe('a');
   });
 
   it('soft dispose keeps the host and removes the service', async () => {
@@ -352,7 +351,7 @@ describe('lifecycle and single host (C2)', () => {
     await fiber.dispose();
     expect(manager.handle().state).toBe('ready');
     expect(wc.hostProc.kill).not.toHaveBeenCalled();
-    expect(ctx.get('succinix', false)).toBeUndefined();
+    expect(ctx.get('succinix-host', false)).toBeUndefined();
   });
 
   it('reload restores the service without restarting the host', async () => {
@@ -361,24 +360,24 @@ describe('lifecycle and single host (C2)', () => {
     const spawnCount = wc.spawnCalls.length;
     await fiber.dispose();
     const reloaded = await loadPlugin();
-    await reloaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
+    await hostOf(reloaded.ctx).boot({ executor: BOOT_HOOKS });
     expect(wc.spawnCalls.length).toBe(spawnCount);
     await ensureDefault(reloaded.ctx, 'reload-key');
-    expect(reloaded.ctx.succinix.executor).toBeTruthy();
+    expect(hostOf(reloaded.ctx).executor).toBeTruthy();
   });
 
   it('shutdown kills the host and marks state disposed', async () => {
     const { ctx, wc } = await bootInternal();
-    await ctx.succinix.shutdown();
+    await hostOf(ctx).shutdown();
     expect(wc.hostProc.kill).toHaveBeenCalledTimes(1);
-    expect(ctx.succinix.state.containerState).toBe('disposed');
+    expect(hostOf(ctx).state.containerState).toBe('disposed');
     expect(getHostManager().handle().state).toBe('disposed');
   });
 
   it('shutdown is idempotent', async () => {
     const { ctx, wc } = await bootInternal();
-    await ctx.succinix.shutdown();
-    await ctx.succinix.shutdown();
+    await hostOf(ctx).shutdown();
+    await hostOf(ctx).shutdown();
     expect(wc.hostProc.kill).toHaveBeenCalledTimes(1);
   });
 
@@ -386,7 +385,7 @@ describe('lifecycle and single host (C2)', () => {
     const { ctx, wc, fiber } = await bootInternal({ lifecycle: { disposeMode: 'hard' } });
     await ensureDefault(ctx, 'hard-dispose-key');
     const events: string[] = [];
-    ctx.succinix.on('succinix/workspace', (payload) => events.push(payload.reason));
+    hostOf(ctx).on('succinix/workspace', (payload) => events.push(payload.reason));
     await fiber.dispose();
     await vi.waitFor(() => expect(wc.hostProc.kill).toHaveBeenCalledTimes(1));
     expect(events).toContain('flush');
@@ -395,8 +394,8 @@ describe('lifecycle and single host (C2)', () => {
   it('host boot failure records lastError', async () => {
     wcApi.boot.mockRejectedValue(new Error('wc boot exploded'));
     const loaded = await loadPlugin();
-    await expect(loaded.ctx.succinix.boot({ executor: BOOT_HOOKS })).rejects.toThrow(/wc boot exploded/);
-    expect(loaded.ctx.succinix.state.lastError).toContain('wc boot exploded');
+    await expect(hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS })).rejects.toThrow(/wc boot exploded/);
+    expect(hostOf(loaded.ctx).state.lastError).toContain('wc boot exploded');
     await loaded.fiber.dispose();
   });
 
@@ -408,17 +407,17 @@ describe('lifecycle and single host (C2)', () => {
       wc.spawnCalls.push({ prog, args });
       throw new Error('spawn exploded');
     });
-    await expect(loaded.ctx.succinix.boot({ executor: BOOT_HOOKS })).rejects.toThrow(/spawn exploded/);
-    expect(loaded.ctx.succinix.state.containerState).toBe('unattached');
-    expect(loaded.ctx.succinix.state.lastError).toContain('spawn exploded');
+    await expect(hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS })).rejects.toThrow(/spawn exploded/);
+    expect(hostOf(loaded.ctx).state.containerState).toBe('unattached');
+    expect(hostOf(loaded.ctx).state.lastError).toContain('spawn exploded');
     expect(wc.spawnCalls).toHaveLength(3);
 
     wc.spawn.mockImplementation(async (prog: string, args: string[]) => {
       wc.spawnCalls.push({ prog, args });
       return wc.hostProc;
     });
-    await loaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
-    expect(loaded.ctx.succinix.state.containerState).toBe('ready');
+    await hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS });
+    expect(hostOf(loaded.ctx).state.containerState).toBe('ready');
     expect(wc.spawnCalls).toHaveLength(4);
   });
 
@@ -432,12 +431,12 @@ describe('lifecycle and single host (C2)', () => {
       const { ctx, wc } = await bootInternal({ lifecycle: { flushOnPageHide: true } });
       await ensureDefault(ctx, 'pagehide-key');
       const flushEvents: string[] = [];
-      ctx.succinix.on('succinix/workspace', (payload) => flushEvents.push(payload.reason));
+      hostOf(ctx).on('succinix/workspace', (payload) => flushEvents.push(payload.reason));
       expect(wc.hostProc.kill).not.toHaveBeenCalled();
       listeners.get('pagehide')?.({} as Event);
       await vi.waitFor(() => expect(flushEvents).toContain('flush'));
       expect(wc.hostProc.kill).not.toHaveBeenCalled();
-      expect(ctx.succinix.state.containerState).toBe('ready');
+      expect(hostOf(ctx).state.containerState).toBe('ready');
       listeners.get('beforeunload')?.({} as Event);
       await vi.waitFor(() => expect(wc.hostProc.kill).toHaveBeenCalledTimes(1));
     } finally {
@@ -449,34 +448,34 @@ describe('lifecycle and single host (C2)', () => {
 describe('service surface (C2)', () => {
   it('default services fail fast before ensureInstance', async () => {
     const { ctx, fiber } = await bootInternal();
-    expect(() => ctx.succinix.executor).toThrow(/not available/);
-    expect(() => ctx.succinix.workspace).toThrow(/not available/);
-    expect(() => ctx.succinix.services).toThrow(/not available/);
-    expect(ctx.succinix.state.lastError).toContain('not available');
+    expect(() => hostOf(ctx).executor).toThrow(/not available/);
+    expect(() => hostOf(ctx).workspace).toThrow(/not available/);
+    expect(() => hostOf(ctx).services).toThrow(/not available/);
+    expect(hostOf(ctx).state.lastError).toContain('not available');
     await fiber.dispose();
   });
 
   it('executor and instance are available after ensureInstance', async () => {
     const { ctx } = await bootInternal();
     const instance = await ensureDefault(ctx);
-    expect(ctx.succinix.instance).toBe(instance);
-    expect(ctx.succinix.executor).toBe(instance.executor);
+    expect(hostOf(ctx).instance).toBe(instance);
+    expect(hostOf(ctx).executor).toBe(instance.executor);
   });
 
   it('releasing the default instance fails fast until it is recreated', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'release-key');
-    await ctx.succinix.releaseInstance('default');
-    expect(() => ctx.succinix.executor).toThrow(/not available/);
-    expect(() => ctx.succinix.workspace).toThrow(/not available/);
+    await hostOf(ctx).releaseInstance('default');
+    expect(() => hostOf(ctx).executor).toThrow(/not available/);
+    expect(() => hostOf(ctx).workspace).toThrow(/not available/);
     const recreated = await ensureDefault(ctx, 'release-key-2');
-    expect(ctx.succinix.executor).toBe(recreated.executor);
+    expect(hostOf(ctx).executor).toBe(recreated.executor);
   });
 
   it('terminal.create returns a session bound to the default instance', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx);
-    const session = ctx.succinix.terminal.create({ write() {}, clear() {} });
+    const session = hostOf(ctx).terminal.create({ write() {}, clear() {} });
     expect(session.getPrompt()).toContain('guest@succinix');
     session.dispose();
   });
@@ -484,39 +483,39 @@ describe('service surface (C2)', () => {
   it('snapshot save/meta/clear work', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'snapshot-key');
-    const saved = await ctx.succinix.snapshot.save();
+    const saved = await hostOf(ctx).snapshot.save();
     expect(saved.skipped).toBe(false);
-    expect(await ctx.succinix.snapshot.meta()).toMatchObject({ version: 1 });
-    await ctx.succinix.snapshot.clear();
-    expect(await ctx.succinix.snapshot.meta()).toBeNull();
+    expect(await hostOf(ctx).snapshot.meta()).toMatchObject({ version: 1 });
+    await hostOf(ctx).snapshot.clear();
+    expect(await hostOf(ctx).snapshot.meta()).toBeNull();
   });
 
   it('persist save/load/clear work', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'persist-key');
-    await ctx.succinix.persist.force(ctx.succinix.container.wc!.fs);
-    expect(await ctx.succinix.persist.meta()).toMatchObject({ version: 1 });
-    await ctx.succinix.persist.clear();
-    expect(await ctx.succinix.persist.meta()).toBeNull();
+    await hostOf(ctx).persist.force(hostOf(ctx).container.wc!.fs);
+    expect(await hostOf(ctx).persist.meta()).toMatchObject({ version: 1 });
+    await hostOf(ctx).persist.clear();
+    expect(await hostOf(ctx).persist.meta()).toBeNull();
   });
 
   it('persist.force emits a workspace flush event', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'persist-event-key');
     const events: Array<{ instanceId: string; reason: string }> = [];
-    ctx.succinix.on('succinix/workspace', (payload) => events.push(payload));
-    await ctx.succinix.persist.force(ctx.succinix.container.wc!.fs, 'direct');
+    hostOf(ctx).on('succinix/workspace', (payload) => events.push(payload));
+    await hostOf(ctx).persist.force(hostOf(ctx).container.wc!.fs, 'direct');
     expect(events).toContainEqual(expect.objectContaining({ instanceId: 'default', reason: 'flush' }));
   });
 
   it('workspace restore/flush/list work', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'workspace-key');
-    await ctx.succinix.workspace.flush('test');
-    const list = await ctx.succinix.workspace.list();
+    await hostOf(ctx).workspace.flush('test');
+    const list = await hostOf(ctx).workspace.list();
     expect(list[0]).toMatchObject({ instanceId: 'default' });
-    await ctx.succinix.workspace.restore();
-    expect(ctx.succinix.workspace.stateRoot).toBe('');
+    await hostOf(ctx).workspace.restore();
+    expect(hostOf(ctx).workspace.stateRoot).toBe('');
   });
 
   it('python commands inject assets from pythonAssetsUrl', async () => {
@@ -527,7 +526,7 @@ describe('service surface (C2)', () => {
     }));
     const { ctx } = await bootInternal({ pythonAssetsUrl: '/custom-py/' });
     await ensureDefault(ctx, 'python-url-key');
-    await ctx.succinix.executor.exec('python -c "print(1)"', { timeoutMs: 30000 });
+    await hostOf(ctx).executor.exec('python -c "print(1)"', { timeoutMs: 30000 });
     expect(urls).toContain('/custom-py/python-daemon.js');
     expect(urls).toContain('/custom-py/pyodide.mjs');
     vi.unstubAllGlobals();
@@ -541,12 +540,12 @@ describe('service surface (C2)', () => {
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) } as Response;
     }));
     const { ctx } = await bootInternal({ pythonAssetsUrl: '/custom-py/' });
-    await ctx.succinix.ensureInstance('default', {
+    await hostOf(ctx).ensureInstance('default', {
       persistence: { dbName: 'plugin-c2', storeKey: 'python-terminal-url-key' },
       executor: BOOT_HOOKS,
       terminal: { beforeRpc: async () => { order.push('user'); } },
     });
-    const result = await ctx.succinix.instance!.terminal.rpcExec('python --version', 30000);
+    const result = await hostOf(ctx).instance!.terminal.rpcExec('python --version', 30000);
     expect('error' in result).toBe(false);
     expect(order).toEqual(['user']);
     expect(urls).toContain('/custom-py/python-daemon.js');
@@ -556,12 +555,12 @@ describe('service surface (C2)', () => {
   it('services list/start/stop fail gracefully on unknown services', async () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'services-key');
-    const list = await ctx.succinix.services.list();
+    const list = await hostOf(ctx).services.list();
     expect(list.map((service) => service.def.name)).toEqual(['tinbase']);
     expect(list[0].state).toBe('stopped');
-    const started = await ctx.succinix.services.start('missing');
+    const started = await hostOf(ctx).services.start('missing');
     expect(started.ok).toBe(false);
-    const stopped = await ctx.succinix.services.stop('missing');
+    const stopped = await hostOf(ctx).services.stop('missing');
     expect(stopped.ok).toBe(false);
   });
 
@@ -569,12 +568,12 @@ describe('service surface (C2)', () => {
     const { ctx, wc } = await bootInternal({
       defaultInstance: { instanceId: 'demo', statePrefix: '/custom' },
     });
-    await ctx.succinix.ensureInstance('demo', {
+    await hostOf(ctx).ensureInstance('demo', {
       statePrefix: '/custom',
       persistence: { dbName: 'plugin-c2', storeKey: 'services-prefix' },
       executor: BOOT_HOOKS,
     });
-    await ctx.succinix.services.ensureFiles();
+    await hostOf(ctx).services.ensureFiles();
     expect(wc.fs.raw('/customdemo/etc/succinix.services')).toBeDefined();
     expect(wc.fs.raw('/workspace/.succinix-demo/etc/succinix.services')).toBeUndefined();
   });
@@ -583,8 +582,8 @@ describe('service surface (C2)', () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'ps-key');
     const events: unknown[] = [];
-    ctx.succinix.on('succinix/process', (payload) => events.push(payload));
-    const procs = await ctx.succinix.listProcesses();
+    hostOf(ctx).on('succinix/process', (payload) => events.push(payload));
+    const procs = await hostOf(ctx).listProcesses();
     expect(procs).toEqual([]);
     expect(events[0]).toMatchObject({ instanceId: 'default' });
   });
@@ -594,17 +593,17 @@ describe('ports (C2)', () => {
   it('starts empty and reflects ready ports after events', async () => {
     const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx, 'ports-key');
-    expect(ctx.succinix.ports.list().size).toBe(0);
+    expect(hostOf(ctx).ports.list().size).toBe(0);
     wc.emitServerReady(3000, 'https://preview/3000');
-    expect(ctx.succinix.ports.ready(3000)).toBe('https://preview/3000');
-    expect(ctx.succinix.ports.list().get(3000)).toBe('https://preview/3000');
+    expect(hostOf(ctx).ports.ready(3000)).toBe('https://preview/3000');
+    expect(hostOf(ctx).ports.list().get(3000)).toBe('https://preview/3000');
   });
 
   it('onServerReady receives instance-scoped payloads', async () => {
     const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx, 'ports-ready-key');
     const events: Array<{ port: number; url?: string; instanceId?: string }> = [];
-    ctx.succinix.onServerReady((payload) => events.push(payload));
+    hostOf(ctx).onServerReady((payload) => events.push(payload));
     wc.emitServerReady(4000, 'https://preview/4000');
     expect(events[0]).toMatchObject({ port: 4000, url: 'https://preview/4000', instanceId: 'default' });
   });
@@ -613,7 +612,7 @@ describe('ports (C2)', () => {
     const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx, 'ports-unsub-key');
     const events: unknown[] = [];
-    const unsubscribe = ctx.succinix.onServerReady((payload) => events.push(payload));
+    const unsubscribe = hostOf(ctx).onServerReady((payload) => events.push(payload));
     unsubscribe();
     wc.emitServerReady(5000, 'https://preview/5000');
     expect(events).toHaveLength(0);
@@ -623,18 +622,18 @@ describe('ports (C2)', () => {
     const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx, 'ports-close-key');
     const events: Array<{ port: number; instanceId?: string }> = [];
-    ctx.succinix.onServerClosed((payload) => events.push(payload));
+    hostOf(ctx).onServerClosed((payload) => events.push(payload));
     wc.emitServerReady(6000, 'https://preview/6000');
     wc.emitPortClosed(6000);
     expect(events[0]).toMatchObject({ port: 6000, instanceId: 'default' });
-    expect(ctx.succinix.ports.ready(6000)).toBeUndefined();
+    expect(hostOf(ctx).ports.ready(6000)).toBeUndefined();
   });
 
   it('dispose clears port subscriptions', async () => {
     const { ctx, fiber, wc } = await bootInternal();
     await ensureDefault(ctx, 'ports-dispose-key');
     const events: unknown[] = [];
-    ctx.succinix.onServerReady((payload) => events.push(payload));
+    hostOf(ctx).onServerReady((payload) => events.push(payload));
     await fiber.dispose();
     wc.emitServerReady(7000, 'https://preview/7000');
     expect(events).toHaveLength(0);
@@ -642,25 +641,29 @@ describe('ports (C2)', () => {
 });
 
 describe('service consumption and reload (C2)', () => {
-  it('consumer with inject can access ctx.succinix', async () => {
+  it('consumer with inject can access dsh keys', async () => {
     const { ctx } = await loadPlugin();
     let seen: unknown = null;
     const consumer = {
       name: 'consumer',
-      inject: ['succinix'],
-      apply(context: CordisContext) {
-        seen = context.succinix;
+      inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence'],
+      apply(context: Context) {
+        seen = { fs: context.fs, sandbox: context.sandbox, terminals: context.terminals, sessionPersistence: context.sessionPersistence };
       },
     };
     const fiber = ctx.plugin(consumer);
     await fiber;
-    expect(seen).toBe(ctx.succinix);
+    expect(seen).toEqual({ fs: ctx.fs, sandbox: ctx.sandbox, terminals: ctx.terminals, sessionPersistence: ctx.sessionPersistence });
     await fiber.dispose();
   });
 
   it('ctx.get fallback is undefined when the provider is absent', () => {
     const ctx = new Context();
-    expect(ctx.get('succinix', false)).toBeUndefined();
+    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('fs', false)).toBeUndefined();
+    expect(ctx.get('sandbox', false)).toBeUndefined();
+    expect(ctx.get('terminals', false)).toBeUndefined();
+    expect(ctx.get('sessionPersistence', false)).toBeUndefined();
   });
 
   it('provider dispose makes the service unavailable', async () => {
@@ -668,15 +671,19 @@ describe('service consumption and reload (C2)', () => {
     let active = true;
     const consumer = {
       name: 'consumer',
-      inject: ['succinix'],
-      apply(context: CordisContext) {
-        active = Boolean(context.succinix);
+      inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence'],
+      apply(context: Context) {
+        active = Boolean(context.fs && context.sandbox && context.terminals && context.sessionPersistence);
       },
     };
     const consumerFiber = ctx.plugin(consumer);
     await consumerFiber;
     await fiber.dispose();
-    expect(ctx.get('succinix', false)).toBeUndefined();
+    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('fs', false)).toBeUndefined();
+    expect(ctx.get('sandbox', false)).toBeUndefined();
+    expect(ctx.get('terminals', false)).toBeUndefined();
+    expect(ctx.get('sessionPersistence', false)).toBeUndefined();
     expect(active).toBe(true);
   });
 
@@ -685,9 +692,9 @@ describe('service consumption and reload (C2)', () => {
     const values: unknown[] = [];
     const consumer = {
       name: 'consumer',
-      inject: ['succinix'],
-      apply(context: CordisContext) {
-        values.push(context.succinix);
+      inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence'],
+      apply(context: Context) {
+        values.push(Boolean(context.fs && context.sandbox && context.terminals && context.sessionPersistence));
       },
     };
     const providerFiber = ctx.plugin(plugin, {});
@@ -698,7 +705,7 @@ describe('service consumption and reload (C2)', () => {
     const providerFiber2 = ctx.plugin(plugin, {});
     await providerFiber2;
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(ctx.get('succinix', false)).toBeTruthy();
+    expect(ctx.get('succinix-host', false)).toBeTruthy();
     expect(values.length).toBeGreaterThanOrEqual(2);
   });
 });
@@ -707,7 +714,7 @@ describe('state events and reconfigure (C2)', () => {
   it('state event carries reason and changed fields', async () => {
     const { ctx } = await bootInternal();
     const events: Array<{ reason: string; changed: string[] }> = [];
-    ctx.succinix.on('succinix/state', (payload) => events.push(payload));
+    hostOf(ctx).on('succinix/state', (payload) => events.push(payload));
     await ensureDefault(ctx, 'state-key');
     expect(events.some((event) => event.reason === 'instance' && event.changed.includes('instances'))).toBe(true);
   });
@@ -716,34 +723,34 @@ describe('state events and reconfigure (C2)', () => {
     const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx, 'reconfigure-hot-key');
     const events: Array<{ reason: string; changed: string[] }> = [];
-    ctx.succinix.on('succinix/state', (payload) => events.push(payload));
-    await ctx.succinix.reconfigure({ resultTtlMs: 5000 });
-    expect(ctx.succinix.state.configRevision).toBe(1);
+    hostOf(ctx).on('succinix/state', (payload) => events.push(payload));
+    await hostOf(ctx).reconfigure({ resultTtlMs: 5000 });
+    expect(hostOf(ctx).state.configRevision).toBe(1);
     expect(wc.spawnCalls.length).toBe(1);
     expect(events.some((event) => event.reason === 'config' && event.changed.includes('configRevision'))).toBe(true);
   });
 
   it('reconfigure updates the capability registry in place', async () => {
     const { ctx } = await bootInternal();
-    const registry = ctx.succinix.capabilities;
-    await ctx.succinix.reconfigure({ capabilities: { defaultAllow: false, rules: [] } });
-    expect(ctx.succinix.capabilities).toBe(registry);
-    expect(ctx.succinix.capabilities.check('fs.read')).toBe(false);
+    const registry = hostOf(ctx).capabilities;
+    await hostOf(ctx).reconfigure({ capabilities: { defaultAllow: false, rules: [] } });
+    expect(hostOf(ctx).capabilities).toBe(registry);
+    expect(hostOf(ctx).capabilities.check('fs.read')).toBe(false);
   });
 
   it('restart-required reconfigure shuts the host down', async () => {
     const { ctx } = await bootInternal();
-    await ctx.succinix.reconfigure({ hostJsUrl: '/other-host.js' });
-    expect(ctx.succinix.state.containerState).toBe('disposed');
+    await hostOf(ctx).reconfigure({ hostJsUrl: '/other-host.js' });
+    expect(hostOf(ctx).state.containerState).toBe('disposed');
     expect(getHostManager().handle().state).toBe('disposed');
-    expect(ctx.succinix.state.configRevision).toBe(1);
+    expect(hostOf(ctx).state.configRevision).toBe(1);
   });
 
   it('invalid reconfigure throws ValidationError and preserves the last valid config', async () => {
     const { ctx } = await bootInternal();
-    await expect(ctx.succinix.reconfigure({ resultTtlMs: 0 })).rejects.toThrow();
-    expect(ctx.succinix.state.lastError).toContain('resultTtlMs');
-    expect(ctx.succinix.state.configRevision).toBe(0);
+    await expect(hostOf(ctx).reconfigure({ resultTtlMs: 0 })).rejects.toThrow();
+    expect(hostOf(ctx).state.lastError).toContain('resultTtlMs');
+    expect(hostOf(ctx).state.configRevision).toBe(0);
     expect(getHostManager().handle().state).toBe('ready');
   });
 
@@ -751,8 +758,8 @@ describe('state events and reconfigure (C2)', () => {
     const { ctx } = await bootInternal();
     await ensureDefault(ctx, 'telemetry-key');
     const events: Array<{ command: string; instanceId: string; startedAt: number; durationMs: number; runtime: string }> = [];
-    ctx.succinix.on('succinix/command', (payload) => events.push(payload));
-    await ctx.succinix.executor.exec('echo hi');
+    hostOf(ctx).on('succinix/command', (payload) => events.push(payload));
+    await hostOf(ctx).executor.exec('echo hi');
     expect(events[0]).toMatchObject({ command: 'echo hi', instanceId: 'default', runtime: 'lifo', exitCode: 0 });
     expect(events[0].startedAt).toBeGreaterThan(0);
     expect(events[0].durationMs).toBeGreaterThanOrEqual(0);

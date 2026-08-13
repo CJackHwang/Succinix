@@ -275,11 +275,12 @@ host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、
 
 ## 9. Engine 公开 API（摘要）
 
-0.5.0 起 engine 以 Cordis 插件形态消费：`@succinix/engine` 导出
-`{ name: 'succinix', apply, Config }`，使用方注入 `succinix` 后经
-`ctx.succinix.executor` 访问命令门面。0.4.0 独立 SDK 导出
+0.6.0 起 engine 是面向 `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件：
+`@succinix/engine` 导出 `{ name: 'succinix', apply, Config }`，提供 dsh 服务键
+`ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`，并通过
+内部 `succinix-host` seam 暴露应用生命周期。0.4.0 独立 SDK 导出
 （`createTerminalExecutor`、`createSuccinixInstance`、`./terminal`、
-`./instance`）已移除，迁移见 [MIGRATION.md](MIGRATION.md)。
+`./instance`）与单键服务均已移除，迁移见 [MIGRATION.md](MIGRATION.md)。
 
 包内部仍接入同样的底层组件（`src/engine/`）：
 
@@ -288,10 +289,19 @@ host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、
 - `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` —— 插件与 Succinix boot
   序列共享的底层 boot 助手。
 
-`ctx.succinix.executor` 保留命令风格门面语义：`exec(command, opts)`、`spawn(command, opts)`、
-`listProcesses()`、`kill(pid)`、`ping()`、`dispose()`。`TerminalExecutor.exec` 在 RPC
-等待超时时返回 `{ ok: false, timedOut: true }` 而非抛异常（底层 `TerminalClient.exec`
-仍抛）。`spawn` 返回完整 `ExecResult`（`{ pid }` 的超集），调用方可读取 `ok`/`runtime`/`error`。
+`succinix-host` seam 保留命令风格门面语义：`host.executor.exec(command, opts)`、
+`spawn(command, opts)`、`listProcesses()`、`kill(pid)`、`ping()`、`dispose()`。
+`TerminalExecutor.exec` 在 RPC 等待超时时返回 `{ ok: false, timedOut: true }` 而非
+抛异常（底层 `TerminalClient.exec` 仍抛）。`spawn` 返回完整 `ExecResult`
+（`{ pid }` 的超集），调用方可读取 `ok`/`runtime`/`error`。
+
+dsh 服务面对应同一底层运行时：
+
+- `ctx.fs` 在共享 WebContainer 文件系统上暴露文件原语。
+- `ctx.sandbox.confine(argv, policy)` 同步包装 Lifo argv，并对
+  `node|npm|npx` fail-closed。
+- `ctx.terminals` 是 owner 隔离的 PTY registry。
+- `ctx.sessionPersistence` 是 event-sourced JSONL 日志。
 
 插件打包/内嵌设计见 [SDK.zh-CN.md](SDK.zh-CN.md)，第三方接入见
 [PLUGIN.md](PLUGIN.md)，参考实现见 `src/engine/`。

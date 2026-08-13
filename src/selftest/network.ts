@@ -1,7 +1,7 @@
 // 自检域：网络视图（netstat / 端口匹配）（O5 拆分）。
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
-import { buildNetstatRows, commandMentionsPort } from '../commands.js';
+import { buildNetstatRows, commandMentionsPort } from '../commands/index.js';
 import { sleep } from '../util.js';
 
 export async function runNetwork(ctx: TestContext): Promise<void> {

@@ -1,7 +1,7 @@
 // 自检域：内置命令冒烟 + 已知边界（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { tryHandleLocalCommand } from '../commands.js';
+import { tryHandleLocalCommand } from '../commands/index.js';
 
 export async function runSmoke(ctx: TestContext): Promise<void> {
   const { wc, client, ports, term } = ctx;

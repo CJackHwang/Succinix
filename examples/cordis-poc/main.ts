@@ -1,10 +1,9 @@
-import { Context, FiberState, ValidationError } from 'cordis';
-import LoggerConsole from '@cordisjs/plugin-logger-console';
-import MemoryDatabase from '@cordisjs/plugin-database-memory';
+import { Context, ValidationError } from '@deepseek-ai/cordis';
 import { WebContainer } from '@webcontainer/api';
 
 const output = document.getElementById('log') as HTMLPreElement;
 let logText = '';
+const fiberStateNames = ['PENDING', 'LOADING', 'ACTIVE', 'FAILED', 'DISPOSED', 'UNLOADING'] as const;
 
 function log(text: string, kind: 'ok' | 'fail' | 'muted' | 'plain' = 'plain'): void {
   const cls = kind === 'plain' ? '' : ` ${kind}`;
@@ -29,22 +28,38 @@ function schema() {
 
 async function lifecycle(): Promise<void> {
   const ctx = new Context();
-  ctx.plugin(LoggerConsole, { colors: false });
-  ctx.plugin(MemoryDatabase);
 
-  const service = { name: 'poc-succinix' };
-  let consumerValue: unknown = null;
+  const service = {
+    fs: {
+      sandboxMode: 'workspace-write',
+      resolve: async () => ({ targetKey: '/workspace', displayPath: '/workspace' }),
+    },
+    sandbox: {
+      confine: () => ({ argv: ['succinix-sandbox'], enforcement: 'full', denialSignatures: [], runnerFailureRules: [] }),
+    },
+    terminals: {
+      listBackends: () => ['fake'],
+    },
+    sessionPersistence: {
+      supportsRawArtifacts: true,
+      list: async () => [],
+    },
+  };
+  let consumerValue: Record<string, unknown> | null = null;
   const provider = {
-    name: 'succinix-poc',
+    name: 'dsh-poc-provider',
     apply(ctx: Context) {
-      ctx.provide('succinix', service);
+      ctx.provide('fs', service.fs);
+      ctx.provide('sandbox', service.sandbox);
+      ctx.provide('terminals', service.terminals);
+      ctx.provide('sessionPersistence', service.sessionPersistence);
     },
   };
   const consumer = {
-    name: 'succinix-consumer',
-    inject: ['succinix'],
+    name: 'dsh-consumer',
+    inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence'],
     apply(ctx: Context) {
-      consumerValue = ctx.succinix;
+      consumerValue = { fs: ctx.fs, sandbox: ctx.sandbox, terminals: ctx.terminals, persistence: ctx.sessionPersistence };
     },
   };
 
@@ -52,9 +67,14 @@ async function lifecycle(): Promise<void> {
   await providerFiber;
   const consumerFiber = ctx.plugin(consumer);
   await consumerFiber;
-  log(`provider state: ${FiberState[providerFiber.state]}`, 'ok');
-  log(`consumer state: ${FiberState[consumerFiber.state]}`, 'ok');
-  log(`consumer injected service: ${consumerValue === service ? 'ok' : 'mismatch'}`, 'ok');
+  log(`provider state: ${fiberStateNames[providerFiber.state]}`, 'ok');
+  log(`consumer state: ${fiberStateNames[consumerFiber.state]}`, 'ok');
+  const injectedOk =
+    consumerValue?.fs === service.fs &&
+    consumerValue.sandbox === service.sandbox &&
+    consumerValue.terminals === service.terminals &&
+    consumerValue.persistence === service.sessionPersistence;
+  log(`consumer injected dsh services: ${injectedOk ? 'ok' : 'mismatch'}`, 'ok');
 
   const configFiber = ctx.plugin({ name: 'config-poc', Config: schema(), apply(_ctx: Context, config: { ok: boolean }) { log(`config validated: ${JSON.stringify(config)}`, 'ok'); } }, { ok: true });
   await configFiber;
@@ -68,9 +88,10 @@ async function lifecycle(): Promise<void> {
 
   await providerFiber.dispose();
   await consumerFiber.dispose();
-  log(`provider after dispose: ${FiberState[providerFiber.state]}`, 'ok');
-  log(`consumer after dispose: ${FiberState[consumerFiber.state]}`, 'ok');
-  log(`service lookup after provider dispose: ${ctx.get('succinix', false) === undefined ? 'unavailable (ok)' : 'available (wrong)'}`, 'ok');
+  log(`provider after dispose: ${fiberStateNames[providerFiber.state]}`, 'ok');
+  log(`consumer after dispose: ${fiberStateNames[consumerFiber.state]}`, 'ok');
+  const keysGone = ['fs', 'sandbox', 'terminals', 'sessionPersistence'].every((key) => ctx.get(key, false) === undefined);
+  log(`service lookup after provider dispose: ${keysGone ? 'unavailable (ok)' : 'available (wrong)'}`, 'ok');
 }
 
 async function webcontainer(): Promise<void> {
@@ -91,9 +112,9 @@ async function webcontainer(): Promise<void> {
 async function main(): Promise<void> {
   try {
     await lifecycle();
-    log('Cordis core lifecycle: PASS', 'ok');
+    log('dsh core lifecycle: PASS', 'ok');
   } catch (error) {
-    log(`Cordis core lifecycle: FAIL (${String(error)})`, 'fail');
+    log(`dsh core lifecycle: FAIL (${String(error)})`, 'fail');
     return;
   }
   try {

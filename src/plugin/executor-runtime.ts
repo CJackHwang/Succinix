@@ -1,4 +1,4 @@
-// invariant: python-aware executor wrapper for ctx.succinix instances.
+// invariant: python-aware executor wrapper for succinix-host instances.
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import {
   ensurePythonRuntime,

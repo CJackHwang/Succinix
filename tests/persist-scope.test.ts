@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
-import { createPersist, isExcludedPath } from '../src/persist.js';
+import { createPersist, isExcludedPath } from '../src/persist/index.js';
 
 const idb = installFakeIDB();
 

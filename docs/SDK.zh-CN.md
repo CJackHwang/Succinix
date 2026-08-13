@@ -1,32 +1,34 @@
-# Succinix Engine — Cordis 插件集成
+# Succinix Engine — dsh Cordis 集成参考
 
-> 状态：**0.5.0 插件形态（发布就绪）**。`@succinix/engine` 是一个 Cordis
-> 插件，也是唯一对外集成面。旧的 0.4.0 独立 SDK 导出（`createTerminalExecutor`、
-> `./terminal`、`./instance`）已移除；迁移见 [MIGRATION.md](MIGRATION.md)。
+> 状态：**0.6.0 dsh 服务提供方（发布就绪）**。`@succinix/engine` 是面向
+> `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件，也是唯一对外集成面。它提供 dsh
+> 服务键 `ctx.fs`、`ctx.sandbox`、`ctx.terminals` 与
+> `ctx.sessionPersistence`。旧的 0.4.0 独立 SDK 导出（`createTerminalExecutor`、
+> `./terminal`、`./instance`）与 0.5.0 的单键 `succinix` 服务均已移除；
+> 见 [MIGRATION.md](MIGRATION.md)。
 
-`@succinix/engine` 让任意 Cordis 应用在 WebContainer 内获得浏览器原生 Unix
-沙箱：真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python
-（`python|python3|pip|pip3`），以及处理其余命令的 Lifo Unix 用户态。容器文件系统
+`@succinix/engine` 为任意 dsh 兼容 Cordis 应用提供浏览器原生 Unix 执行世界：
+WebContainer 内真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python
+（`python|python3|pip|pip3`）以及处理其余命令的 Lifo Unix 用户态。容器文件系统
 与宿主应用共享。
 
-本文档是集成参考。线上协议见 [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)，能力矩阵见
-[FEATURES.zh-CN.md](FEATURES.zh-CN.md)，第三方插件开发见
-[PLUGIN.md](PLUGIN.md)。
+本文是集成参考。线上协议见 [PROTOCOL.md](PROTOCOL.md)，能力矩阵见
+[FEATURES.md](FEATURES.md)，第三方插件开发见 [PLUGIN.md](PLUGIN.md)。
 
 ## 安装
 
 ```bash
-npm install @succinix/engine@0.5.0
-npm install cordis @webcontainer/api   # peer dependencies
+npm install @succinix/engine@0.6.0
+npm install @deepseek-ai/cordis @webcontainer/api   # peer dependencies
 ```
 
-`@succinix/engine` 要求 `cordis >= 4.0.0-rc.8` 与
+`@succinix/engine` 要求 `@deepseek-ai/cordis ^4.0.1` 与
 `@webcontainer/api ^1.6.4`。
 
 ## 快速开始
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 import { WebContainer } from '@webcontainer/api';
 
@@ -42,19 +44,21 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const wc = await WebContainer.boot();
-await ctx.succinix.attach(wc);
-await ctx.succinix.ensureInstance('default', { executor: {} });
+const host = ctx.get('succinix-host', false)!;
+await host.attach(wc);
+await host.ensureInstance('default', { executor: {} });
 
-const node = await ctx.succinix.executor.exec('node -e "console.log(1+1)"');
-const lifo = await ctx.succinix.executor.exec('grep -i foo file.txt');
+const node = await host.executor.exec('node -e "console.log(1+1)"');
+const lifo = await host.executor.exec('grep -i foo file.txt');
 
-await ctx.succinix.shutdown();
+await host.shutdown();
 await fiber.dispose();
 ```
 
-插件以 `succinix` 注册；消费方声明 `inject: ['succinix']`，或用
-`ctx.get('succinix', false)` 探测。发布物 `.d.ts` 会增强
-`Context['succinix']` 与 Cordis `Events`。
+插件注册名为 `succinix`，并提供四个 dsh 服务。消费方声明
+`inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']`，或用
+`ctx.get('fs', false)` 探测。发布物 `.d.ts` 会增强 `@deepseek-ai/cordis` 的
+`Context` 与 `Events`。
 
 ## 包导出
 
@@ -74,40 +78,180 @@ await fiber.dispose();
 }
 ```
 
-- `.` 是插件入口：`{ name: 'succinix', apply, Config }`，并导出类型。
+- `.` 是插件入口：`{ name: 'succinix', apply, Config }`，外加 dsh 类型与
+  host seam 类型。
 - `./host.js`、`./lifo-core.js`、`./assets/*` 是 host daemon、Lifo 内核、
   Pyodide 运行时与 `sha256.json` 的静态资产。
-- 0.5.0 没有 `./terminal` 或 `./instance` 子路径。
+- 0.6.0 没有 `./terminal` 或 `./instance` 子路径。
+
+## 公开 dsh 服务
+
+四个公开服务键以 dsh 0.1.0-rc.6 形状为准，vendored 契约在
+[`docs/contracts/dsh-0.1.0-rc.6/`](contracts/dsh-0.1.0-rc.6/SOURCES.md)：
+
+| 键 | 契约 | Succinix 行为 |
+| --- | --- | --- |
+| `ctx.fs` | 12 原语、13 个 `FS_*` 错误码、`sandboxMode` | canonical `/workspace` 执行世界路径、原子文本/字节读写、version guard、sandbox policy 围栏 |
+| `ctx.sandbox` | 同步 `confine(argv, policy)` | 返回 Lifo wrapper argv 与 `enforcement: 'full'`；`node|npm|npx` 以 `SANDBOX_UNAVAILABLE` fail-closed |
+| `ctx.terminals` | owner 隔离的 PTY registry | 精确 `Agent` owner、固定信号白名单、每 session 单 in-flight send、幂等 `kill` |
+| `ctx.sessionPersistence` | event-sourced session log | 实例状态根下的 append-only JSONL、raw artifact、只截尾 repair、source-qualified revision |
+
+从 `@succinix/engine` 导入发布类型：
+
+```ts
+import {
+  FsError,
+  SandboxUnavailableError,
+  TerminalError,
+  SessionId,
+  SessionPersistenceCorruptionError,
+  type FileSystem,
+  type SandboxProvider,
+  type TerminalSessionService,
+  type SessionPersistence,
+} from '@succinix/engine';
+```
+
+### `ctx.fs`
+
+浏览器执行世界暴露 `FileSystem`：`resolve`、`processPath`、`fileUrl`、
+`contains`、`stat`、`lstat`、`readText`、`streamText`、`readBytes`、
+`listDir`、`writeText`、`editText`。
+
+- `resolve(path, opts?)` 返回不透明 `targetKey` 与展示路径；消费方不得解析
+  `targetKey`。
+- `stat` / `lstat` 对不存在目标返回 `undefined`。
+- `readBytes` 必选 `signal` 与 `maxBytes`；超限抛 `FS_TOO_LARGE`，绝不截断返回。
+- `writeText` / `editText` 接受可选 `sandboxPolicy`；`read-only` 拒绝一切变更，
+  `workspace-write` 只允许写入策略的 `workspaceRoot` 内。
+- outcome 的 `before` / `after` 统一 LF 规范化，作为同一 diff basis。
+- `sandboxMode` 为 `'workspace-write'`：未显式传 policy 时，变更默认限定在
+  workspace root。
+
+### `ctx.sandbox`
+
+`confine(argv, policy)` 同步且 fail-closed：
+
+- 只接受 `read-only` 与 `workspace-write` 两种 `SandboxPolicy`。
+- 运行时传入 `danger-full-access` 一律拒绝。
+- 真实 `node|npm|npx` argv 无法按调用围栏，抛 `SandboxUnavailableError`
+  （`SANDBOX_UNAVAILABLE`）。
+- Lifo argv 包装为 `['succinix-sandbox', '--mode', mode, '--workspace', root,
+  ...argv]`，并附带 Lifo 方言 denial signatures 与 runner failure rules。
+- wrapper 是执行世界替换，不是桌面 sandbox，也不是安全边界；shell 脚本内可
+  嵌套调用其他命令。
+
+### `ctx.terminals`
+
+`TerminalSessionService` 按 owner 隔离，要求精确 `Agent`：
+
+```ts
+const agent: Agent = { id: SessionId('agent-1'), status: 'idle', ctx: {} };
+host.registerAgent(agent);
+
+const session = await ctx.terminals.spawn(agent, {
+  type: 'succinix',
+  name: 'shell-1',
+});
+const send = ctx.terminals.startSend(agent, session.sessionId, {
+  text: 'echo hello',
+  submit: true,
+});
+const result = await send.done;
+const view = ctx.terminals.read(agent, session.sessionId, { count: 100 });
+await ctx.terminals.kill(agent, session.sessionId, 'done');
+host.unregisterAgent(agent);
+```
+
+不存在隐式 `guest` owner。未注册 owner 抛 `OWNER_NOT_LIVE`；跨 owner 访问抛
+`FOREIGN_SESSION`。会话是 process-local 的，host 重启不恢复。
+
+### `ctx.sessionPersistence`
+
+`SessionPersistence` 是存储于 `/workspace/.succinix/sessions` 的 append-only
+事件日志（JSONL）：
+
+- `create(meta)` 可 lazy：从未 append 的 session 不进入 `list` /
+  `listSnapshots`。
+- `append(id, events)` 要求连续 `seq`，并拒绝非 JSON 可序列化的事件数据。
+- `load` 只修复尾部残缺行，从不重写完整日志。
+- `inspect` 只读，不 commit repair。
+- `supportsRawArtifacts` 为 true，`readRaw` 返回逐字 artifact。
+- durability 为 WebContainer 文件系统写入 + 主动 snapshot flush；跨页面重载
+  是 best-effort，不是崩溃级硬保证。
+
+## Host seam
+
+`succinix-host` 是内部生命周期与应用可观测 seam，不是 dsh 服务键。可信的
+同 Context 消费方可探测：
+
+```ts
+const host = ctx.get('succinix-host', false);
+if (!host) throw new Error('succinix-host is not available');
+```
+
+seam 暴露：
+
+| 成员 | 用途 |
+| --- | --- |
+| `state` | 插件状态：version、container、host、instances、capabilities、`configRevision`、`lastError` |
+| `container` | 当前容器句柄：`mode`、`state`、`wc`、`hostPid`、`startedAt` |
+| `executor` | 默认实例 `TerminalExecutor`：`exec`、`spawn`、`listProcesses`、`kill`、`ping`、`pingDirect`、`interruptDirect`、`respawn` |
+| `terminal` | `terminal.create(output, opts?)` 返回应用 Shell 使用的无 UI 终端会话 |
+| `snapshot` | 默认实例的 `save`、`restore`、`meta`、`clear` |
+| `persist` | 持久化上下文（快照键、强制保存） |
+| `workspace` | `restore`、`flush`、`list`，以及 `stateRoot` / `home` |
+| `ports` | `list`、`ready`、`expect`、`release`、`hasConflict`、`onServerReady`、`onServerClosed` |
+| `services` | 声明式服务：`list`、`read`、`status`、`start`、`stop`、`enable`、`disable`、`add`、`remove`、`autostart`、`ensureFiles` |
+| `capabilities` | 本地能力注册表：`check`、`list`、`define` |
+| `instance` | 默认 `SuccinixInstance` 或 `null` |
+| `boot` | 启动内部 WebContainer |
+| `attach` | 接管外部 WebContainer |
+| `ensureInstance` | 创建/复用实例（替代 `createSuccinixInstance`） |
+| `getInstance` | 读取已有实例 |
+| `releaseInstance` | 释放并移除实例 |
+| `registerAgent` / `unregisterAgent` | 维护 `ctx.terminals` 使用的 live-agent 集合 |
+| `listProcesses` | 默认或具名实例的进程表快照 |
+| `on` | 类型化 `succinix/*` 事件订阅 |
+| `onServerReady` / `onServerClosed` | 端口事件订阅 |
+| `dispose` | 软收尾（fiber dispose） |
+| `shutdown` | 硬收尾（kill host） |
+| `flush` | 对每个 live 实例做 best-effort 快照 flush |
+| `reconfigure` | 校验并应用新配置 |
+
+默认实例存在前访问 `executor`、`terminal`、`snapshot`、`persist`、
+`workspace` 或 `services` 会以 state-backed 错误快速失败。
 
 ## 容器模式
 
-### 内部模式（internal）
+### 内部模式
 
-插件自行启动 WebContainer，带重试：
+插件自行启动 WebContainer（带重试）：
 
 ```ts
-const wc = await ctx.succinix.boot({
+const wc = await host.boot({
   instanceId: 'default',
   executor: {},
 });
 ```
 
-### 外部模式（external）
+### 外部模式
 
-宿主应用拥有 WebContainer，并交给插件。插件仍负责注入 `host.js`、spawn host
-daemon 并等待就绪：
+宿主应用拥有 WebContainer 并交给插件。插件仍注入 `host.js`、拉起 host
+daemon 并管理 host readiness：
 
 ```ts
 const wc = await WebContainer.boot();
-await ctx.succinix.attach(wc, { executor: {} });
+await host.attach(wc, { executor: {} });
 ```
 
-`attach()` 与 `boot()` 互斥；容器就绪后切换模式会抛 `ERR_MODE_MISMATCH`。
+`attach()` 与 `boot()` 互斥；容器就绪后切换模式抛
+`ERR_MODE_MISMATCH`。
 
 ## 配置
 
-`SuccinixConfig` 只含可序列化字段，且同步校验；函数一律通过服务参数或事件订阅
-注入。
+`SuccinixConfig` 可序列化且同步校验，没有函数字段；运行时 hooks 走服务参数或
+事件订阅。
 
 ```ts
 export interface SuccinixConfig {
@@ -150,48 +294,15 @@ export interface SuccinixConfig {
 }
 ```
 
-非法值产生 `ValidationError`；插件保留上次有效配置，并在
-`ctx.succinix.state.lastError` 记录原因。
-
-## 服务面
-
-`ctx.succinix` 是完整服务契约：
-
-| 成员 | 作用 |
-| --- | --- |
-| `state` | 插件状态：版本、容器、host、实例、能力、`configRevision`、`lastError` |
-| `container` | 当前容器句柄：`mode`、`state`、`wc`、`hostPid`、`startedAt` |
-| `executor` | 默认实例 `TerminalExecutor`：`exec`、`spawn`、`listProcesses`、`kill`、`ping`、`pingDirect`、`interruptDirect`、`respawn` |
-| `terminal` | `terminal.create(output, opts?)` 返回无 UI 终端会话 |
-| `snapshot` | 默认实例快照：`save`、`restore`、`meta`、`clear` |
-| `persist` | 持久化上下文（快照键、强制保存） |
-| `workspace` | `restore`、`flush`、`list`，以及 `stateRoot`、`home` |
-| `ports` | `list`、`ready`、`expect`、`release`、`hasConflict`、`onServerReady`、`onServerClosed` |
-| `services` | 声明式服务管理：`list`、`read`、`status`、`start`、`stop`、`enable`、`disable`、`add`、`remove`、`autostart`、`ensureFiles` |
-| `capabilities` | 本地能力注册表：`check`、`list`、`define` |
-| `instance` | 默认 `SuccinixInstance`，未创建时为 `null` |
-| `boot` | 启动内部 WebContainer |
-| `attach` | 接管外部 WebContainer |
-| `ensureInstance` | 创建或复用实例（替代 `createSuccinixInstance`） |
-| `getInstance` | 读取已创建实例 |
-| `releaseInstance` | 释放并移除实例 |
-| `listProcesses` | 默认或指定实例的进程表快照 |
-| `on` | 类型化领域事件订阅 |
-| `onServerReady` / `onServerClosed` | 端口事件订阅 |
-| `dispose` | 软收尾（fiber dispose） |
-| `shutdown` | 完全关闭（kill host） |
-| `flush` | 对所有存活实例做尽力而为的快照落盘 |
-| `reconfigure` | 校验并应用新配置 |
-
-默认实例未创建时访问 `executor`、`terminal`、`snapshot`、`persist`、
-`workspace` 或 `services` 会快速失败，并附带 state 原因。
+非法值抛 `ValidationError`；插件保留最后一次合法配置，并在
+`host.state.lastError` 记录原因。
 
 ## 实例
 
-`ensureInstance(containerId, opts)` 在共享页面 host 上创建按实例栈：
+`host.ensureInstance(containerId, opts)` 在共享页面 host 上创建按实例栈：
 
 ```ts
-const alice = await ctx.succinix.ensureInstance('alice', {
+const alice = await host.ensureInstance('alice', {
   home: '/workspace/alice',
   persistence: { dbName: 'my-app', storeKey: 'alice' },
   executor: {},
@@ -207,10 +318,10 @@ await alice.workspace.flush('manual');
 
 ## 终端会话
 
-宿主负责渲染。`TerminalOutput` 只有两个方法：
+应用 Shell 自带渲染。`TerminalOutput` 是两个方法的契约：
 
 ```ts
-const session = ctx.succinix.terminal.create({
+const session = host.terminal.create({
   write: (data) => term.write(data),
   clear: () => term.clear(),
 });
@@ -219,36 +330,36 @@ term.onData((data) => session.handleData(data));
 await session.boot();
 ```
 
-`SuccinixTerminalSession` 负责历史、Tab 补全、命令队列、Ctrl+C 中断与
-cwd 跟随提示符；不依赖 xterm。
+`SuccinixTerminalSession` 拥有历史、Tab 补全、命令队列、Ctrl+C 中断与跟随 cwd
+的提示符。xterm 不是依赖。公开的 `ctx.terminals` 是 dsh 形状的 owner 隔离
+registry；上面的应用级会话是其内部渲染后端。
 
 ## 端口与服务
 
-端口事件经 `succinix/server-ready`、`succinix/server-closed` 或便捷订阅
-到达：
+端口事件经 `succinix/server-ready` 与 `succinix/server-closed`，或便捷订阅：
 
 ```ts
-ctx.succinix.onServerReady(({ port, url, instanceId }) => {
+host.onServerReady(({ port, url, instanceId }) => {
   app.recordPreview(port, url, instanceId);
 });
 ```
 
-`ctx.succinix.ports` 是 canonical 页面级视图；spawn 前用 `expect(port)` /
+`host.ports` 是 canonical 页面级视图；spawn 前用 `expect(port)` /
 `release(port)` 把端口归属到实例。
 
-声明式服务用 `ctx.succinix.services` 管理：
+声明式服务用 `host.services` 管理：
 
 ```ts
-await ctx.succinix.services.ensureFiles();
-await ctx.succinix.services.add('web', 'node server.js', 3001);
-const start = await ctx.succinix.services.start('web');
-const status = await ctx.succinix.services.status('web');
-await ctx.succinix.services.stop('web');
+await host.services.ensureFiles();
+await host.services.add('web', 'node server.js', 3001);
+const start = await host.services.start('web');
+const status = await host.services.status('web');
+await host.services.stop('web');
 ```
 
-## 能力（capability）
+## 能力注册表
 
-插件自带轻量能力注册表，模式集合如下：
+引擎自带轻量能力注册表：
 
 ```text
 terminal.exec, terminal.spawn, terminal.kill, terminal.interrupt,
@@ -256,54 +367,53 @@ fs.read, fs.write, workspace.restore, workspace.flush, workspace.list
 ```
 
 ```ts
-if (!ctx.succinix.capabilities.check('terminal.exec')) {
+if (!host.capabilities.check('terminal.exec')) {
   throw new Error('execution is not allowed');
 }
 
-const dispose = ctx.succinix.capabilities.define('fs.write', () => isAllowed());
+const dispose = host.capabilities.define('fs.write', () => isAllowed());
 ```
 
-宿主若提供 `capability` 服务，插件会把同一组模式注册进去。默认放行；
-`capabilities.defaultAllow` 与 `capabilities.rules` 可覆盖。
+默认放行；`capabilities.defaultAllow` 与 `capabilities.rules` 可覆盖。
 
 ## 生命周期与热重载
 
-- HostManager 是页面级模块单例，不属于 Cordis fiber。
-- `container.hostPid` / `state.host.pid` 在浏览器中始终为 `null`，因为
-  WebContainer 进程不暴露 pid；软重载间用 `startedAt` 作为稳定的 host 身份标记。
-- fiber reload（`fiber.update`）重新执行 `apply`。热更新字段保持
-  `ctx.succinix.state.host.startedAt` 稳定；需要重启的字段会在 fiber 重新
-  apply 前先关闭 host。
-- `dispose()` 默认软收尾：释放实例与订阅，host 保留。
-- `shutdown()` 强制 flush、kill host、清页面注册表，并置
-  `containerState` 为 `disposed`。
-- `lifecycle.disposeMode: 'hard'` 让 fiber dispose 同时关闭 host。
-- `flushOnPageHide` 在 `pagehide` 时触发尽力而为的 flush；
-  `beforeunload` 总是触发尽力而为的 shutdown。浏览器卸载无法等待异步操作。
-- `reconfigure(next)` 同步校验、递增 `configRevision` 并广播
-  `succinix/state`（`reason: 'config'`）。改变 host 资产路径或容器模式的
-  配置会先执行 shutdown。
-- 每次成功的 `reconfigure` 或 fiber 重新 apply 都会递增 `configRevision`；
-  页面级 HostManager 保证该计数在软重载间单调递增。
+- HostManager 是页面级模块单例，不是 Cordis fiber。
+- 浏览器中 `container.hostPid` / `state.host.pid` 恒为 `null`（WebContainer
+  进程无 pid）；`startedAt` 是跨软重载的稳定 host 身份 token。
+- `fiber.update` 重跑 `apply`。热字段保持 `host.state.host.startedAt` 稳定；
+  需要重启的字段会在 fiber 重新应用前关闭 host。
+- `dispose()` 默认软收尾：释放实例与订阅，host 保持存活。
+- `shutdown()` 强制 flush、kill host、清空页面注册表，并把 `containerState`
+  置为 `disposed`。
+- `lifecycle.disposeMode: 'hard'` 让 fiber dispose 也关闭 host。
+- `flushOnPageHide` 开启 `pagehide` 的 best-effort flush；`beforeunload`
+  总是触发 best-effort shutdown。浏览器 unload 无法等待异步工作。
+- `reconfigure(next)` 同步校验、递增 `configRevision` 并 emit
+  `succinix/state`（`reason: 'config'`）。改变 host 资产路径或容器模式的配置
+  会先执行 shutdown。
+- 每次成功的 `reconfigure` 或 fiber reapply 都递增 `configRevision`；
+  页面级 HostManager 保证计数器跨软重载单调。
 
 ## 事件
 
-类型化事件可通过 `ctx.succinix.on` 或 Cordis `ctx.on` 消费：
+类型化 `succinix/*` 事件是内部应用可观测事件，经 `host.on` 与 Cordis context
+消费：
 
-| 事件 | 载荷 |
+| 事件 | Payload |
 | --- | --- |
 | `succinix/state` | `{ state, reason, changed }` |
 | `succinix/server-ready` | `{ port, url?, instanceId? }` |
 | `succinix/server-closed` | `{ port, instanceId? }` |
-| `succinix/command` | 命令 telemetry：id、实例、runtime、exit、duration |
+| `succinix/command` | 命令遥测：id、instance、runtime、exit、duration |
 | `succinix/instance` | `{ containerId, state: 'created' \| 'released' }` |
 | `succinix/workspace` | `{ instanceId, reason, savedAt? }` |
 | `succinix/process` | `{ instanceId, processes }`（轮询聚合） |
 
 ## 资产与完整性
 
-包内带 `assets/host.js`、`assets/lifo-core.js`、`assets/pyodide/*` 与
-`assets/sha256.json`。可作为静态文件服务，或用 Vite 导入：
+包内包含 `assets/host.js`、`assets/lifo-core.js`、`assets/pyodide/*` 与
+`assets/sha256.json`。复制到静态目录，或用 Vite 导入：
 
 ```ts
 import hostJsUrl from '@succinix/engine/host.js?url';
@@ -316,24 +426,26 @@ const fiber = ctx.plugin(engine, {
 });
 ```
 
-`assets.integrity: true`（默认）会在注入前用 `sha256.json` 校验
-`host.js` 与 `lifo-core.js`。
+`assets.integrity: true`（默认）会在注入前用 `sha256.json` 校验 `host.js` 与
+`lifo-core.js`。
 
-## 要求与边界
+## 要求与限制
 
-- 仅 Chromium（Chrome/Edge）；WebContainers 不支持 Firefox、Safari 与移动端。
+- 仅 Chromium（Chrome/Edge）；WebContainers 不支持 Firefox、Safari 或移动端。
 - 页面必须跨源隔离：`Cross-Origin-Opener-Policy: same-origin` 与
   `Cross-Origin-Embedder-Policy: credentialless`。
-- 端口是虚拟 preview，没有真实入站网络。
-- 无交互式 REPL stdin；文件 RPC 是唯一通道。
-- Lifo 不支持符号链接 / 硬链接。
-- 不模拟 `chmod` 与权限位。
-- 无精确 OS 级内存/CPU 统计；估算值必须标注。
+- 端口是虚拟 preview；没有真实入站网络。
+- 无交互式 REPL stdin；文件 RPC 是通道。
+- Lifo 不支持符号链接或硬链接。
+- 不模拟 `chmod` 语义与权限位。
+- 无精确 OS 级内存/CPU 统计；估算必须标注。
+- `ctx.sandbox` 是执行世界替换，不是桌面安全边界。
+- `ctx.sessionPersistence` 的 durability 跨浏览器重载是 best-effort。
 
 ## 相关文档
 
-- [MIGRATION.md](MIGRATION.md) — 0.4.0 到 0.5.0 迁移指南
-- [PLUGIN.md](PLUGIN.md) — 第三方 Cordis 插件接入
+- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 到 0.6.0 迁移指南
+- [PLUGIN.md](PLUGIN.md) — 第三方 Cordis 插件开发
 - [cordis-contract.md](cordis-contract.md) — 权威契约快照
-- [PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md) — 文件 RPC 线上契约（v1）
-- [FEATURES.zh-CN.md](FEATURES.zh-CN.md) — 支持能力清单
+- [PROTOCOL.md](PROTOCOL.md) — 文件 RPC 线上契约（v1）
+- [FEATURES.md](FEATURES.md) — 支持能力清单

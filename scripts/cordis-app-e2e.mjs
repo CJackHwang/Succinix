@@ -28,7 +28,7 @@ function check(name, ok, detail = '') {
 async function ensureDemoDeps() {
   const required = [
     join(DEMO, 'node_modules', '@succinix', 'engine', 'package.json'),
-    join(DEMO, 'node_modules', 'cordis', 'package.json'),
+    join(DEMO, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'),
     join(DEMO, 'node_modules', '@webcontainer', 'api', 'package.json'),
   ];
   if (required.every((file) => existsSync(file))) return true;

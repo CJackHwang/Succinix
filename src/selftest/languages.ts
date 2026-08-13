@@ -2,7 +2,7 @@
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
 import { ensurePythonRuntime } from '@succinix/engine';
-import { tryHandleLocalCommand } from '../commands.js';
+import { tryHandleLocalCommand } from '../commands/index.js';
 import { captureTerm, makeDispatchBase } from './info.js';
 
 export async function runLanguages(ctx: TestContext): Promise<void> {

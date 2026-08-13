@@ -1,5 +1,5 @@
 // app plugin: xterm terminal surface.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { AMBER, RESET } from '../../theme.js';
 import { term, fitAddon } from '../../app/xterm.js';
 import { output } from '../../app/output.js';

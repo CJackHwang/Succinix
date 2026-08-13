@@ -27,7 +27,7 @@ import {
   formatSuccinixPlugins,
   type CommandContext,
   type SuccinixPluginSummary,
-} from '../src/commands.js';
+} from '../src/commands/index.js';
 import type { SuccinixPluginState } from '../src/plugin/index.js';
 
 beforeEach(() => {
@@ -273,7 +273,7 @@ describe('tryHandleLocalCommand 冒烟（无副作用命令）', () => {
 
 describe('succinix manageability commands (C4)', () => {
   const state: SuccinixPluginState = {
-    version: '0.5.0',
+    version: '0.6.0',
     containerMode: 'internal',
     containerState: 'ready',
     host: { pid: 42, startedAt: 1720000000000 },
@@ -292,7 +292,7 @@ describe('succinix manageability commands (C4)', () => {
     const lines = formatSuccinixStatus(state, 'ACTIVE');
     const text = lines.join('\n');
     expect(text).toContain('Succinix plugin status');
-    expect(text).toContain('0.5.0');
+    expect(text).toContain('0.6.0');
     expect(text).toContain('ACTIVE');
     expect(text).toContain('internal');
     expect(text).toMatch(/READY/);
@@ -318,8 +318,8 @@ describe('succinix manageability commands (C4)', () => {
     const term = captureTerm();
     const ctx = ctxOf({
       term: term as unknown as Terminal,
-      succinixState: state,
-      succinixPlugins: plugins,
+      engineState: state,
+      pluginSummaries: plugins,
     });
     expect(await tryHandleLocalCommand(ctx, 'succinix status')).toBe(true);
     expect(term.lines.join('\n')).toContain('Succinix plugin status');

@@ -2,7 +2,7 @@
 // boot 完成、进入终端前打印（main.ts 读取）；motd 命令查看 / 设置 / 恢复默认。
 // 文件落在容器共享 FS（wc.fs 读写），与 config/services 同一模式：缺失时 boot 落默认内容。
 import type { FileSystemAPI } from '@webcontainer/api';
-import { getPersist } from './persist.js';
+import { getPersist } from './persist/index.js';
 import { ensureParentDir } from './util.js';
 import { SUCCINIX_VERSION } from './version.js';
 import { DEFAULT_INSTANCE_ID, statePath } from './instance/paths.js';

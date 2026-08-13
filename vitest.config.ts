@@ -2,6 +2,30 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  test: {
+    environment: 'node',
+    include: ['tests/**/*.test.ts', 'src/terminal/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json-summary'],
+      include: [
+        'src/log.ts',
+        'src/persist/index.ts',
+        'src/services/index.ts',
+        'src/pkg/index.ts',
+        'src/motd.ts',
+        'src/config.ts',
+        'src/engine/host-route.ts',
+        'src/engine/client.ts',
+      ],
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 70,
+        statements: 70,
+      },
+    },
+  },
   resolve: {
     alias: {
       '@succinix/engine': fileURLToPath(new URL('./src/plugin/index.ts', import.meta.url)),

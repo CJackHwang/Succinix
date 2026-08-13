@@ -10,8 +10,8 @@ import type {
   TerminalOutput,
 } from '@succinix/engine';
 import type { BootUI } from '../boot-ui.js';
-import type { CommandContext } from '../commands.js';
-import type { TestResult } from '../tests.js';
+import type { CommandContext } from '../commands/index.js';
+import type { TestResult } from '../selftest/index.js';
 
 export interface AppShell {
   instance: SuccinixInstance;

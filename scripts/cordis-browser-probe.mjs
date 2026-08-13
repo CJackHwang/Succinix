@@ -2,7 +2,7 @@
 import { build } from 'esbuild';
 
 const probes = [
-  ['core', 'cordis'],
+  ['core', '@deepseek-ai/cordis'],
   ['logger-console', '@cordisjs/plugin-logger-console'],
   ['database-memory', '@cordisjs/plugin-database-memory'],
   ['loader', '@cordisjs/plugin-loader'],

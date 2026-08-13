@@ -1,14 +1,14 @@
 // C4 manageability tests: state events, hot reload, failure isolation,
 // subscription leaks, and the succinix status/plugins command surface.
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import enginePlugin, { type SuccinixConfig } from '../src/plugin/index.js';
 import { appPlugins } from '../src/host/plugins.js';
 import { getHostManager, resetPageSingletons } from '../src/plugin/host-manager.js';
 import { pagePorts } from '../src/engine/ports.js';
-import { tryHandleLocalCommand } from '../src/commands.js';
+import { tryHandleLocalCommand } from '../src/commands/index.js';
 import { FakeWebContainer, asWebContainer } from './helpers/fake-webcontainer.js';
-import { installFakeIDB } from './helpers/fakes.js';
+import { hostOf, installFakeIDB } from './helpers/fakes.js';
 import type { AppCommandsService } from '../src/host/types.js';
 
 const wcApi = vi.hoisted(() => ({ boot: vi.fn() }));
@@ -73,7 +73,7 @@ async function bootEngine(config: SuccinixConfig = {}) {
   const wc = new FakeWebContainer();
   wcApi.boot.mockResolvedValue(asWebContainer(wc));
   const loaded = await loadEngine(config);
-  await loaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
+  await hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS });
   return { ...loaded, wc };
 }
 
@@ -119,13 +119,13 @@ describe('state events and telemetry (C4)', () => {
     const { ctx } = await loadEngine();
     const events: Array<{ reason: string; changed: string[] }> = [];
     ctx.on('succinix/state', (payload: { reason: string; changed: string[] }) => events.push(payload));
-    await ctx.succinix.boot({ executor: BOOT_HOOKS });
-    await ctx.succinix.ensureInstance('default', {
+    await hostOf(ctx).boot({ executor: BOOT_HOOKS });
+    await hostOf(ctx).ensureInstance('default', {
       persistence: { dbName: 'c4', storeKey: 'state' },
       executor: BOOT_HOOKS,
     });
-    await ctx.succinix.reconfigure({ resultTtlMs: 7000 });
-    await ctx.succinix.shutdown();
+    await hostOf(ctx).reconfigure({ resultTtlMs: 7000 });
+    await hostOf(ctx).shutdown();
     const reasons = events.map((event) => event.reason);
     expect(reasons).toContain('boot');
     expect(reasons).toContain('ready');
@@ -140,13 +140,13 @@ describe('state events and telemetry (C4)', () => {
 
   it('command telemetry carries pid and error fields on failure', async () => {
     const { ctx } = await bootEngine();
-    await ctx.succinix.ensureInstance('default', {
+    await hostOf(ctx).ensureInstance('default', {
       persistence: { dbName: 'c4', storeKey: 'telemetry' },
       executor: BOOT_HOOKS,
     });
     const events: Array<{ command: string; pid?: number; exitCode: number | null; error?: string }> = [];
-    ctx.succinix.on('succinix/command', (payload) => events.push(payload));
-    await ctx.succinix.executor.spawn('node server.js');
+    hostOf(ctx).on('succinix/command', (payload) => events.push(payload));
+    await hostOf(ctx).executor.spawn('node server.js');
     expect(events[0]).toMatchObject({ command: 'node server.js', exitCode: 0 });
     expect(events[0].pid).toBeTypeOf('number');
   });
@@ -155,53 +155,51 @@ describe('state events and telemetry (C4)', () => {
 describe('reload and subscription isolation (C4)', () => {
   it('fiber.update increments configRevision and keeps one host', async () => {
     const { ctx, fiber, wc } = await bootEngine();
-    const before = ctx.succinix.state.configRevision;
-    fiber.update({ resultTtlMs: 7000 });
-    await fiber;
-    expect(ctx.succinix.state.configRevision).toBe(before + 1);
+    const before = hostOf(ctx).state.configRevision;
+    await fiber.update({ resultTtlMs: 7000 });
+    expect(hostOf(ctx).state.configRevision).toBe(before + 1);
     expect(wc.spawnCalls).toHaveLength(1);
   });
 
   it('fiber.update shuts the host down before restart-required config changes', async () => {
     const { ctx, fiber } = await bootEngine();
-    expect(ctx.succinix.state.host.startedAt).toBeTypeOf('number');
-    const before = ctx.succinix.state.configRevision;
-    fiber.update({ hostJsUrl: '/other-host.js' });
-    await fiber;
-    expect(ctx.succinix.state.configRevision).toBe(before + 1);
-    expect(ctx.succinix.state.host.startedAt).toBeNull();
+    expect(hostOf(ctx).state.host.startedAt).toBeTypeOf('number');
+    const before = hostOf(ctx).state.configRevision;
+    await fiber.update({ hostJsUrl: '/other-host.js' });
+    expect(hostOf(ctx).state.configRevision).toBe(before + 1);
+    expect(hostOf(ctx).state.host.startedAt).toBeNull();
     expect(getHostManager().handle().state).toBe('disposed');
   });
 
   it('fiber dispose clears subscriptions and reload does not stack port hooks', async () => {
     const first = await bootEngine();
-    await first.ctx.succinix.ensureInstance('default', {
+    await hostOf(first.ctx).ensureInstance('default', {
       persistence: { dbName: 'c4', storeKey: 'leak' },
       executor: BOOT_HOOKS,
     });
     const hooks = (pagePorts as unknown as { hooksByInstance: Map<string, unknown> }).hooksByInstance;
     const oldState: Array<{ port: number }> = [];
-    first.ctx.succinix.on('succinix/state', () => {});
-    first.ctx.succinix.onServerReady((payload) => oldState.push(payload));
+    hostOf(first.ctx).on('succinix/state', () => {});
+    hostOf(first.ctx).onServerReady((payload) => oldState.push(payload));
     const beforeKeys = new Set(hooks.keys());
     expect(beforeKeys.has('succinix')).toBe(true);
-    const hostStartedAt = first.ctx.succinix.container.startedAt;
+    const hostStartedAt = hostOf(first.ctx).container.startedAt;
 
     await first.fiber.dispose();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(hooks.size).toBe(0);
 
     const reloaded = await loadEngine();
-    await reloaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
-    await reloaded.ctx.succinix.ensureInstance('default', {
+    await hostOf(reloaded.ctx).boot({ executor: BOOT_HOOKS });
+    await hostOf(reloaded.ctx).ensureInstance('default', {
       persistence: { dbName: 'c4', storeKey: 'leak-2' },
       executor: BOOT_HOOKS,
     });
-    reloaded.ctx.succinix.onServerReady(() => {});
+    hostOf(reloaded.ctx).onServerReady(() => {});
     expect(hooks.size).toBe(beforeKeys.size);
     expect(hooks.has('succinix')).toBe(true);
-    expect(reloaded.ctx.succinix.container.startedAt).toBe(hostStartedAt);
-    (reloaded.ctx.succinix.container.wc as unknown as { emitServerReady(port: number, url: string): void })
+    expect(hostOf(reloaded.ctx).container.startedAt).toBe(hostStartedAt);
+    (hostOf(reloaded.ctx).container.wc as unknown as { emitServerReady(port: number, url: string): void })
       .emitServerReady(8181, 'https://preview/8181');
     expect(oldState).toHaveLength(0);
   });
@@ -210,12 +208,12 @@ describe('reload and subscription isolation (C4)', () => {
 describe('failure isolation (C4)', () => {
   it('engine apply failure keeps the HostManager singleton and reapply restores service', async () => {
     const booted = await bootEngine();
-    await booted.ctx.succinix.ensureInstance('default', {
+    await hostOf(booted.ctx).ensureInstance('default', {
       persistence: { dbName: 'c4', storeKey: 'engine-fail' },
       executor: BOOT_HOOKS,
     });
     const manager = getHostManager();
-    const hostStartedAt = booted.ctx.succinix.container.startedAt;
+    const hostStartedAt = hostOf(booted.ctx).container.startedAt;
     await booted.fiber.dispose();
     expect(manager.handle().state).toBe('ready');
 
@@ -227,15 +225,15 @@ describe('failure isolation (C4)', () => {
       },
     });
     await expect(badFiber).rejects.toThrow(/engine apply exploded/);
-    expect(ctx.get('succinix', false)).toBeUndefined();
+    expect(ctx.get('succinix-host', false)).toBeUndefined();
     expect(getHostManager()).toBe(manager);
     expect(manager.handle().state).toBe('ready');
 
     const goodFiber = ctx.plugin(enginePlugin, {});
     await goodFiber;
-    await ctx.succinix.boot({ executor: BOOT_HOOKS });
-    expect(ctx.get('succinix', false)).toBeTruthy();
-    expect(ctx.succinix.container.startedAt).toBe(hostStartedAt);
+    await hostOf(ctx).boot({ executor: BOOT_HOOKS });
+    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(hostOf(ctx).container.startedAt).toBe(hostStartedAt);
   });
 
   it('invalid engine config fails into FAILED, keeps the page host, and recovers after reapply', async () => {
@@ -247,13 +245,13 @@ describe('failure isolation (C4)', () => {
     const ctx = new Context();
     const badFiber = ctx.plugin(enginePlugin, { resultTtlMs: 0 });
     await expect(badFiber).rejects.toThrow();
-    expect(ctx.get('succinix', false)).toBeUndefined();
+    expect(ctx.get('succinix-host', false)).toBeUndefined();
     expect(manager.handle().state).toBe('ready');
 
     const goodFiber = ctx.plugin(enginePlugin, {});
     await goodFiber;
-    await ctx.succinix.boot({ executor: BOOT_HOOKS });
-    expect(ctx.succinix.state.containerState).toBe('ready');
+    await hostOf(ctx).boot({ executor: BOOT_HOOKS });
+    expect(hostOf(ctx).state.containerState).toBe('ready');
     expect(manager.handle().state).toBe('ready');
   });
 
@@ -261,13 +259,13 @@ describe('failure isolation (C4)', () => {
     const wc = new FakeWebContainer();
     wcApi.boot.mockRejectedValue(new Error('wc boot exploded'));
     const loaded = await loadEngine();
-    await expect(loaded.ctx.succinix.boot({ executor: BOOT_HOOKS })).rejects.toThrow(/wc boot exploded/);
-    expect(loaded.ctx.succinix.state.containerState).toBe('unattached');
-    expect(loaded.ctx.succinix.state.lastError).toContain('wc boot exploded');
+    await expect(hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS })).rejects.toThrow(/wc boot exploded/);
+    expect(hostOf(loaded.ctx).state.containerState).toBe('unattached');
+    expect(hostOf(loaded.ctx).state.lastError).toContain('wc boot exploded');
     wcApi.boot.mockReset();
     wcApi.boot.mockResolvedValue(asWebContainer(wc));
-    await loaded.ctx.succinix.boot({ executor: BOOT_HOOKS });
-    expect(loaded.ctx.succinix.state.containerState).toBe('ready');
+    await hostOf(loaded.ctx).boot({ executor: BOOT_HOOKS });
+    expect(hostOf(loaded.ctx).state.containerState).toBe('ready');
     expect(wc.spawnCalls).toHaveLength(1);
   });
 
@@ -283,7 +281,7 @@ describe('failure isolation (C4)', () => {
     });
     const settled = await Promise.allSettled([engineFiber, ...appFibers, boomFiber]);
     expect(settled.at(-1)?.status).toBe('rejected');
-    expect(ctx.get('succinix', false)).toBeTruthy();
+    expect(ctx.get('succinix-host', false)).toBeTruthy();
     expect(ctx.get('succinix-app-terminal', false)).toBeTruthy();
     expect(ctx.get('succinix-app-commands', false)).toBeTruthy();
     expect(ctx.get('succinix-app-container', false)).toBeTruthy();
@@ -297,10 +295,10 @@ describe('succinix status and plugins in the real app (C4)', () => {
     const { ctx, shell } = await bootApp();
     const commands = ctx.get('succinix-app-commands') as AppCommandsService;
     const context = commands.attach(shell as never);
-    expect(context.succinixState?.version).toBe('0.5.0');
-    expect(context.succinixState?.containerState).toBe('ready');
-    expect(context.succinixPlugins?.map((plugin) => plugin.name)).toContain('succinix');
-    expect(context.succinixPlugins?.map((plugin) => plugin.name)).toContain('succinix-app-container');
+    expect(context.engineState?.version).toBe('0.6.0');
+    expect(context.engineState?.containerState).toBe('ready');
+    expect(context.pluginSummaries?.map((plugin) => plugin.name)).toContain('succinix');
+    expect(context.pluginSummaries?.map((plugin) => plugin.name)).toContain('succinix-app-container');
   });
 
   it('succinix status and succinix plugins render through the terminal', async () => {
@@ -311,7 +309,7 @@ describe('succinix status and plugins in the real app (C4)', () => {
     expect(await tryHandleLocalCommand(context, 'succinix status')).toBe(true);
     const statusText = termMock.term.writeln.mock.calls.map((call) => String(call[0])).join('\n');
     expect(statusText).toContain('Succinix plugin status');
-    expect(statusText).toContain('0.5.0');
+    expect(statusText).toContain('0.6.0');
     expect(statusText).toContain('configRevision');
 
     termMock.term.writeln.mockClear();

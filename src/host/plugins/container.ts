@@ -1,12 +1,13 @@
 // app plugin: owns environment checks, engine boot, instance creation, app boot
 // steps, and the page-level AppShell shared by the remaining app plugins.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import type { WebContainer } from '@webcontainer/api';
 import {
   DEFAULT_INSTANCE_BOOT_STEPS,
   DEFAULT_INSTANCE_ID,
   checkEnvironment,
   detectSystemInfo,
+  type SuccinixHostService,
   userHomePath,
   type TerminalClient,
 } from '@succinix/engine';
@@ -16,7 +17,7 @@ import { makeClientLogger, makeSessionLogger } from '../../app/logging.js';
 import { getSetting } from '../../config.js';
 import { readMotd } from '../../motd.js';
 import { AMBER, GRAY, RED, RESET } from '../../theme.js';
-import type { TestResult } from '../../tests.js';
+import type { TestResult } from '../../selftest/index.js';
 import { createBootUI } from '../../boot-ui.js';
 import {
   makeAppBoot,
@@ -39,6 +40,10 @@ import type {
 export const name = 'succinix-app-container';
 
 async function startHostApp(ctx: Context): Promise<AppShell | null> {
+  const host = ctx.get('succinix-host', false) as SuccinixHostService | undefined;
+  if (!host) {
+    throw new Error('succinix-app-container requires the succinix-host service');
+  }
   const terminal = ctx.get('succinix-app-terminal') as AppTerminalService | undefined;
   const commands = ctx.get('succinix-app-commands') as AppCommandsService | undefined;
   const selftest = ctx.get('succinix-app-selftest') as AppSelftestService | undefined;
@@ -78,10 +83,10 @@ async function startHostApp(ctx: Context): Promise<AppShell | null> {
     });
 
   try {
-    const wc = await ctx.succinix.boot({ executor: { onCommand: makeClientLogger() } });
+    const wc = await host.boot({ executor: { onCommand: makeClientLogger() } });
     const instanceId = request.id ?? DEFAULT_INSTANCE_ID;
     const boot = makeAppBoot(ui, { testMode });
-    const instance = await ctx.succinix.ensureInstance(instanceId, {
+    const instance = await host.ensureInstance(instanceId, {
       output,
       terminal: {
         promptPrefix: request.userMode ? `${request.id}@succinix:` : 'guest@succinix:',
@@ -199,5 +204,5 @@ export function apply(ctx: Context): void {
   });
 }
 
-const plugin = { name, inject: ['succinix'] as const, apply };
+const plugin = { name, apply };
 export default plugin;

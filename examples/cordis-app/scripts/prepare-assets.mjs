@@ -9,7 +9,7 @@ const demoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const engineDir = join(demoRoot, 'node_modules', '@succinix', 'engine');
 const enginePkg = JSON.parse(readFileSync(join(engineDir, 'package.json'), 'utf8'));
 
-if (typeof enginePkg.version !== 'string' || !enginePkg.version.startsWith('0.5.')) {
+if (typeof enginePkg.version !== 'string' || !enginePkg.version.startsWith('0.6.')) {
   throw new Error(`unexpected @succinix/engine version: ${enginePkg.version}`);
 }
 

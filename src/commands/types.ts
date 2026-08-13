@@ -33,7 +33,7 @@ export interface CommandContext {
   /** 实例停止回调（M4/M5，additive）：多实例模式 shutdown = 停当前实例，不动其他实例 */
   onInstanceStop?: () => void | Promise<void>;
   /** 可管理性视图（C4）：succinix status 的数据源 */
-  succinixState?: SuccinixPluginState;
+  engineState?: SuccinixPluginState;
   /** 可管理性视图（C4）：succinix plugins 的数据源 */
-  succinixPlugins?: SuccinixPluginSummary[];
+  pluginSummaries?: SuccinixPluginSummary[];
 }

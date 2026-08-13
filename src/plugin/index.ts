@@ -1,20 +1,24 @@
 // invariant: @succinix/engine plugin entry ({ name, apply, Config }).
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import {
   resolveConfig,
   SuccinixConfigSchema,
   type SuccinixConfig,
 } from './config.js';
 import { registerHostCapabilities } from './capabilities.js';
-import { createSuccinixService } from './services.js';
+import { createSuccinixHostService } from './host-service.js';
 
 export const name = 'succinix';
 export const Config = SuccinixConfigSchema;
 
 export function apply(ctx: Context, config: SuccinixConfig): void {
   const resolved = resolveConfig(config);
-  const service = createSuccinixService(ctx, resolved, config);
-  ctx.provide('succinix', service);
+  const service = createSuccinixHostService(ctx, resolved, config);
+  ctx.provide('succinix-host', service);
+  ctx.provide('fs', service.fs);
+  ctx.provide('sandbox', service.sandbox);
+  ctx.provide('terminals', service.terminals);
+  ctx.provide('sessionPersistence', service.sessionPersistence);
   const capabilityDisposers = registerHostCapabilities(ctx, service.capabilities);
   const pageListeners: Array<[EventTarget, string, EventListener]> = [];
   if (typeof window !== 'undefined') {
@@ -31,7 +35,7 @@ export function apply(ctx: Context, config: SuccinixConfig): void {
   ctx.effect(() => () => {
     for (const dispose of capabilityDisposers) dispose();
     for (const [target, type, listener] of pageListeners) target.removeEventListener(type, listener);
-    void service.dispose();
+    return service.dispose();
   });
 }
 
@@ -80,7 +84,7 @@ export {
   forcePersist,
   type PersistContext,
   type SnapshotMeta,
-} from '../persist.js';
+} from '../persist/index.js';
 export {
   clearActivePorts,
   clearDbActivePorts,

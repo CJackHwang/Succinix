@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
 import { ensureMotd, readMotd, writeMotd, resetMotd, DEFAULT_MOTD, MOTD_FILE } from '../src/motd.js';
-import { clearSnapshot } from '../src/persist.js';
+import { clearSnapshot } from '../src/persist/index.js';
 
 const fs = () => new FakeFS() as unknown as FileSystemAPI;
 

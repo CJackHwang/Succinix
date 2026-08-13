@@ -19,7 +19,7 @@ const STEPS = [
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },
   { name: 'instance-demo (multi-instance + multi-user, 28 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
   { name: 'instance-routing (same-page instance routing, R5)', args: ['scripts/instance-routing.mjs', '--skip-build'] },
-  { name: 'cordis-app (external Cordis demo contract)', args: ['scripts/cordis-app-e2e.mjs'] },
+  { name: 'cordis-app (external dsh-key demo contract)', args: ['scripts/cordis-app-e2e.mjs'] },
 ];
 
 // flake 策略（R6）：deploy gate 与 scenarios 的 npm install 已知偶发 flake，

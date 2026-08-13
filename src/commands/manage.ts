@@ -58,20 +58,20 @@ export async function succinixCmd(ctx: CommandContext, args: string[]): Promise<
   const { term } = ctx;
   const sub = args[0] ?? '';
   if (sub === 'status') {
-    if (!ctx.succinixState) {
+    if (!ctx.engineState) {
       term.writeln(`${RED}succinix status unavailable (engine service not connected)${RESET}`);
       return;
     }
-    const fiber = ctx.succinixPlugins?.find((plugin) => plugin.name === 'succinix')?.fibers[0]?.state ?? 'unknown';
-    for (const line of formatSuccinixStatus(ctx.succinixState, fiber)) term.writeln(line);
+    const fiber = ctx.pluginSummaries?.find((plugin) => plugin.name === 'succinix')?.fibers[0]?.state ?? 'unknown';
+    for (const line of formatSuccinixStatus(ctx.engineState, fiber)) term.writeln(line);
     return;
   }
   if (sub === 'plugins') {
-    if (!ctx.succinixPlugins) {
+    if (!ctx.pluginSummaries) {
       term.writeln(`${RED}succinix plugins unavailable (registry not connected)${RESET}`);
       return;
     }
-    for (const line of formatSuccinixPlugins(ctx.succinixPlugins)) term.writeln(line);
+    for (const line of formatSuccinixPlugins(ctx.pluginSummaries)) term.writeln(line);
     return;
   }
   term.writeln('usage: succinix status | succinix plugins');

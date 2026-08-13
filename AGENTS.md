@@ -18,9 +18,9 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **tinbase:** must start with `--engine wasm`（no `--memory` — data persists in the workspace snapshot; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`).
 - **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Produces two in-container bundles: `public/host.js` (lightweight host daemon — RPC loop, process table, node subprocesses) and `public/lifo-core.js` (the ~1 MB `@lifo-sh/core` kernel, loaded lazily via `import('./lifo-core.js')` on first Lifo command). Rebuild with `node scripts/build-host.mjs` after touching files under `src/engine/host/`, `src/engine/host-procs.ts`, or `src/engine/lifo-core.ts`.
 
-## Cordis Single-Track (0.5.0+)
+## Cordis Single-Track (0.6.0+)
 
-- `@succinix/engine@0.5.0` is a Cordis plugin; the root export is
+- `@succinix/engine@0.6.0` is a Cordis plugin; the root export is
   `{ name: 'succinix', apply, Config }`. There is no separate SDK API line and
   no `plugin-*` second package.
 - Consumers must declare `inject: ['succinix']` or use `ctx.get('succinix', false)`;

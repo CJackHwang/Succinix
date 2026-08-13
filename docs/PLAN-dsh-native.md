@@ -1,6 +1,7 @@
 # PLAN: Succinix 全面对齐 dsh 命名空间与生态
 
-> **Status**: 执行基线（2026-08-14 复核）
+> **Status**: S0 已完成；S1.2/S1.3 已完成；S1.1（SunamAI）、S2（dsh 官方
+> 工具互测）、S3.2（发布）为宿主/发布方外部动作（2026-08-14 实测复核）。
 > **执行者**：AI agent（用户派 CC）+ 技术团队。审阅者：Hermes（沈知夏）。
 > **历史**：`docs/PLAN-cordis.md` 为历史执行档案（当前工作区已删除，完整
 > 记录在 git 历史）。
@@ -11,6 +12,9 @@
 > 复核：`ctx.fs` 为 **12 原语（含 `readBytes`）+ 13 错误码（含
 > `FS_TOO_LARGE`）**，并补 `sandboxMode`、terminals/persistence 错误面、
 > 精确旧键迁移清单与计划维护规则。
+> **边界补充**：2026-08-14 逐条对照四份 d.ts 补齐 §2/§5 服务级边界、
+> §5.5 执行世界资源边界，并把对应测试/DoD 收紧（LF 规范化、精确信号集、
+> live-session 修复拒绝、RPC/进程/快照上限等）。
 
 ---
 
@@ -155,6 +159,18 @@ graph TD
 - 原子写/编辑采用 per-target 互斥 + 临时文件 + rename（或等效 WebContainer
   原子替换）+ version guard；若 rename 不可用，必须保留 journal/回滚路径，
   不得出现半写可见。
+- `resolve` 允许执行 I/O 往返，同一文件经别名/相对路径必须得到同一
+  `targetKey`；`displayPath` 只用于 model/UI 展示，`targetKey` 是 opaque
+  identity，消费者不得解析或比较；`processPath` / `fileUrl` 由后端独占生成。
+- `stat` / `lstat` 对不存在目标返回 `undefined`，不抛 `FS_NOT_FOUND`；
+  `lstat` 是 path-shaped 探针，Succinix 因无 symlink 永远不返回
+  `type: 'symlink'`。
+- `writeText` / `editText` 的 outcome 里 `before` / `after` 必须
+  LF-normalized（同一 diff basis），不是 diff；`FsEditRequest.oldString`
+  非空，匹配在行尾规范化后进行；`FsObservation.kind === 'absent'` 只授权
+  create，永远不授权 edit。
+- `sandboxMode` 为 `undefined` 时表示后端完全不默认围栏，不得向工具层
+  谎报默认 `workspace-write`；O-10 定稿前不发布该 getter 的假定值。
 
 ### 2.3 `ctx.fs` 错误码（完整 13 码）
 
@@ -214,6 +230,20 @@ graph TD
   审计。任何 wrapped argv 都不得被描述为安全边界。
 - 不引入假 `chmod`、假权限位。`FS_PERMISSION_DENIED` 只表示实例/组织边界
   或策略拒绝。
+- 策略只约束文件效果；网络可达性、进程可见性、资源使用不在
+  `SandboxMode` 词汇表内，Succinix 不把这些能力包装成 sandbox 保证。
+- `confine` 的入参是 exact argv（program + arguments），不是 shell 字符串；
+  返回 `ConfinedArgv.argv` 是替换后原样 spawn 的 argv。
+- `workspace-write` 的可写根映射为执行世界内的 workspace root + Lifo/
+  WebContainer temp 区域，不复用 dsh `writableRoots()` 的 host
+  `/tmp` / `os.tmpdir()` 语义；`canonicalPath` 在无 symlink 的世界里以
+  `..` 归一化实现。
+- `denialSignatures` / `runnerFailureRules` 是 Lifo 方言；消费方先按
+  `allowedExitCodes` + `informationalLines` 过滤，再匹配
+  `fatalSignatures`，退出码本身永远不足以判定 runner failure。
+- escalation（`approveEscalation`）由宿主/工具层在调用前执行，Succinix
+  不实现 `ctx.approval`；`danger-full-access` 只能由 host 通过
+  `ctx.fs` policy / host 执行层放行，绝不作为 `confine` 入参。
 
 ### 2.5 `ctx.terminals` 完整契约（不是 `create(output)` 改名）
 
@@ -246,6 +276,16 @@ graph TD
 - 旧 `SuccinixTerminalSession`（history、tab complete、command queue、
   Ctrl+C、cwd prompt）继续作为后端实现存在，不作为 `ctx.terminals` 的
   唯一形状。
+- 允许的信号是固定白名单：`SIGINT` / `SIGTERM` / `SIGKILL` / `SIGTSTP` /
+  `SIGHUP`；`signal` 只投递给验证过的前台进程组，成功后返回
+  `{ delivered: true, targetPgid }`。
+- `read` / `list` 是同步方法；`spawn` / `signal` / `kill` 异步；
+  `startSend` 立即返回 operation handle（`done` / `readOutput` / `cancel`），
+  `cancel()` 请求 SIGINT 且 settle 后返回 false。
+- `kill` 幂等：首次关闭返回 `true`，同一 close 已在途时返回 `false`，
+  只在整个后端会话 quiescent 后才移除 registry 记录。
+- `TerminalError extends Error`（不是 `HarnessError`），带稳定 `code`，
+  错误对象通过 `name` + `code` + `message` 结构化暴露。
 
 官方错误面（8 个 `TerminalErrorCode`，S0.6 必须逐码有测试）：
 
@@ -303,6 +343,27 @@ graph TD
 - `locate` 返回执行世界内 instance 状态根下的路径，不暴露宿主盘路径。
 - `append` 在每次 batch 完成 WebContainer 文件系统写入后 resolve；snapshot
   flush 可异步调度，但 `append` 自身不等同于快照完成。
+- `locate` 返回值只是位置提示，不是授权 token；`readRaw` 只在
+  `supportsRawArtifacts === true` 时可用，`content` 是后端物理编码解码后的
+  verbatim 文本，`filename` 不含编码后缀；未 materialize 返回 `undefined`。
+- `create` 可 lazy materialize：已创建但从未 append 的 session 不出现在
+  `list` / `listSnapshots` 中，废弃 session 不残留空 artifact。
+- `append` 拒绝非 JSON-serializable 的 `event.data`，错误必须点名事件类型；
+  首条事件 `seq` 必须等于 `load` repair 后的 stored next-seq。
+- `load` 只丢弃尾部残缺记录；完整但被中断的 final turn 必须保留并用
+  synthetic closers 补全持久化。身份仍绑定 live Session 时不得 crash
+  repair；live 且 open turn 直接拒绝 load 快照。
+- `readFrom` 的 `fromSeq` 是非负 safe integer；`fromSeq` 达到或超过 stored
+  prefix 时返回空事件列表（不是错误）；顺序媒体允许整文件解析后 skip。
+- `SessionPersistenceRevision` 是 opaque branded token，且 source-qualified：
+  `listSnapshots` / `readStoredRevision` / `StoredPrefix.revision` 必须同一
+  表示；只读操作不得改写 mtime / 内容。
+- 若走官方 `PersistenceCoordinator`：`appendBatch` 的 materialize-write 与
+  首 batch 原子提交；`commitRepair` 允许非原子 truncate-then-append；
+  `loadStored` 必须返回 fresh、mutually unaliased、unretained 的图；
+  per-id 操作串行化；dispose 先 drain quiescence 再 `close()`，失败走
+  AggregateError；write-behind 默认 `writeBatchMaxDelayMs: 200`，prepared
+  cache 默认 5，非官方镜像必须对齐这些默认与上限语义。
 
 官方错误/值面（S0.7 必须对齐）：
 
@@ -432,6 +493,43 @@ policy 类型。
 - 触碰 `src/plugin/` 后必须 `node scripts/build-engine-package.mjs`。
 - `check-dsh-shapes.mjs` 与 `check-dsh-keys.mjs` 并入 `npm run check`。
 
+### 5.4 服务级边界（对外文档摘要）
+
+| 服务 | 承诺边界 | 拒绝/不承诺 |
+|---|---|---|
+| `ctx.fs` | `resolve` 稳定 identity；`targetKey` / `displayPath` / `processPath` 职责分离；`stat`/`lstat` 缺省 `undefined`；outcome LF-normalized；`readBytes` 含上限不截断；原子写/edit | 不解析 `targetKey`；`contains` 不做权限；不 emit `fs/*`；无 symlink；`FS_PERMISSION_DENIED` 只表示实例/组织/策略拒绝 |
+| `ctx.sandbox` | 同步 `confine`；只接受两种受限模式；file-effect policy；node/npm/npx fail-closed；Lifo denial/runner 方言 | 不构成安全边界；不围栏 shell 嵌套命令；不映射 host temp；无 `chmod` / 权限位；`danger-full-access` 不进 `confine` |
+| `ctx.terminals` | exact-Agent owner；固定信号白名单；单 in-flight send；kill 幂等 + quiescent 后移除；同步 `read`/`list` | 无隐式 owner；跨 owner 拒绝；host 重启不恢复会话；不吞 cleanup 失败 |
+| `ctx.sessionPersistence` | append-only JSONL；FS 写入 + 主动 snapshot flush；repair 只截尾；raw artifact verbatim；revision source-qualified | 非浏览器崩溃硬保证；不 repair live Session；`locate` 不是授权；不发明分页/过滤 |
+
+### 5.5 执行世界与资源边界
+
+- **文件 RPC**：`/cmd.json` 是单槽信箱，`result-<id>.json` 每请求独立，
+  读到即删；host 处理完只删内容仍匹配当前请求的 `/cmd.json`，防陈旧命令在
+  host 重启后被重放；陈旧结果文件按 TTL（默认 `120000ms`）清理；只有
+  `ping` / `ps` / `cwd` 可重试，`run` / `kill` / `spawn` 等非幂等命令不重试。
+- **进程面**：真实 Node 子进程才登记进程表，上限 100 条；`ps` 输出尾部
+  上限 500 字符；Lifo 侧进程只列出不可 kill；`kill` 先 SIGTERM，可选
+  `forceAfterMs` 后升级 SIGKILL；单命令 stdout/stderr 各自最多 1 MiB，
+  超限保留尾部；实例归属是 UI/查询启发式，不是安全边界。
+- **端口/网络**：端口只是虚拟预览，tunnel 是 outbound bridge；无真实入站
+  外网；浏览器侧无 CORS 时不直接 `curl` 外部 URL，走 `r.jina.ai` 式代理。
+- **持久化/tinbase**：tinbase 固定 `--engine wasm`、不带 `--memory`；
+  快照 IndexedDB 上限 50 MiB，超限跳过并如实报告；浏览器侧写盘后强制
+  snapshot flush，自动快照最多 30s 年龄兜底；`clear` 防快照复活；实例快照
+  按 `storeKey` / scope 隔离。`append` 的 durability 仅到 WebContainer FS +
+  主动 flush，不承诺浏览器崩溃后的硬保证。
+- **host 生命周期**：页面级 HostManager 是模块单例；fiber reload 不得重启
+  host，`shutdown()` / page unload 是唯一硬 teardown；软 dispose 与硬
+  shutdown 必须区分；watchdog kill-before-spawn 与 `cmd.json` 去重语义
+  保持现状。
+- **UI/环境**：English-only、无 emoji、ASCII 状态标记、无 `GREEN` 强调；
+  仅 WebContainer 支持的 Chromium 系浏览器；无 Firefox / Safari / mobile；
+  无真实内核 / apt / native binaries；无交互 stdin REPL；无 symlink /
+  hard link；内存/CPU 只能是 `~` 估算并带 `(estimated ...)` 脚注。
+- **隔离语义**：多实例/多用户只是组织隔离（目录、状态、进程视图分区），
+  不是安全边界；standalone 只有 `guest`；权限位 / `chmod` 不实现。
+
 ---
 
 ## 6. 技术债务清单（本次计划必须偿还）
@@ -456,6 +554,9 @@ policy 类型。
 | TD-16 | example/POC 迁移遗漏 | `examples/cordis-poc/main.ts`、`docs/cordis-poc-report.md` 仍是旧键 | S0.9 全量迁移，纳入 `check-dsh-keys.mjs` 范围 |
 | TD-17 | 双语/管理面文档遗漏 | SDK.zh-CN / PROTOCOL.zh-CN / README.zh-CN / manageability 未列迁移清单 | S0.9 按 `rg -l` 清单全量迁移 |
 | TD-18 | O-7 已定稿：peer/依赖切换 | engine peerDeps 仍 `cordis >=4.0.0-rc.8`（上游），demo lock 含 0.5.0 | **S0.2 切换为 `@deepseek-ai/cordis@4.0.1`** + 更新 lock；S3.1 干净安装验证 |
+| TD-19 | fs outcome/identity 边界缺失 | 计划未写 LF-normalized outcome、targetKey 不透明、readBytes 必选 signal | S0.4 按 d.ts 补实现 + 测试 |
+| TD-20 | terminal 信号/同步/幂等边界缺失 | 计划未写固定信号白名单、read/list 同步、kill 幂等 | S0.6 对齐 d.ts + 测试 |
+| TD-21 | persistence raw/live/coordinator 边界缺失 | 计划未写 lazy create 列表行为、live session 不 repair、revision source-qualified | S0.7 对齐 d.ts + 测试 |
 
 ---
 
@@ -470,12 +571,16 @@ policy 类型。
   `npm run check` 全绿（含新增 shape 检查）；
   `node scripts/cordis-app-e2e.mjs` 以 dsh 键跑通浏览器契约。
 
+> 状态：已完成。S0.0-S0.9 全部落地并通过，DoD 见 §12。
+
 ### S1：SunamAI / Succinix app 消费方迁移（预计 1 周，与 S0.7 后可并行）
 
 - SunamAI 插件 `inject: ['succinix']` → 四 dsh 键；生命周期改用 O-8 的
   host seam。
 - Succinix 自带 app（`src/host/`）同步迁移。
 - **门禁**：SunamAI `check:all` 全绿；`localhost:7892` 浏览器 smoke 全绿。
+
+> 状态：S1.2/S1.3 已完成；S1.1 待 SunamAI 宿主执行。
 
 ### S2：dsh 生态互测（预计 1 周）
 
@@ -486,6 +591,8 @@ policy 类型。
   `read-only` / `workspace-write` 下行为符合 policy；
   `node|npm|npx` 的受限模式抛 `SANDBOX_UNAVAILABLE`。
 
+> 状态：待 SunamAI/dsh 生态执行，不在本工作区范围。
+
 ### S3：0.6.0 发布（预计 1 周）
 
 - 版本 0.6.0（breaking：删除 `ctx.succinix`）。
@@ -493,6 +600,9 @@ policy 类型。
   执行）。
 - 形状 diff 测试、docs 完整性、engine package 完整性进 CI。
 - **门禁**：干净安装验证 + SunamAI 消费正常 + `npm run check:e2e` 全绿。
+
+> 状态：S3.1 工作区部分已完成（版本/CHANGELOG/门禁/pack 校验）；S3.2
+> 发布与最终干净安装验证待 release owner/宿主执行。
 
 ---
 
@@ -609,6 +719,9 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   纯路径语义、canonicalization/`..`、并发写、edit 歧义、abort、policy
   拒绝、`FS_NOT_OBSERVED` / `FS_STALE_VERSION` / `FS_AMBIGUOUS_EDIT` /
   `FS_TOO_LARGE`。
+- 上述测试必须额外覆盖：`targetKey` 不透明、`processPath`/`fileUrl` 与
+  display 分离、`stat`/`lstat` 缺省 `undefined`、outcome `before`/`after`
+  LF-normalized、`oldString` 非空 + 行尾规范化匹配、`readBytes` 必选 signal。
 - 门禁：单测全绿；shape diff 0 缺失；`npm run audit:files` 不超限。
 
 ### S0.5 实现 `ctx.sandbox`
@@ -626,6 +739,9 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   `src/engine/host/`，并执行 `node scripts/build-host.mjs`。
 - 新增 `tests/sandbox-service.test.ts`：两种受限模式、`danger-full-access`
   运行时拒绝、node fail-closed、argv 包装形状、runner 证据。
+- 测试还必须覆盖：同步 throw、入参为 exact argv 而非 shell 字符串、
+  `writableRoots` 映射到执行世界 temp、`allowedExitCodes` /
+  `informationalLines` 过滤、denial 方言不跨后端混用。
 - 门禁：单测全绿；`npm run build:host` 成功；shape diff 0 缺失。
 
 ### S0.6 实现 `ctx.terminals`
@@ -639,6 +755,8 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   owner 缺失 fail-closed、并发 send、kill quiescence/超时、无发布间隙。
   同时覆盖 8 个 `TerminalErrorCode` 与 `TerminalBackendCleanupError`
   （spawn 启动+清理双失败路径）。
+- 测试还必须覆盖：5 个固定信号的接受/拒绝、`read`/`list` 同步面、
+  `kill` 幂等返回值、owner dispose 清理、`TerminalError` 稳定 `code`。
 - 门禁：单测全绿；shape diff 0 缺失。
 
 ### S0.7 实现 `ctx.sessionPersistence`
@@ -654,6 +772,10 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   JSON 可序列化、load repair 只截尾、inspect 不 commit、readFrom、
   listSnapshots 只读 revision、locate 路径边界、损坏/未知格式拒绝、
   readRaw verbatim、coordinator materialize+首 batch 原子性。
+- 测试还必须覆盖：lazy create 未 append 不进 list、非 JSON-serializable
+  拒绝并点名事件类型、live Session 不 repair、`fromSeq` 达界返回空、
+  revision source-qualified、coordinator per-id 串行、write-behind 默认
+  窗口与 dispose drain。
 - 门禁：单测全绿；未通过全部方法行为前不宣称提供该服务。
 
 ### S0.8 插件入口与服务拆分
@@ -692,6 +814,19 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   只剩本计划（或归档）；
   `npm run check` 全绿；`node scripts/cordis-app-e2e.mjs` 全绿。
 
+### S0 执行记录（2026-08-14）
+
+- `npm run check` 全绿：typecheck、lint、35 个测试文件 / 517 个用例、
+  build、audit:files、check:static、check:docs、plugin-boundaries、
+  dsh-shapes、dsh-keys、engine-package（`npm pack --dry-run`）全部通过。
+- `npm run test:e2e` 全绿：verify-deploy 自检 76/0、bench、scenarios
+  14 场景 / 87 检查、lang-verify 32、instance-demo 28、instance-routing
+  27、cordis-app 外部契约 45/45。
+- dev server `localhost:7892` 返回 `Cross-Origin-Opener-Policy:
+  same-origin` 与 `Cross-Origin-Embedder-Policy: credentialless`。
+- fiber reload 后 host 不重启：`tests/plugin-c2.test.ts` 单测与
+  `examples/cordis-app` 的 `fiber.update` 契约均验证 `startedAt` 稳定。
+
 ---
 
 ## 10. S1/S2/S3 执行规格
@@ -707,6 +842,8 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   `onServerClosed` / `onCommand` 改宿主事件或 app 事件。
 - 门禁：SunamAI `check:all` 全绿。
 
+> 状态：外部依赖，未在本工作区执行；由 SunamAI 宿主按 SDK/MIGRATION 迁移。
+
 ### S1.2 Succinix 自带 app 迁移
 
 - `src/host/plugins/container.ts`、`commands.ts`、`terminal.ts`、
@@ -718,10 +855,14 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
 - 门禁：`localhost:7892` 终端、容器、快照、端口预览全链路 smoke 通过；
   fiber reload 后 host pid/startedAt 不变（HostManager 单例）。
 
+> 状态：已完成；自带 app 与内部 host seam 均不再依赖 `ctx.succinix`。
+
 ### S1.3 浏览器 e2e
 
 - `npm run test:e2e`（需要浏览器时 escalated 运行）。
 - 门禁：external `examples/cordis-app` contract 以 dsh 键全部通过。
+
+> 状态：已完成（2026-08-14 实测，见 S0 执行记录）。
 
 ### S2.1 dsh-tool-fs 互测
 
@@ -732,6 +873,8 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   `FS_AMBIGUOUS_EDIT` / `FS_EDIT_NOT_FOUND` / `FS_SANDBOX_DENIED`。
 - 门禁：官方插件结果全部通过，无形状降级。
 
+> 状态：外部互测，待 SunamAI/dsh 工具插件执行。
+
 ### S2.2 dsh-tool-bash / sandbox 互测
 
 - 挂载 `dsh-tool-bash` + Succinix `ctx.sandbox`。
@@ -741,6 +884,8 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
 - `node -e '...'` 在受限 mode 下返回 `SANDBOX_UNAVAILABLE`，不裸放行。
 - 验证 shell 嵌套 `node` 不声称被围栏；runner failure 证据测试全绿。
 
+> 状态：外部互测，待 SunamAI/dsh 工具插件执行。
+
 ### S3.1 版本与包面
 
 - 根 `package.json` 与 `packages/engine/package.json` 统一升 0.6.0 开发口径。
@@ -748,17 +893,24 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
 - CHANGELOG 写 breaking change、迁移路径、deprecation 说明。
 - 门禁：`npm pack --dry-run` 通过；干净安装示例通过。
 
+> 状态：工作区侧完成（0.6.0 版本、CHANGELOG、版本门、pack 校验；
+> `examples/cordis-app` 已按打包产物干净安装并通过契约）。
+
 ### S3.2 发布
 
 - `npm publish @succinix/engine@0.6.0` 由 release owner 执行；
   本计划不代发。
 - 门禁：npm 线上版本可安装；SunamAI 消费正常。
 
+> 状态：release owner 动作，未执行。
+
 ### S3.3 长期门禁固化
 
 - `check-dsh-shapes`、`check:docs`、`check:plugin-boundaries`、
   `check:engine-package` 全部进 CI。
 - 对外文档声明 execution-world sandbox 边界与浏览器 durability 边界。
+
+> 状态：本仓 `npm run check` 已包含上述门禁；CI 配置由发布方确认。
 
 ---
 
@@ -776,6 +928,10 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
 | 朴素 grep 命中 `succinixState` / `succinixPlugins` | 门禁假阴性 | S0.8 重命名字段/注释；`check-dsh-keys.mjs` 精确 token |
 | WebContainer rename/原子性不足 | 半写可见 | 临时文件 + rename + version guard；不可原子时 journal/回滚 |
 | shell 嵌套 `node` 绕过顶层路由 | 被误认为可围栏 | 文档明确 wrapper 只约束顶层 argv，不承诺安全边界 |
+| `locate` 路径被当授权 token | 越权读取/误判 | 文档声明 location hint 非授权；`readRaw` 仍按 owner/session 校验 |
+| outcome LF 规范化漂移 | 工具层 diff/编辑错误 | outcome 与 d.ts 逐项测试；`before`/`after` 同一 basis |
+| 浏览器 temp 被映射成 host `/tmp` | workspace-write 语义失真 | §5.4/5.5 固定执行世界 temp 映射 + S0.5 测试 |
+| host 重启后陈旧命令重放 | 非预期执行 | `/cmd.json` 处理完按内容删除 + result TTL；S1.2 验证 |
 | 双语/example 文档遗漏 | 消费者照旧文档 | S0.9 按 `rg -l` 全量清单迁移，`check-dsh-keys` 覆盖 examples |
 | fiber reload 误重启 host | 会话/进程丢失 | HostManager 单例 + reload 后 pid/startedAt 不变测试 |
 | 浏览器无真实权限/symlink | 错误码误用 | 明确映射；无 symlink；`FS_PERMISSION_DENIED` 仅组织/策略拒绝 |
@@ -786,25 +942,38 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
 
 ## 12. 完成定义（DoD）
 
-- [ ] `docs/contracts/dsh-0.1.0-rc.6/` 已入库，四服务面 d.ts 可复现。
-- [ ] `ctx.fs` 12 原语（含 `readBytes`）+ 13 错误码（含 `FS_TOO_LARGE`）+
+- [x] `docs/contracts/dsh-0.1.0-rc.6/` 已入库，四服务面 d.ts 可复现。
+- [x] `ctx.fs` 12 原语（含 `readBytes`）+ 13 错误码（含 `FS_TOO_LARGE`）+
   `sandboxMode` + `sandboxPolicy` 单测通过。
-- [ ] `ctx.sandbox.confine` 两种受限模式 + `danger-full-access` 拒绝 +
+- [x] `ctx.sandbox.confine` 两种受限模式 + `danger-full-access` 拒绝 +
   node fail-closed 单测通过。
-- [ ] `ctx.terminals` 官方方法面 + 8 个 `TerminalErrorCode` +
+- [x] `ctx.terminals` 官方方法面 + 8 个 `TerminalErrorCode` +
   `TerminalBackendCleanupError` 行为测试通过。
-- [ ] `ctx.sessionPersistence` 官方方法面 + 损坏/未知格式拒绝 +
+- [x] `ctx.sessionPersistence` 官方方法面 + 损坏/未知格式拒绝 +
   `SessionRawArtifact` / revision 行为测试通过。
-- [ ] `check-dsh-keys.mjs` 扫描 `src/ tests/ examples/` = 0。
-- [ ] `src/`、`tests/`、`examples/` 无旧键；§3 列出的 12 个含字面旧键文档
+- [x] `check-dsh-keys.mjs` 扫描 `src/ tests/ examples/` = 0。
+- [x] `src/`、`tests/`、`examples/` 无旧键；§3 列出的 12 个含字面旧键文档
   + 5 类（7 个实际文件）契约/README/版本门文件全量迁移。
-- [ ] fiber reload 后 host 不重启（pid/startedAt 不变）。
-- [ ] `npm run check` 全绿（含新增 shape 检查）。
-- [ ] `npm run check:static` 与 `npm run audit:files` 全绿（已含于
+- [x] fiber reload 后 host 不重启（pid/startedAt 不变）。
+- [x] `npm run check` 全绿（含新增 shape 检查）。
+- [x] `npm run check:static` 与 `npm run audit:files` 全绿（已含于
   `npm run check`，单独列出防止只跑局部门禁）。
-- [ ] `npm run test:e2e` 全绿（浏览器 escalated）。
-- [ ] `localhost:7892` COOP/COEP 正确，自带 app 用 dsh 键自证。
-- [ ] 0.6.0 包干净安装 + SunamAI 消费正常。
+- [x] `npm run test:e2e` 全绿（浏览器 escalated）。
+- [x] `localhost:7892` COOP/COEP 正确，自带 app 用 dsh 键自证。
+- [x] §5.4/§5.5 服务级与执行世界边界写进 SDK/README 等对外文档。
+- [x] `ctx.fs` outcome LF-normalized、`targetKey` 不透明、`readBytes`
+  必选 signal 测试通过。
+- [x] `ctx.terminals` 固定信号白名单、同步 `read`/`list`、幂等 `kill`
+  测试通过。
+- [x] `ctx.sessionPersistence` lazy create 列表行为、live Session 不
+  repair、revision source-qualified 测试通过。
+- [x] RPC/进程/快照资源边界（result TTL、进程表上限、输出上限、50 MiB
+  快照）实测记录入档。
+- [ ] 0.6.0 包干净安装 + SunamAI 消费正常（`examples/cordis-app` 本地干净
+  安装契约已通过；SunamAI 消费与线上发布随 S1.1/S3.2 外部执行）。
+
+> 除最后一项外均为本工作区已完成项；最后一项依赖 SunamAI 宿主与 release
+> owner，不在本次工作区执行范围内。
 
 ---
 
@@ -859,6 +1028,8 @@ O-11 在 S0.6 前定稿；其余不阻塞早期 fs 实现。
   版本时新建下一版目录，不原地覆盖 rc.6。
 - 本计划属于 `PLAN-*`，`check-docs.mjs` 不校验其未来路径；迁移完成后
   决定归档或删减，避免未验证引用进入长期文档基线。
+- §5.4 / §5.5 是对外文档的边界基线；任何服务实现变化必须先同步这两节，
+  再更新 SDK / README / PROTOCOL 对应段落。
 
 ---
 

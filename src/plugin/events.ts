@@ -1,4 +1,4 @@
-// invariant: typed succinix/* events + Cordis Events augmentation.
+// invariant: typed succinix/* app observability events + Cordis Events augmentation.
 import type { SuccinixPluginState, SuccinixStateReason } from './state.js';
 
 export interface SuccinixStateEvent {
@@ -54,7 +54,7 @@ export interface SuccinixEventMap {
 
 export type SuccinixEventHandler<K extends keyof SuccinixEventMap> = (payload: SuccinixEventMap[K]) => void;
 
-declare module 'cordis' {
+declare module '@deepseek-ai/cordis' {
   interface Events {
     'succinix/state'(event: SuccinixStateEvent): void;
     'succinix/server-ready'(event: SuccinixPortEvent): void;

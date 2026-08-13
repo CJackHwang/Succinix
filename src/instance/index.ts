@@ -25,7 +25,7 @@ import {
   type TerminalRpc,
   type TerminalBootOptions,
 } from '../terminal/index.js';
-import { createPersist, getPersist, type PersistContext, type PersistOptions, type SnapshotMeta } from '../persist.js';
+import { createPersist, getPersist, type PersistContext, type PersistOptions, type SnapshotMeta } from '../persist/index.js';
 import {
   listServiceStates,
   startService,

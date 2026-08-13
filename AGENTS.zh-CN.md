@@ -20,9 +20,9 @@
 - **tinbase：** 必须以 `--engine wasm` 启动（不要 `--memory` —— 数据持久于工作区快照 snapshot；浏览器内安装超时为主机侧 `{ timeout: 120000 }`，客户端等待 `150000`）。
 - **`scripts/build-host.mjs`：** `@lifo-sh/ui` 保持外部依赖。产出两个容器内 bundle：`public/host.js`（轻量 host 守护进程 daemon —— RPC 循环、进程表、node 子进程）与 `public/lifo-core.js`（约 1 MB 的 `@lifo-sh/core` 内核，首个 Lifo 命令时经 `import('./lifo-core.js')` 懒加载 lazy-inject）。改动 `src/engine/host/` 下文件、`src/engine/host-procs.ts` 或 `src/engine/lifo-core.ts` 后用 `node scripts/build-host.mjs` 重新构建。
 
-## Cordis 单轨（0.5.0+）
+## Cordis 单轨（0.6.0+）
 
-- `@succinix/engine@0.5.0` 是 Cordis 插件；根导出为
+- `@succinix/engine@0.6.0` 是 Cordis 插件；根导出为
   `{ name: 'succinix', apply, Config }`。没有独立 SDK API 线，也没有第二个
   `plugin-*` 包。
 - 消费方必须声明 `inject: ['succinix']`，或用 `ctx.get('succinix', false)`；

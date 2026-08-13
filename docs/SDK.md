@@ -1,14 +1,18 @@
-# Succinix Engine — Cordis Plugin Integration
+# Succinix Engine — dsh Cordis Integration
 
-> Status: **0.5.0 plugin form (release-ready)**. `@succinix/engine` is a Cordis
-> plugin and the only public integration surface. The old 0.4.0 standalone SDK
-> exports (`createTerminalExecutor`, `./terminal`, `./instance`) are removed;
-> see [MIGRATION.md](MIGRATION.md).
+> Status: **0.6.0 dsh service provider (release-ready)**. `@succinix/engine` is a
+> Cordis plugin for `@deepseek-ai/cordis@4.0.1` and the only public integration
+> surface. It provides the dsh service keys `ctx.fs`, `ctx.sandbox`,
+> `ctx.terminals`, and `ctx.sessionPersistence`. The old 0.4.0 standalone SDK
+> exports (`createTerminalExecutor`, `./terminal`, `./instance`) and the 0.5.0
+> single-key `succinix` service are removed; see
+> [MIGRATION.md](MIGRATION.md).
 
-`@succinix/engine` gives any Cordis application a browser-native Unix sandbox
-inside a WebContainer: a real Node runtime (`node|npm|npx`), a built-in
-Pyodide Python (`python|python3|pip|pip3`), and a Lifo Unix userland for
-everything else. The container filesystem is shared with the host application.
+`@succinix/engine` gives any dsh-compatible Cordis application a browser-native
+Unix execution world inside a WebContainer: a real Node runtime
+(`node|npm|npx`), a built-in Pyodide Python (`python|python3|pip|pip3`), and a
+Lifo Unix userland for everything else. The container filesystem is shared with
+the host application.
 
 This document is the integration reference. For the wire protocol, see
 [PROTOCOL.md](PROTOCOL.md). For the capability matrix, see
@@ -18,17 +22,17 @@ This document is the integration reference. For the wire protocol, see
 ## Install
 
 ```bash
-npm install @succinix/engine@0.5.0
-npm install cordis @webcontainer/api   # peer dependencies
+npm install @succinix/engine@0.6.0
+npm install @deepseek-ai/cordis @webcontainer/api   # peer dependencies
 ```
 
-`@succinix/engine` requires `cordis >= 4.0.0-rc.8` and
+`@succinix/engine` requires `@deepseek-ai/cordis ^4.0.1` and
 `@webcontainer/api ^1.6.4`.
 
 ## Quick start
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 import { WebContainer } from '@webcontainer/api';
 
@@ -44,19 +48,21 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const wc = await WebContainer.boot();
-await ctx.succinix.attach(wc);
-await ctx.succinix.ensureInstance('default', { executor: {} });
+const host = ctx.get('succinix-host', false)!;
+await host.attach(wc);
+await host.ensureInstance('default', { executor: {} });
 
-const node = await ctx.succinix.executor.exec('node -e "console.log(1+1)"');
-const lifo = await ctx.succinix.executor.exec('grep -i foo file.txt');
+const node = await host.executor.exec('node -e "console.log(1+1)"');
+const lifo = await host.executor.exec('grep -i foo file.txt');
 
-await ctx.succinix.shutdown();
+await host.shutdown();
 await fiber.dispose();
 ```
 
-The plugin registers itself as `succinix`; consumers declare
-`inject: ['succinix']` or use `ctx.get('succinix', false)`. The published
-`.d.ts` augments `Context['succinix']` and the Cordis `Events` map.
+The plugin registers itself as `succinix` and provides four dsh services.
+Consumers declare `inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']`
+or probe with `ctx.get('fs', false)`. The published `.d.ts` augments the
+`@deepseek-ai/cordis` `Context` and `Events` maps.
 
 ## Package exports
 
@@ -76,10 +82,155 @@ The plugin registers itself as `succinix`; consumers declare
 }
 ```
 
-- `.` is the plugin entry: `{ name: 'succinix', apply, Config }`, plus types.
+- `.` is the plugin entry: `{ name: 'succinix', apply, Config }`, plus dsh
+  types and the host-seam types.
 - `./host.js`, `./lifo-core.js`, and `./assets/*` are static assets for the
   host daemon, Lifo kernel, Pyodide runtime, and `sha256.json`.
-- There is no `./terminal` or `./instance` subpath in 0.5.0.
+- There is no `./terminal` or `./instance` subpath in 0.6.0.
+
+## Public dsh services
+
+The four public service keys are the dsh 0.1.0-rc.6 shapes vendored under
+[`docs/contracts/dsh-0.1.0-rc.6/`](contracts/dsh-0.1.0-rc.6/SOURCES.md):
+
+| Key | Contract | Succinix behavior |
+| --- | --- | --- |
+| `ctx.fs` | 12 primitives, 13 `FS_*` codes, `sandboxMode` | Canonical `/workspace` execution-world paths, atomic text/byte reads and writes, version guards, sandbox-policy fencing |
+| `ctx.sandbox` | synchronous `confine(argv, policy)` | Lifo wrapper argv with `enforcement: 'full'`; `node|npm|npx` fail closed with `SANDBOX_UNAVAILABLE` |
+| `ctx.terminals` | owner-scoped PTY registry | Exact `Agent` owners, fixed signal whitelist, one in-flight send per session, idempotent `kill` |
+| `ctx.sessionPersistence` | event-sourced session log | Append-only JSONL under the instance state root, raw artifacts, truncate-only repair, source-qualified revisions |
+
+Import the published types from `@succinix/engine`:
+
+```ts
+import {
+  FsError,
+  SandboxUnavailableError,
+  TerminalError,
+  SessionId,
+  SessionPersistenceCorruptionError,
+  type FileSystem,
+  type SandboxProvider,
+  type TerminalSessionService,
+  type SessionPersistence,
+} from '@succinix/engine';
+```
+
+### `ctx.fs`
+
+The browser execution world exposes a `FileSystem` with `resolve`,
+`processPath`, `fileUrl`, `contains`, `stat`, `lstat`, `readText`,
+`streamText`, `readBytes`, `listDir`, `writeText`, and `editText`.
+
+- `resolve(path, opts?)` returns an opaque `targetKey` plus a display path.
+  `targetKey` must not be parsed by consumers.
+- `stat` / `lstat` return `undefined` for missing targets.
+- `readBytes` requires `signal` and `maxBytes`; oversized targets throw
+  `FS_TOO_LARGE` instead of returning truncated bytes.
+- `writeText` / `editText` accept an optional `sandboxPolicy`; `read-only`
+  denies all mutation and `workspace-write` confines writes to the policy's
+  `workspaceRoot`.
+- Outcomes are LF-normalized so `before` / `after` share the same diff basis.
+- `sandboxMode` is `'workspace-write'`: without an explicit policy, mutations
+  default to the workspace root.
+
+### `ctx.sandbox`
+
+`confine(argv, policy)` is synchronous and fail-closed:
+
+- Only `read-only` and `workspace-write` are accepted as `SandboxPolicy`.
+- A `danger-full-access` mode passed at runtime is rejected.
+- Real `node|npm|npx` argv cannot be fenced per call and throws
+  `SandboxUnavailableError` (`SANDBOX_UNAVAILABLE`).
+- Lifo argv is wrapped as `['succinix-sandbox', '--mode', mode, '--workspace',
+  root, ...argv]` with Lifo denial signatures and runner failure rules.
+- The wrapper is an execution-world replacement, not a desktop sandbox and not
+  a security boundary; shell scripts can still call nested commands.
+
+### `ctx.terminals`
+
+`TerminalSessionService` is owner-scoped and requires an exact `Agent`:
+
+```ts
+const agent: Agent = { id: SessionId('agent-1'), status: 'idle', ctx: {} };
+host.registerAgent(agent);
+
+const session = await ctx.terminals.spawn(agent, {
+  type: 'succinix',
+  name: 'shell-1',
+});
+const send = ctx.terminals.startSend(agent, session.sessionId, {
+  text: 'echo hello',
+  submit: true,
+});
+const result = await send.done;
+const view = ctx.terminals.read(agent, session.sessionId, { count: 100 });
+await ctx.terminals.kill(agent, session.sessionId, 'done');
+host.unregisterAgent(agent);
+```
+
+There is no implicit `guest` owner. Unregistered owners fail with
+`OWNER_NOT_LIVE`; cross-owner access fails with `FOREIGN_SESSION`. Sessions are
+process-local and are not restored after a host restart.
+
+### `ctx.sessionPersistence`
+
+`SessionPersistence` is an append-only event log stored as JSONL under
+`/workspace/.succinix/sessions`:
+
+- `create(meta)` may be lazy: a session with no appended events does not appear
+  in `list` / `listSnapshots`.
+- `append(id, events)` requires contiguous `seq` values and rejects
+  non-JSON-serializable event data.
+- `load` repairs only torn trailing lines and never rewrites a complete log.
+- `inspect` is read-only and does not commit repair.
+- `readRaw` returns the verbatim artifact when `supportsRawArtifacts` is true.
+- Durability is WebContainer filesystem write plus an active snapshot flush; it
+  is best-effort across page reload, not a crash-hard guarantee.
+
+## Host seam
+
+`succinix-host` is the internal lifecycle and app-observability seam. It is not
+a dsh service key; trusted consumers that run inside the same Cordis context
+can probe it:
+
+```ts
+const host = ctx.get('succinix-host', false);
+if (!host) throw new Error('succinix-host is not available');
+```
+
+The seam exposes:
+
+| Member | Purpose |
+| --- | --- |
+| `state` | Plugin state: version, container, host, instances, capabilities, `configRevision`, `lastError` |
+| `container` | Current container handle: `mode`, `state`, `wc`, `hostPid`, `startedAt` |
+| `executor` | Default-instance `TerminalExecutor`: `exec`, `spawn`, `listProcesses`, `kill`, `ping`, `pingDirect`, `interruptDirect`, `respawn` |
+| `terminal` | `terminal.create(output, opts?)` returns a UI-free terminal session for the app shell |
+| `snapshot` | `save`, `restore`, `meta`, `clear` for the default instance |
+| `persist` | Persistence context (snapshot keys, force save) |
+| `workspace` | `restore`, `flush`, `list`, plus `stateRoot` and `home` |
+| `ports` | `list`, `ready`, `expect`, `release`, `hasConflict`, `onServerReady`, `onServerClosed` |
+| `services` | Declarative service management: `list`, `read`, `status`, `start`, `stop`, `enable`, `disable`, `add`, `remove`, `autostart`, `ensureFiles` |
+| `capabilities` | Local capability registry: `check`, `list`, `define` |
+| `instance` | Default `SuccinixInstance` or `null` |
+| `boot` | Boot an internal WebContainer |
+| `attach` | Adopt an external WebContainer |
+| `ensureInstance` | Create or reuse an instance (`createSuccinixInstance` replacement) |
+| `getInstance` | Read an existing instance |
+| `releaseInstance` | Dispose and remove an instance |
+| `registerAgent` / `unregisterAgent` | Maintain the live-agent set used by `ctx.terminals` |
+| `listProcesses` | Process table snapshot for the default or a named instance |
+| `on` | Typed `succinix/*` event subscription |
+| `onServerReady` / `onServerClosed` | Port event subscriptions |
+| `dispose` | Soft teardown (fiber dispose) |
+| `shutdown` | Hard teardown (host kill) |
+| `flush` | Best-effort snapshot flush for every live instance |
+| `reconfigure` | Validate and apply a new configuration |
+
+Accessing `executor`, `terminal`, `snapshot`, `persist`, `workspace`, or
+`services` before the default instance exists fails fast with a state-backed
+error.
 
 ## Container modes
 
@@ -88,7 +239,7 @@ The plugin registers itself as `succinix`; consumers declare
 The plugin boots the WebContainer itself, with retries:
 
 ```ts
-const wc = await ctx.succinix.boot({
+const wc = await host.boot({
   instanceId: 'default',
   executor: {},
 });
@@ -102,7 +253,7 @@ readiness:
 
 ```ts
 const wc = await WebContainer.boot();
-await ctx.succinix.attach(wc, { executor: {} });
+await host.attach(wc, { executor: {} });
 ```
 
 `attach()` and `boot()` are mutually exclusive. Switching modes after the
@@ -155,49 +306,15 @@ export interface SuccinixConfig {
 ```
 
 Invalid values produce a `ValidationError`; the plugin keeps its last valid
-configuration and records the reason in `ctx.succinix.state.lastError`.
-
-## Service surface
-
-`ctx.succinix` is the complete service contract:
-
-| Member | Purpose |
-| --- | --- |
-| `state` | Plugin state: version, container, host, instances, capabilities, `configRevision`, `lastError` |
-| `container` | Current container handle: `mode`, `state`, `wc`, `hostPid`, `startedAt` |
-| `executor` | Default-instance `TerminalExecutor`: `exec`, `spawn`, `listProcesses`, `kill`, `ping`, `pingDirect`, `interruptDirect`, `respawn` |
-| `terminal` | `terminal.create(output, opts?)` returns a UI-free terminal session |
-| `snapshot` | `save`, `restore`, `meta`, `clear` for the default instance |
-| `persist` | Persistence context (snapshot keys, force save) |
-| `workspace` | `restore`, `flush`, `list`, plus `stateRoot` and `home` |
-| `ports` | `list`, `ready`, `expect`, `release`, `hasConflict`, `onServerReady`, `onServerClosed` |
-| `services` | Declarative service management: `list`, `read`, `status`, `start`, `stop`, `enable`, `disable`, `add`, `remove`, `autostart`, `ensureFiles` |
-| `capabilities` | Local capability registry: `check`, `list`, `define` |
-| `instance` | Default `SuccinixInstance` or `null` |
-| `boot` | Boot an internal WebContainer |
-| `attach` | Adopt an external WebContainer |
-| `ensureInstance` | Create or reuse an instance (`createSuccinixInstance` replacement) |
-| `getInstance` | Read an existing instance |
-| `releaseInstance` | Dispose and remove an instance |
-| `listProcesses` | Process table snapshot for the default or a named instance |
-| `on` | Typed domain event subscription |
-| `onServerReady` / `onServerClosed` | Port event subscriptions |
-| `dispose` | Soft teardown (fiber dispose) |
-| `shutdown` | Hard teardown (host kill) |
-| `flush` | Best-effort snapshot flush for every live instance |
-| `reconfigure` | Validate and apply a new configuration |
-
-Accessing `executor`, `terminal`, `snapshot`, `persist`, `workspace`, or
-`services` before the default instance exists fails fast with a state-backed
-error.
+configuration and records the reason in `host.state.lastError`.
 
 ## Instances
 
-`ensureInstance(containerId, opts)` creates a per-instance stack on the shared
-page host:
+`host.ensureInstance(containerId, opts)` creates a per-instance stack on the
+shared page host:
 
 ```ts
-const alice = await ctx.succinix.ensureInstance('alice', {
+const alice = await host.ensureInstance('alice', {
   home: '/workspace/alice',
   persistence: { dbName: 'my-app', storeKey: 'alice' },
   executor: {},
@@ -214,10 +331,11 @@ boundary.
 
 ## Terminal sessions
 
-The host brings its own rendering. `TerminalOutput` is a two-method contract:
+The app shell brings its own rendering. `TerminalOutput` is a two-method
+contract:
 
 ```ts
-const session = ctx.succinix.terminal.create({
+const session = host.terminal.create({
   write: (data) => term.write(data),
   clear: () => term.clear(),
 });
@@ -227,7 +345,9 @@ await session.boot();
 ```
 
 `SuccinixTerminalSession` owns history, Tab completion, command queueing,
-Ctrl+C interrupt, and cwd-following prompts. xterm is not a dependency.
+Ctrl+C interrupt, and cwd-following prompts. xterm is not a dependency. The
+public `ctx.terminals` service is the dsh-shaped owner-scoped registry; the
+app-level session above is the internal rendering backend.
 
 ## Ports and services
 
@@ -235,27 +355,27 @@ Port events arrive through `succinix/server-ready` and
 `succinix/server-closed`, or the convenience subscriptions:
 
 ```ts
-ctx.succinix.onServerReady(({ port, url, instanceId }) => {
+host.onServerReady(({ port, url, instanceId }) => {
   app.recordPreview(port, url, instanceId);
 });
 ```
 
-`ctx.succinix.ports` is the canonical page-level view. `expect(port)` /
+`host.ports` is the canonical page-level view. `expect(port)` /
 `release(port)` attribute a port to an instance before spawning.
 
-Declarative services are managed with `ctx.succinix.services`:
+Declarative services are managed with `host.services`:
 
 ```ts
-await ctx.succinix.services.ensureFiles();
-await ctx.succinix.services.add('web', 'node server.js', 3001);
-const start = await ctx.succinix.services.start('web');
-const status = await ctx.succinix.services.status('web');
-await ctx.succinix.services.stop('web');
+await host.services.ensureFiles();
+await host.services.add('web', 'node server.js', 3001);
+const start = await host.services.start('web');
+const status = await host.services.status('web');
+await host.services.stop('web');
 ```
 
 ## Capabilities
 
-The plugin ships a lightweight capability registry with the pattern set:
+The engine ships a lightweight capability registry with the pattern set:
 
 ```text
 terminal.exec, terminal.spawn, terminal.kill, terminal.interrupt,
@@ -263,16 +383,15 @@ fs.read, fs.write, workspace.restore, workspace.flush, workspace.list
 ```
 
 ```ts
-if (!ctx.succinix.capabilities.check('terminal.exec')) {
+if (!host.capabilities.check('terminal.exec')) {
   throw new Error('execution is not allowed');
 }
 
-const dispose = ctx.succinix.capabilities.define('fs.write', () => isAllowed());
+const dispose = host.capabilities.define('fs.write', () => isAllowed());
 ```
 
-When the host provides a `capability` service, the plugin registers the same
-patterns there. The registry defaults to allow; `capabilities.defaultAllow`
-and `capabilities.rules` override it.
+The registry defaults to allow; `capabilities.defaultAllow` and
+`capabilities.rules` override it.
 
 ## Lifecycle and hot reload
 
@@ -281,8 +400,8 @@ and `capabilities.rules` override it.
   because WebContainer processes expose no pid; `startedAt` is the stable
   host-identity token across soft reloads.
 - Fiber reload (`fiber.update`) re-runs `apply`. Hot fields keep
-  `ctx.succinix.state.host.startedAt` stable; restart-required fields shut the
-  host down before the fiber re-applies.
+  `host.state.host.startedAt` stable; restart-required fields shut the host
+  down before the fiber re-applies.
 - `dispose()` is soft by default: instances and subscriptions are released,
   the host stays alive.
 - `shutdown()` flushes instances, kills the host, clears page registries, and
@@ -299,7 +418,8 @@ and `capabilities.rules` override it.
 
 ## Events
 
-Typed events are available through `ctx.succinix.on` and Cordis `ctx.on`:
+Typed `succinix/*` events are internal app-observability events available
+through `host.on` and the Cordis context:
 
 | Event | Payload |
 | --- | --- |
@@ -342,10 +462,13 @@ verified against `sha256.json` before injection.
 - Lifo does not support symlinks or hard links.
 - `chmod` semantics and permission bits are not simulated.
 - Precise OS-level memory/CPU stats are unavailable; estimates are labeled.
+- `ctx.sandbox` is an execution-world replacement, not a desktop security
+  boundary.
+- `ctx.sessionPersistence` durability is best-effort across browser reload.
 
 ## Related documents
 
-- [MIGRATION.md](MIGRATION.md) — 0.4.0 to 0.5.0 guide
+- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 to 0.6.0 guide
 - [PLUGIN.md](PLUGIN.md) — third-party Cordis plugin integration
 - [cordis-contract.md](cordis-contract.md) — authoritative contract snapshot
 - [PROTOCOL.md](PROTOCOL.md) — file-RPC wire contract (v1)

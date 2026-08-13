@@ -32,7 +32,7 @@ export async function handleCommand(req: CommandRequest): Promise<void> {
       writeResult(req.id, { ok: true, kind: 'pong' }, inst);
       return;
     case 'cwd':
-      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(inst) }, inst);
+      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(inst), hostRoot: process.cwd() }, inst);
       return;
     case 'setCwd':
       dispatchSetCwd(req);

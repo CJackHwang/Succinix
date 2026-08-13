@@ -1,10 +1,10 @@
-// invariant: shared runtime helpers for the ctx.succinix service surface.
+// invariant: shared runtime helpers for the internal succinix-host surface.
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import type {
   EngineBootHooks,
   TerminalExecutor,
 } from '../engine/index.js';
-import type { SnapshotMeta } from '../persist.js';
+import type { SnapshotMeta } from '../persist/index.js';
 import {
   SuccinixTerminalSession,
   type TerminalOutput,

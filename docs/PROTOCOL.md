@@ -314,11 +314,14 @@ read it yet). `true` = pong, `false` = timeout (host unreachable), `null` = skip
 
 ## 9. Engine public API (summary)
 
-In 0.5.0 the engine is consumed as a Cordis plugin: `@succinix/engine` exports
-`{ name: 'succinix', apply, Config }`, and consumers reach the facade through
-`ctx.succinix.executor` after injecting `succinix`. The pre-0.5.0 standalone SDK
-exports (`createTerminalExecutor`, `createSuccinixInstance`, `./terminal`,
-`./instance`) are removed; see [MIGRATION.md](./MIGRATION.md).
+In 0.6.0 the engine is a Cordis plugin for `@deepseek-ai/cordis@4.0.1`:
+`@succinix/engine` exports `{ name: 'succinix', apply, Config }`, provides the
+dsh service keys `ctx.fs` / `ctx.sandbox` / `ctx.terminals` /
+`ctx.sessionPersistence`, and exposes app lifecycle through the internal
+`succinix-host` seam. The pre-0.6.0 standalone SDK exports
+(`createTerminalExecutor`, `createSuccinixInstance`, `./terminal`,
+`./instance`) and the single-key service are removed; see
+[MIGRATION.md](./MIGRATION.md).
 
 The package still wires the same low-level pieces inside `src/engine/`:
 
@@ -327,11 +330,20 @@ The package still wires the same low-level pieces inside `src/engine/`:
 - `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` — low-level boot
   helpers shared by the plugin and the Succinix boot sequence.
 
-`ctx.succinix.executor` keeps the command-style facade semantics: `exec(command, opts)`,
-`spawn(command, opts)`, `listProcesses()`, `kill(pid)`, `ping()`, `dispose()`.
+The `succinix-host` seam keeps the command-style facade semantics:
+`host.executor.exec(command, opts)`, `spawn(command, opts)`,
+`listProcesses()`, `kill(pid)`, `ping()`, and `dispose()`.
 `TerminalExecutor.exec` returns `{ ok: false, timedOut: true }` instead of throwing
 when the RPC wait expires (the raw `TerminalClient.exec` still throws). `spawn` returns
 the full `ExecResult` (a superset of `{ pid }`) so callers can read `ok`/`runtime`/`error`.
+
+The dsh surface maps the same runtime:
+
+- `ctx.fs` exposes file primitives over the shared WebContainer filesystem.
+- `ctx.sandbox.confine(argv, policy)` wraps Lifo argv synchronously and fails
+  closed for `node|npm|npx`.
+- `ctx.terminals` is the owner-scoped PTY registry.
+- `ctx.sessionPersistence` is the event-sourced JSONL log.
 
 See [SDK.md](./SDK.md) for the plugin packaging/embedding design,
 [PLUGIN.md](./PLUGIN.md) for third-party consumption, and `src/engine/` for the

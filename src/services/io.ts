@@ -2,7 +2,7 @@
 // /etc/succinix.autostart（自启清单）的路径、解析、读写与增删。
 import type { FileSystemAPI } from '@webcontainer/api';
 import { log } from '../log.js';
-import { getPersist } from '../persist.js';
+import { getPersist } from '../persist/index.js';
 import { ensureParentDir } from '../util.js';
 import { DEFAULT_INSTANCE_ID, statePath } from '../instance/paths.js';
 import type { ServiceDef } from './types.js';

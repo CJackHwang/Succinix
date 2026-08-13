@@ -1,20 +1,12 @@
-// Runnable 0.4.0 -> 0.5.0 migration surface example.
-import { Context } from 'cordis';
+// Runnable 0.4.0/0.5.0 -> 0.6.0 migration surface example.
+import { Context } from '@deepseek-ai/cordis';
 import enginePlugin, {
   type SuccinixConfig,
-  type SuccinixService,
 } from '@succinix/engine';
 
 export interface MigrationSurfaceResult {
   ok: boolean;
   detail: string;
-}
-
-function hasSurfaceMember(service: object, key: string): boolean {
-  return (
-    Object.getOwnPropertyDescriptor(service, key) !== undefined ||
-    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(service), key) !== undefined
-  );
 }
 
 export async function runMigrationSurface(storeKey: string): Promise<MigrationSurfaceResult> {
@@ -34,32 +26,30 @@ export async function runMigrationSurface(storeKey: string): Promise<MigrationSu
   const fiber = ctx.plugin(enginePlugin, config);
   await fiber;
   try {
-    const service = ctx.succinix as SuccinixService;
-    const required = [
-      'executor',
-      'terminal',
-      'snapshot',
-      'persist',
-      'workspace',
-      'ports',
-      'services',
-      'capabilities',
-      'instance',
-      'container',
-    ];
-    const missing = required.filter((key) => !hasSurfaceMember(service, key));
+    const legacyGone = ctx.get('succinix', false) === undefined;
+    const host = ctx.get('succinix-host', false) as
+      | { boot: unknown; attach: unknown; ensureInstance: unknown }
+      | undefined;
+    const fs = ctx.get('fs', false) as { sandboxMode?: string } | undefined;
+    const sandbox = ctx.get('sandbox', false) as { confine?: unknown } | undefined;
+    const terminals = ctx.get('terminals', false) as { listBackends?: () => string[] } | undefined;
+    const persistence = ctx.get('sessionPersistence', false) as { supportsRawArtifacts?: boolean } | undefined;
     const ok =
       enginePlugin.name === 'succinix' &&
       typeof enginePlugin.apply === 'function' &&
       !!enginePlugin.Config &&
-      missing.length === 0 &&
-      typeof service.ensureInstance === 'function' &&
-      typeof service.onServerReady === 'function' &&
-      typeof service.onServerClosed === 'function' &&
-      typeof service.terminal.create === 'function';
+      legacyGone &&
+      !!host &&
+      typeof host.boot === 'function' &&
+      typeof host.attach === 'function' &&
+      typeof host.ensureInstance === 'function' &&
+      fs?.sandboxMode === 'workspace-write' &&
+      typeof sandbox?.confine === 'function' &&
+      Array.isArray(terminals?.listBackends?.()) &&
+      persistence?.supportsRawArtifacts === true;
     return {
       ok,
-      detail: ok ? 'migration surface mapped' : `missing members: ${missing.join(', ')}`,
+      detail: ok ? 'dsh migration surface mapped' : 'old single-key surface removed; dsh keys not fully mapped',
     };
   } finally {
     await fiber.dispose();

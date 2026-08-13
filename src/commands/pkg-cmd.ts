@@ -3,7 +3,7 @@ import { listPackages, formatPackageList, searchPackages, formatSearchResults, i
 import { GRAY, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 包管理（TASK13）：pkg 命令族，统一 lifo + npm 两通道 ───
-// 实现细节在 src/pkg.ts：来源判定（lifo-pkg-<name> 存在 → lifo，否则 npm；同名冲突优先 lifo）、
+// 实现细节在 src/pkg/index.ts：来源判定（lifo-pkg-<name> 存在 → lifo，否则 npm；同名冲突优先 lifo）、
 // 已装列表合并去重、搜索合并。这里只做命令分发与呈现（含真实命令 stdout 尾部回显）。
 const PKG_USAGE_LINES = [
   'usage: pkg <command> [args]',

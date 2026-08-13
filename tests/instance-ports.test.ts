@@ -34,7 +34,7 @@ const persistMock = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/persist.js', () => persistMock);
+vi.mock('../src/persist/index.js', () => persistMock);
 
 interface CmdReq {
   protocol?: number;

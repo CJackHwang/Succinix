@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **The `ctx.succinix` single-key service surface is removed.** The engine
+  now provides the dsh 0.1.0-rc.6 service keys `ctx.fs`, `ctx.sandbox`,
+  `ctx.terminals`, and `ctx.sessionPersistence`; the legacy key is not
+  retained or deprecated.
+- **The Cordis baseline is `@deepseek-ai/cordis@4.0.1`.**
+- **`ctx.succinixState` / `ctx.succinixPlugins` command-context fields are
+  renamed** to `succinixState` / `succinixPlugins` without the `ctx.` service
+  prefix.
+- **`ctx.fs` follows the dsh error and identity contracts:** 12 primitives,
+  13 error codes, `sandboxMode`, `sandboxPolicy`, opaque `targetKey`,
+  LF-normalized outcomes, and bounded `readBytes`.
+- **`ctx.sandbox.confine` is fail-closed:** it accepts only `read-only` and
+  `workspace-write`; real `node|npm|npx` subprocesses throw
+  `SANDBOX_UNAVAILABLE` in confined mode.
+- **`ctx.terminals` is an owner-scoped registry** with a fixed signal
+  whitelist, one in-flight send per session, and idempotent quiescent `kill`.
+- **`ctx.sessionPersistence` is an event-sourced JSONL mirror** with
+  contiguous seq, torn-tail repair, raw artifacts, and opaque revisions.
+
+### Added
+
+- Vendored dsh 0.1.0-rc.6 contract snapshots under
+  `docs/contracts/dsh-0.1.0-rc.6/`.
+- `scripts/check-dsh-shapes.mjs` and `scripts/check-dsh-keys.mjs`, wired into
+  `npm run check`.
+- Unit and browser e2e coverage for the four dsh services, including the
+  external `examples/cordis-app` contract.
+
 ## [0.5.0] — 2026-08-13
 
 ### Breaking

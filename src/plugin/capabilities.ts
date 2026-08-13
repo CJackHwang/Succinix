@@ -1,5 +1,5 @@
 // invariant: local capability registry, default allow, optional host integration.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import {
   CAPABILITY_PATTERNS,
   type SuccinixCapabilityPattern,

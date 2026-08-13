@@ -2,7 +2,7 @@
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
 import { loadSnapshot, saveSnapshot } from '@succinix/engine';
-import { getCurrentWorkspace, listWorkspaces, buildWorkspaceList, workspaceCreate, workspaceSwitch, workspaceRemove } from '../commands.js';
+import { getCurrentWorkspace, listWorkspaces, buildWorkspaceList, workspaceCreate, workspaceSwitch, workspaceRemove } from '../commands/index.js';
 
 export async function runPersistence(ctx: TestContext): Promise<void> {
   const { wc, term } = ctx;

@@ -5,7 +5,7 @@ import type { WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from '@succinix/engine';
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { buildUnameLine, detectUnameArch, unameRuntimeVersion, tryHandleLocalCommand } from '../commands.js';
+import { buildUnameLine, detectUnameArch, unameRuntimeVersion, tryHandleLocalCommand } from '../commands/index.js';
 import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from '../motd.js';
 
 // R2（TASK17）：经命令分发路径断言 uname flag 解析 —— 不直接调 buildUname*()，

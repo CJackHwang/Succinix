@@ -34,8 +34,8 @@ async function main() {
       } catch {
         continue;
       }
-      if (text.includes('Cordis core lifecycle: PASS') && text.includes('WebContainer + Cordis coexistence: PASS')) {
-        console.log('[  OK  ] cordis POC browser check passed');
+      if (text.includes('dsh core lifecycle: PASS') && text.includes('WebContainer + Cordis coexistence: PASS')) {
+        console.log('[  OK  ] dsh POC browser check passed');
         console.log(text);
         process.exitCode = 0;
         return;

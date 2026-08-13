@@ -15,7 +15,7 @@ export type SuccinixStateReason = 'boot' | 'ready' | 'instance' | 'config' | 'er
 
 export function createInitialState(): SuccinixPluginState {
   return {
-    version: '0.5.0',
+    version: '0.6.0',
     containerMode: 'internal',
     containerState: 'unattached',
     host: { pid: null, startedAt: null },

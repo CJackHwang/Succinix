@@ -1,4 +1,4 @@
-// src/services.ts 单元测试：解析 / 端口渲染 / needle 匹配 / 生命周期（mock FS + fake client + fake IDB）。
+// src/services/index.ts 单元测试：解析 / 端口渲染 / needle 匹配 / 生命周期（mock FS + fake client + fake IDB）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB, FakeClient } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
@@ -24,7 +24,7 @@ import {
   type ServiceContext,
 } from '../src/services/index.js';
 import { instancePorts } from '../src/instance/ports.js';
-import { clearSnapshot } from '../src/persist.js';
+import { clearSnapshot } from '../src/persist/index.js';
 
 const fs = () => new FakeFS() as unknown as FileSystemAPI;
 

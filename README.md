@@ -1,7 +1,7 @@
 # Succinix
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.0-black.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.6.0-black.svg)](package.json)
 [![CI](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml/badge.svg)](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -27,8 +27,8 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **Port management** — services are detected via WebContainer `server-ready` events and listed by `ports` with their preview URLs.
 - **Database** — `db start` boots a real Postgres (tinbase, PGlite/WASM engine) inside the container; `db status` / `db stop` manage it.
 - **Persistence** — the workspace (files, config, env, settings, workspaces) is snapshotted to IndexedDB and restored on boot; refresh never loses user files. `snapshot` command for status / manual save / reset. Snapshots are text-focused: binary/unreadable files are skipped (counted and reported in the save log), and a snapshot whose collected size exceeds ~50 MB is skipped with a warning rather than written (`snapshot now` reports `skipped (over 50MB limit)`). The tinbase database store (`.tinbase`, PGlite/WASM) is excluded entirely — it is binary and a text-only partial restore would corrupt it, so tinbase data persists across `db stop`/`db start` in a session but **not** across a browser refresh (refresh recreates a fresh store).
-- **Multi-instance embedding (0.4.0)** — `?instance=<id>` starts the app as a named instance: per-instance state files, snapshots, services/ports views and process views (`ps` filtering, cross-instance `kill` rejected). Two tabs with different ids are fully isolated (separate hosts + IndexedDB keys).
-- **Multi-user semantics (0.4.0)** — `?user=<id>` (alias of `?instance=<id>`) additionally seeds a per-user home (`/workspace/users/<id>`): the session starts in the home, the prompt renders it as `~`, `whoami` shows the user, and state/snapshots/process views are per-user. **Organizational isolation, not a security boundary** — there is no real kernel or permission model; the standalone app stays `guest`-only (see AGENTS.md).
+- **Multi-instance embedding (0.6.0+)** — `?instance=<id>` starts the app as a named instance: per-instance state files, snapshots, services/ports views and process views (`ps` filtering, cross-instance `kill` rejected). Two tabs with different ids are fully isolated (separate hosts + IndexedDB keys).
+- **Multi-user semantics (0.6.0+)** — `?user=<id>` (alias of `?instance=<id>`) additionally seeds a per-user home (`/workspace/users/<id>`): the session starts in the home, the prompt renders it as `~`, `whoami` shows the user, and state/snapshots/process views are per-user. **Organizational isolation, not a security boundary** — there is no real kernel or permission model; the standalone app stays `guest`-only (see AGENTS.md).
 - **Memory management** — `free` / `top` give a memory overview (device + JS heap; sandbox estimates are honestly labeled), `reboot` restarts the system with a browser reload (persisted data survives), `shutdown` powers off, and `cache` / `cache clear` report and clean rebuildable caches without touching `/workspace`.
 - **Workspace split** — `workspace` manages multiple isolated workspaces: each lives in its own `/ws/<name>` directory with its own files and state; `create` / `switch` / `rm` manage them, and the current workspace is recorded in `/ws/.current` (persists across refreshes). The default `main` workspace is initialized on first boot.
 - **System configuration** — `env` manages persistent environment variables (`/etc/succinix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/succinix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
@@ -36,7 +36,7 @@ Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node
 - **System log (journald-style)** — a persistent log written to `/var/log/succinix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
 - **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures. The npm installed list is read from the `node_modules` **top-level directories only** (a "top-level direct-install" simplification — the container's preinstalled runtime dependencies appear too, and the dependency tree is not parsed).
 - **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
-- **System information & login banner** — `uname` reports the honest browser-native system identity (`Succinix 0.4.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/succinix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
+- **System information & login banner** — `uname` reports the honest browser-native system identity (`Succinix 0.6.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/succinix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
 - **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
 
 ## Architecture
@@ -101,7 +101,7 @@ Succinix has a layered test setup that runs locally and in CI (GitHub Actions). 
 
 - **Lint** — `npm run lint` (ESLint flat config in `eslint.config.js`). `typescript-eslint` recommended + project rules: `no-explicit-any` (error), no leftover `console.log` (warn; `console.warn`/`error` allowed for the degradation-log convention, host-side files exempt), no unused vars/imports. Gate: **0 errors**.
 - **Typecheck** — `npm run typecheck` (`tsc -p tsconfig.json --noEmit`). Gate: **0 errors**.
-- **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist.ts`, `src/services.ts`, `src/pkg.ts`, `src/motd.ts`, `src/config.ts`, `src/engine/host-route.ts`, `src/engine/client.ts` against in-memory mocks (see `tests/`); `commands.ts` pure functions (workspace/uname/netstat/port-matching/label) are also unit-tested. `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on the coverage-included files.
+- **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist/index.ts`, `src/services/index.ts`, `src/pkg/index.ts`, `src/motd.ts`, `src/config.ts`, `src/engine/host-route.ts`, `src/engine/client.ts` against in-memory mocks (see `tests/`); `src/commands/index.ts` pure functions (workspace/uname/netstat/port-matching/label) are also unit-tested. `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on the coverage-included files.
 - **Test-mode URLs are developer hooks (P6-19)** — `?test=1`, `?bench=1` and `?scenario=1` are **test-only**: they expose internal handles on `window` (`__succinixResult` / `__succinixBench` / `__succinixScenario`, the last being able to drive real commands) and must never appear in production links. Normal visits carry no query string and expose nothing.
 - **e2e** — `npm run test:e2e` builds once, then runs the CDP scripts sequentially against `vite preview` in headless Chrome:
   1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥71 passed, 0 failed**);
@@ -118,7 +118,7 @@ Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluate
 
 - `npm audit` → **0 vulnerabilities** (all direct + transitive dependencies clean).
 - `npm outdated` → only **`@lifo-sh/core` 0.10.8 → 0.10.9** has a newer release; everything else is current. Not upgraded (policy), pending separate evaluation.
-- `public/host.js` is esbuild-minified (`minify: true` in `scripts/build-host.mjs`); size was reduced from 1,965,361 B to 1,070,913 B (**-45.5%**). The `keepNames: true` variant measures 1,106,353 B (**-43.7%**); plain `minify` is used because the full `?test=1` suite passes against the minified bundle (Lifo has no `Function.name` dependency that breaks under name-minification).
+- `public/host.js` is esbuild-minified (`minify: true` in `scripts/build-host.mjs`); the host daemon stays small (~16.5 KB) while `@lifo-sh/core` is bundled separately into `public/lifo-core.js` (~1 MB) and lazy-imported on the first Lifo command. Plain `minify` is used because the full `?test=1` suite passes against the minified bundle (Lifo has no `Function.name` dependency that breaks under name-minification).
 
 ### Self-test mode
 
@@ -206,7 +206,7 @@ node scripts/verify-deploy.mjs
 
 ## Verified Behavior
 
-Result of the browser runtime verification suite (see `src/tests.ts`): **76 passed, 0 failed, 5 skipped** (2026-08-10 run, against the minified host bundle; the Python runtime runs on the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks are included). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
+Result of the browser runtime verification suite (see `src/selftest/index.ts`): **76 passed, 0 failed, 5 skipped** (2026-08-10 run, against the minified host bundle; the Python runtime runs on the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks are included). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
 
 - Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
 - Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
@@ -284,29 +284,32 @@ These are environmental constraints, not bugs:
 
 ```
 src/
-  main.ts            # entry: xterm terminal, REPL, boot orchestration
-  boot.ts            # boot sequence, system info detection, env pre-check
+  main.ts            # entry: Cordis host assembly (xterm terminal, REPL, boot orchestration)
+  boot-steps.ts      # boot sequence, system info detection, env pre-check
   boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  commands.ts        # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...)
+  app/               # xterm assembly, output, local commands, logging, snapshot, watchdog, dev hooks
+  host/              # app-level Cordis plugins (terminal, commands, snapshot, watchdog, selftest, container)
+  commands/          # browser-side commands (help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...)
   config.ts          # system configuration: /etc/succinix.env + /etc/succinix.settings I/O & defaults
   motd.ts            # login banner: /etc/succinix.motd I/O & default
-  services.ts        # service management: /etc/succinix.services + /etc/succinix.autostart I/O, status/start/stop
+  services/          # service management: /etc/succinix.services + /etc/succinix.autostart I/O, status/start/stop
   log.ts             # journald-style system log: /var/log/succinix.log append/read/clear/BOOT-filter
-  pkg.ts             # package management: pkg list/search/install/remove/info over lifo + npm channels
-  tests.ts           # self-test suite (?test=1)
+  pkg/               # package management: pkg list/search/install/remove/info over lifo + npm channels
+  persist/           # snapshot persistence: exclusions/collect/signature/IndexedDB
+  selftest/          # self-test suite (?test=1)
   engine/            # TerminalExecutor engine — decoupled, reusable (see Ecosystem)
     index.ts         # internal core barrel consumed by src/plugin (not a package export)
     client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
-    host.ts          # TerminalExecutor daemon, runs inside WebContainer (was host.ts)
+    host/            # TerminalExecutor daemon, runs inside WebContainer (config/rpc/run/spawn/ps-kill/main)
     host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
     host-procs.ts    # unified process registry (was host-procs.ts)
     lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
     python-daemon/       # resident Pyodide 314.0.4 daemon CLI (loader/rpc/pip/main, bundled to public/pyodide/python-daemon.js)
     python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
     python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
-  terminal/          # terminal core consumed by ctx.succinix.terminal.create (no ./terminal export)
-  instance/          # instance factory consumed by ctx.succinix.ensureInstance (no ./instance export)
-  plugin/            # Cordis plugin entry: services, lifecycle, events, capabilities, HostManager
+  terminal/          # terminal core consumed by the host terminal facade (no ./terminal export)
+  instance/          # instance factory consumed by host.ensureInstance (no ./instance export)
+  plugin/            # dsh Cordis plugin entry: services, lifecycle, events, capabilities, HostManager
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
@@ -318,9 +321,9 @@ scripts/
   setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh
 tests/
   log.test.ts        # Vitest unit tests for src/log.ts (mock FS)
-  persist.test.ts    # ... src/persist.ts (exclusion/signature/force/empty-dirs, mock FS + fake IDB)
-  services.test.ts   # ... src/services.ts (parse/port-render/state, mock client)
-  pkg.test.ts        # ... src/pkg.ts (source detection/command construction, mock network)
+  persist.test.ts    # ... src/persist/index.ts (exclusion/signature/force/empty-dirs, mock FS + fake IDB)
+  services.test.ts   # ... src/services/index.ts (parse/port-render/state, mock client)
+  pkg.test.ts        # ... src/pkg/index.ts (source detection/command construction, mock network)
   motd.test.ts       # ... src/motd.ts
   config.test.ts     # ... src/config.ts
   helpers/fakes.ts   # in-memory FileSystemAPI / fake IndexedDB / scriptable terminal client
@@ -336,15 +339,16 @@ public/
 ## Ecosystem
 
 Succinix's command-execution engine is **decoupled from the Succinix app
-itself**, and ships as **`@succinix/engine@0.5.0`**, a single Cordis plugin.
-There is no standalone SDK API line: consumers apply the plugin, then use the
-services under `ctx.succinix`. A consumer's page boots a WebContainer and gets
-a shared-filesystem shell with a real Node runtime (`node|npm|npx`), a built-in
-Pyodide Python, and a Lifo Unix userland (everything else) — without building
-any of that itself.
+itself**, and ships as **`@succinix/engine@0.6.0`**, a single Cordis plugin for
+`@deepseek-ai/cordis@4.0.1`. There is no standalone SDK API line: consumers
+apply the plugin, then use the dsh services under `ctx.fs`, `ctx.sandbox`,
+`ctx.terminals`, and `ctx.sessionPersistence`. A consumer's page boots a
+WebContainer and gets a shared-filesystem shell with a real Node runtime
+(`node|npm|npx`), a built-in Pyodide Python, and a Lifo Unix userland
+(everything else) — without building any of that itself.
 
 ```ts
-import { Context } from 'cordis';
+import { Context } from '@deepseek-ai/cordis';
 import engine from '@succinix/engine';
 
 const ctx = new Context();
@@ -354,35 +358,38 @@ const fiber = ctx.plugin(engine, {
 });
 await fiber;
 
-// ctx.succinix.executor, terminal, snapshot, persist, workspace, ports,
-// services, capabilities, instance, and container are all available.
+const host = ctx.get('succinix-host', false)!;
+await host.boot();
+await host.ensureInstance('default', { executor: {} });
+
+// ctx.fs, ctx.sandbox, ctx.terminals, and ctx.sessionPersistence are
+// available; host.executor, host.terminal, host.snapshot, host.ports, and
+// host.services sit behind the internal succinix-host seam.
 ```
 
-### Plugin API
+### dsh Plugin API
 
 | Service | What it does |
 | --- | --- |
-| `ctx.succinix.executor` | Default-instance `TerminalExecutor`: `exec` / `spawn` / `ps` / `kill` / `ping` / `pingDirect` / `respawn` |
-| `ctx.succinix.terminal` | `terminal.create(output)` returns a UI-free terminal session (history, completion, Ctrl+C, queueing) |
-| `ctx.succinix.ensureInstance(id, opts)` | Create/reuse a per-instance stack (replaces `createSuccinixInstance`) |
-| `ctx.succinix.snapshot` / `persist` / `workspace` | Snapshot save/restore, persistence, workspace facade |
-| `ctx.succinix.ports` | Page-level port view + `server-ready` / `server-closed` subscriptions (replaces `pagePorts`) |
-| `ctx.succinix.services` | Declarative background service management |
-| `ctx.succinix.capabilities` | `terminal.*`, `fs.*`, `workspace.*` capability registry |
-| `ctx.succinix.boot` / `attach` | Internal WebContainer boot or external container adoption |
-| `ctx.succinix.dispose` / `shutdown` | Soft fiber teardown / hard host shutdown |
+| `ctx.fs` | dsh file system: 12 primitives, 13 `FS_*` codes, `sandboxMode` |
+| `ctx.sandbox` | dsh sandbox provider: synchronous `confine`, node fail-closed |
+| `ctx.terminals` | dsh owner-scoped PTY registry with exact `Agent` owners |
+| `ctx.sessionPersistence` | dsh event-sourced JSONL session log |
+| `host` (`succinix-host`) | Internal lifecycle seam: `boot` / `attach` / `ensureInstance`, `executor`, `terminal`, `snapshot`, `persist`, `workspace`, `ports`, `services`, `capabilities`, `dispose` / `shutdown` |
 
-Consumers declare `inject: ['succinix']` or probe with
-`ctx.get('succinix', false)`. The published `.d.ts` augments
-`Context['succinix']` and the `succinix/*` event map.
+Consumers declare `inject: ['fs', 'sandbox', 'terminals',
+'sessionPersistence']` or probe with `ctx.get('fs', false)`. The published
+`.d.ts` augments `Context['fs']`, `Context['sandbox']`,
+`Context['terminals']`, `Context['sessionPersistence']`, and the `succinix/*`
+event map.
 
 ### Protocol & integration docs
 
 - **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts.
-- **[docs/SDK.md](docs/SDK.md)** — the 0.5.0 Cordis plugin integration reference: install, config, service surface, capabilities, lifecycle, hot reload, container modes.
+- **[docs/SDK.md](docs/SDK.md)** — the 0.6.0 dsh Cordis plugin integration reference: install, config, dsh services, host seam, capabilities, lifecycle, hot reload, container modes.
 - **[docs/PLUGIN.md](docs/PLUGIN.md)** — how third-party Cordis plugins consume or extend Succinix.
 - **[docs/cordis-contract.md](docs/cordis-contract.md)** — the authoritative contract snapshot and its browser runner.
-- **[docs/MIGRATION.md](docs/MIGRATION.md)** — migration from the 0.4.0 standalone SDK form.
+- **[docs/MIGRATION.md](docs/MIGRATION.md)** — migration from the 0.4.0 standalone SDK and 0.5.0 single-key forms.
 - **[docs/LANGUAGES.md](docs/LANGUAGES.md)** — the measurement-backed language support matrix.
 
 ### Vision
@@ -390,8 +397,8 @@ Consumers declare `inject: ['succinix']` or probe with
 The engine is the same code that powers the Succinix terminal, behind a clean
 Cordis boundary: core logic stays Cordis-free, the wire protocol is
 documented, and no app-layer dependency leaks into `src/engine/`. Any
-Chromium-based frontend that already boots a WebContainer can add a Unix
-sandbox sharing its own files by applying `@succinix/engine`.
+Chromium-based frontend that already boots a WebContainer can add a dsh
+execution world sharing its own files by applying `@succinix/engine`.
 
 ## Development Archive
 
@@ -421,7 +428,7 @@ sandbox sharing its own files by applying `@succinix/engine`.
 - [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
 - [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
 - [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
-- [x] Cordis single-track engine: `@succinix/engine@0.5.0` as a plugin with `ctx.succinix`
+- [x] dsh single-track engine: `@succinix/engine@0.6.0` with `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`
 - [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor — **deferred** (planned as TASK8; not scheduled)
 - [ ] Optional: WebSocket tunnel for external access
 

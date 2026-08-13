@@ -14,10 +14,10 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | 项 | 值 | 来源 |
 | ---- | ----- | ------ |
 | 产品 | SuccinixOS（原 WebUnix）—— 统一品牌，零功能改动 | TASK26 |
-| 引擎 | Cordis 插件 `ctx.succinix.executor`（统一路由：`node|npm|npx` → 真实 Node 子进程；其余 → Lifo 沙箱） | TASK1, C2 |
+| 引擎 | dsh Cordis 插件：`ctx.fs`、`ctx.sandbox`、`ctx.terminals`、`ctx.sessionPersistence`（统一路由：`node|npm|npx` → 真实 Node 子进程；其余 → Lifo 沙箱） | TASK1, C2 |
 | 运行时 | WebContainer + Lifo，共享虚拟化 `node:fs`（浏览器 `wc.fs`、Node 子进程、Lifo —— 同一棵树） | TASK1, README |
-| Succinix 应用版本 | **0.4.0** | CHANGELOG |
-| 引擎包 | **`@succinix/engine` 0.5.0** — Cordis 插件、`ctx.succinix` 服务 | CHANGELOG, cordis-contract.md |
+| Succinix 应用版本 | **0.6.0** | CHANGELOG |
+| 引擎包 | **`@succinix/engine` 0.6.0** — dsh Cordis 插件（`@deepseek-ai/cordis@4.0.1`） | CHANGELOG, cordis-contract.md |
 | 许可 | **MIT** © 2026 CJackHwang | README |
 | 浏览器 | 仅 Chromium 系（Chrome/Edge）+ COOP/COEP 跨源隔离 + SharedArrayBuffer | TASK4, README |
 
@@ -162,18 +162,21 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 ## 9. 生态 / SDK
 
-- **解耦引擎、插件单轨**：命令执行核心位于 `src/engine/` 且保持 Cordis-free；
-  `src/plugin/` 是薄 Cordis 层。`@succinix/engine@0.5.0` 是唯一对外形态：插件注册名为
-  `succinix`，经 `ctx.succinix` 消费。 | C1–C6, AGENTS.md
+- **解耦引擎、dsh 单轨**：命令执行核心位于 `src/engine/` 且保持 Cordis-free；
+  `src/plugin/` 是薄 Cordis 层。`@succinix/engine@0.6.0` 是唯一对外形态：
+  插件注册名为 `succinix`，经 `ctx.fs` / `ctx.sandbox` / `ctx.terminals` /
+  `ctx.sessionPersistence` 消费。 | C1–C6, AGENTS.md
 - **权威协议**：`docs/PROTOCOL.md` 是文件 RPC 线上契约（版本 1）——请求/响应形态、命令路由、
   进程模型、端口事件、超时；生态使用方可仅凭它构建替代客户端/host。 | TASK21, PROTOCOL.md
 - **发布包导出**：`.`（插件入口 `{ name, apply, Config }` + 类型）、`./host.js` +
   `./lifo-core.js`（容器内资产）、`./assets/*`（Pyodide + SHA 清单）、`./package.json`。
   0.4.0 的 `./terminal` / `./instance` 子路径已移除。 | C1, C6
-- **`ctx.succinix` 服务面**：`state`、`container`、`executor`、`terminal`、`snapshot`、
-  `persist`、`workspace`、`ports`、`services`、`capabilities`、`instance` 与生命周期方法
-  （`boot` / `attach` / `ensureInstance` / `releaseInstance` / `dispose` / `shutdown` /
-  `reconfigure`）。 | C2, cordis-contract.md
+- **dsh 服务面**：`ctx.fs`（12 原语、13 个 `FS_*` 错误码）、`ctx.sandbox`
+  （同步 `confine`、node fail-closed）、`ctx.terminals`（owner 隔离 PTY
+  registry）与 `ctx.sessionPersistence`（event-sourced JSONL）。内部生命周期
+  facade（`executor`、`terminal`、`snapshot`、`persist`、`workspace`、
+  `ports`、`services`、`capabilities`、`instance`、`boot` / `attach` /
+  `ensureInstance`）位于 `succinix-host` seam 之后。 | C2, cordis-contract.md
 - **类型化事件**：`succinix/state`（带 `reason` / `changed`）、`server-ready`、
   `server-closed`、`command` telemetry、`instance`、`workspace`、`process`。 | C4,
   manageability.md
@@ -183,18 +186,18 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 - **生命周期语义**：页面级 HostManager 单例；fiber reload 不重启 host；`dispose()` 软收尾、
   `shutdown()` 完全关闭；`attach`/`boot` 模式互斥抛 `ERR_MODE_MISMATCH`；资产 SHA-256 完整性
   默认启用。 | C2, C5
-- **多实例（0.4.0 / 0.5.0）** —— `ctx.succinix.ensureInstance(id, opts)` 在共享页面 host 上
+- **多实例（0.6.0+）** —— `host.ensureInstance(id, opts)` 在共享页面 host 上
   创建或复用按实例栈。`?instance=<id>` 以命名实例启动应用：状态文件
-  （`/workspace/.succinix-<id>`）、IndexedDB 快照键、env、服务/端口视图与进程视图均按实例；
-  跨实例 `kill` 拒绝。不同 id 的双 tab 完全隔离（独立 host —— 已 e2e 验证）。 | M1–M5,
-  PROTOCOL.md
-- **多用户（0.4.0）** —— `?user=<id>`（`?instance=<id>` 的别名）种子每用户 home
+  （`/workspace/.succinix-<id>`）、IndexedDB 快照键、env、服务/端口视图与
+  进程视图均按实例；跨实例 `kill` 拒绝。不同 id 的双 tab 完全隔离（独立
+  host —— 已 e2e 验证）。 | M1–M5, PROTOCOL.md
+- **多用户（0.6.0+）** —— `?user=<id>`（`?instance=<id>` 的别名）种子每用户 home
   （`/workspace/users/<id>`）：会话在 home 内启动（提示符 `~`、node/python spawn 从 home 起步），
   `whoami`/提示符显示用户；状态/快照/进程视图按用户，含 `ps` 过滤 + `kill` 授权（组织性隔离，
   非安全边界）。 | U1, SDK.md
-- **外部 demo / 契约快照**：`examples/cordis-app/` 只依赖打包后的引擎、`cordis` 与
-  `@webcontainer/api`；`scripts/cordis-app-e2e.mjs` 在 headless Chrome 跑契约。 | C5,
-  cordis-contract.md
+- **外部 demo / 契约快照**：`examples/cordis-app/` 只依赖打包后的引擎、
+  `@deepseek-ai/cordis` 与 `@webcontainer/api`；`scripts/cordis-app-e2e.mjs`
+  在 headless Chrome 跑契约。 | C5, cordis-contract.md
 
 ## 10. 诚实边界表
 
@@ -251,7 +254,7 @@ npm run dev          # 启动 Vite dev server（COOP/COEP 已预配置）
 - **PROTOCOL** —— 文件 RPC 线上契约（v1）：[英文](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
 - **SDK** —— Cordis 插件集成：[英文](SDK.md) · [中文](SDK.zh-CN.md)
 - **PLUGIN** —— 第三方 Cordis 插件开发：[英文](PLUGIN.md)
-- **MIGRATION** —— 0.4.0 到 0.5.0 迁移指南：[英文](MIGRATION.md)
+- **MIGRATION** —— 0.4.0/0.5.0 到 0.6.0 迁移指南：[英文](MIGRATION.md)
 - **cordis-contract** —— 契约快照与验证器：[英文](cordis-contract.md)
 - **AGENTS** —— Agent 与设计规范：[英文](../AGENTS.md) · [中文](../AGENTS.zh-CN.md)
 - **CHANGELOG** —— 变更历史：[英文](../CHANGELOG.md) · [中文](../CHANGELOG.zh-CN.md)

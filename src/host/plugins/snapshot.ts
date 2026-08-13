@@ -1,5 +1,5 @@
 // app plugin: auto snapshot loop.
-import type { Context } from 'cordis';
+import type { Context } from '@deepseek-ai/cordis';
 import { startAutoSnapshot } from '../../app/auto-snapshot.js';
 import type { AppShell, AppSnapshotService } from '../types.js';
 

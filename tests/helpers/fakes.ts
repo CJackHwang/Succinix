@@ -5,6 +5,13 @@ import type {
   FSWatchOptions,
   IFSWatcher,
 } from '@webcontainer/api';
+import type { Context } from '@deepseek-ai/cordis';
+import type { SuccinixHostService } from '../../src/plugin/types.js';
+
+/** Internal app bootstrap seam used by plugin tests after the dsh-key migration. */
+export function hostOf(ctx: Context): SuccinixHostService {
+  return ctx.get('succinix-host', false) as SuccinixHostService;
+}
 
 // ─── 内存 FileSystemAPI ───
 export interface FakeDirEntry {
@@ -15,7 +22,7 @@ export interface FakeDirEntry {
 
 export class FakeFS {
   /** path → content；null = 目录 */
-  private entries = new Map<string, string | null>();
+  private entries = new Map<string, string | Uint8Array | null>();
 
   constructor() {
     this.entries.set('/', null);
@@ -35,14 +42,14 @@ export class FakeFS {
     }
   }
 
-  async writeFile(path: string, content: string): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array): Promise<void> {
     const p = this.norm(path);
     const idx = p.lastIndexOf('/');
     if (idx > 0) this.ensureDirs(p.slice(0, idx));
     this.entries.set(p, content);
   }
 
-  async readFile(path: string, _encoding?: string): Promise<string> {
+  async readFile(path: string, _encoding?: string): Promise<string | Uint8Array> {
     const p = this.norm(path);
     const v = this.entries.get(p);
     if (v === undefined) throw new Error(`ENOENT: no such file ${path}`);
@@ -110,7 +117,7 @@ export class FakeFS {
   }
 
   /** 测试辅助：直接读原始内容（目录返回 null，缺失返回 undefined，不抛错） */
-  raw(path: string): string | null | undefined {
+  raw(path: string): string | Uint8Array | null | undefined {
     return this.entries.get(this.norm(path));
   }
 }

@@ -30,8 +30,42 @@ describe('motd', () => {
     expect(await readMotd(f)).toBe('custom banner');
   });
 
+  it('ensureMotd refreshes a stale default banner to the current version', async () => {
+    const f = fs();
+    const stale = "Welcome to Succinix 0.4.0 — browser-native Linux. Type 'help' for commands.";
+    await f.writeFile(MOTD_FILE, stale);
+    await ensureMotd(f);
+    expect((f as unknown as FakeFS).raw(MOTD_FILE)).toBe(DEFAULT_MOTD);
+    expect(await readMotd(f)).toBe(DEFAULT_MOTD);
+  });
+
+  it('ensureMotd refreshes a pre-branding WebUnix default banner', async () => {
+    const f = fs();
+    const stale = "Welcome to WebUnix 0.1.0 — browser-native Linux. Type 'help' for commands.";
+    await f.writeFile(MOTD_FILE, stale);
+    await ensureMotd(f);
+    expect((f as unknown as FakeFS).raw(MOTD_FILE)).toBe(DEFAULT_MOTD);
+  });
+
+  it('ensureMotd keeps a custom banner that only looks like the default', async () => {
+    const f = fs();
+    const custom = "Welcome to Succinix 0.4.0 — browser-native Linux. Type 'help' for commands. Keep me.";
+    await f.writeFile(MOTD_FILE, custom);
+    await ensureMotd(f);
+    expect((f as unknown as FakeFS).raw(MOTD_FILE)).toBe(custom);
+  });
+
   it('readMotd returns null when the file is missing', async () => {
     expect(await readMotd(fs())).toBeNull();
+  });
+
+  it('readMotd renders the current version for a stale stored default', async () => {
+    const f = fs();
+    const stale = "Welcome to Succinix 0.4.0 — browser-native Linux. Type 'help' for commands.";
+    await f.writeFile(MOTD_FILE, stale);
+    expect(await readMotd(f)).toBe(DEFAULT_MOTD);
+    // 文件本身未被改写：只负责显示当前版本。
+    expect((f as unknown as FakeFS).raw(MOTD_FILE)).toBe(stale);
   });
 
   it('writeMotd persists content and triggers a force snapshot', async () => {

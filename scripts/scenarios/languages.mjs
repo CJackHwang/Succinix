@@ -1,5 +1,20 @@
 // 场景套件：语言生态（O11 拆分自 scenarios.mjs）。
-import { check } from '../lib/harness.mjs';
+import { check, note } from '../lib/harness.mjs';
+
+// WebContainer 的 npm 网络偶发会在重活安装中直接杀子进程（exit -1、无 stderr）。
+// 这些安装是场景要验证的真实能力，不降级断言；给已知 flake 加有限重试，避免整轮误报。
+async function runWithRetry(h, cmd, timeoutMs, attempts = 3, delayMs = 8000) {
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    last = await h.run(cmd, timeoutMs);
+    if (last.ok) return last;
+    if (attempt < attempts) {
+      note(`npm install retry ${attempt + 1}/${attempts}: ${cmd}`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
+  return last;
+}
 
 async function s11(h) {
   const checks = [];
@@ -183,7 +198,7 @@ async function s13(h) {
   check(checks, 'npm init -y', init.ok === true, `ok=${init.ok}`);
 
   // 3. npm i -D typescript tsx vitest（真实 npm 安装工具链 —— 重活，给足超时）
-  const inst = await h.run('npm i -D typescript tsx vitest', 240000);
+  const inst = await runWithRetry(h, 'npm i -D typescript tsx vitest', 240000);
   const instDetail = [inst.error, inst.exitCode, inst.thrown, String(inst.stderr || inst.stdout || '').trim().slice(0, 120)].filter((v) => v !== undefined && v !== null && v !== '').join(' | ');
   check(checks, 'npm i -D typescript tsx vitest', inst.ok === true, `ok=${inst.ok}${instDetail ? ` ${instDetail}` : ''}`);
 
@@ -244,7 +259,7 @@ async function s14(h) {
   // 3. npm init + 装 typescript（cwd = 项目目录）→ 证明"可编译"
   const init = await h.run('npm init -y', 120000);
   check(checks, 'S14 npm init -y', init.ok === true, `ok=${init.ok}`);
-  const inst = await h.run('npm i -D typescript', 240000);
+  const inst = await runWithRetry(h, 'npm i -D typescript', 240000);
   const instDetail = [inst.error, inst.exitCode, inst.thrown, String(inst.stderr || inst.stdout || '').trim().slice(0, 120)].filter((v) => v !== undefined && v !== null && v !== '').join(' | ');
   check(checks, 'S14 npm i -D typescript', inst.ok === true, `ok=${inst.ok}${instDetail ? ` ${instDetail}` : ''}`);
 

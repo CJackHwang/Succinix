@@ -18,17 +18,39 @@ export function motdFilePath(instanceId = DEFAULT_INSTANCE_ID, statePrefix?: str
 // 默认内容（一条欢迎行；英文，无 emoji）。版本号构建期注入（P2-7，随 package.json 单一来源）。
 export const DEFAULT_MOTD = `Welcome to Succinix ${SUCCINIX_VERSION} — browser-native Linux. Type 'help' for commands.`;
 
+// 历史默认横幅（含品牌迁移前的 WebUnix 与旧版本号）：命中时视为默认内容，
+// 在读取/恢复时替换为当前版本，避免旧快照里的欢迎横幅把版本号“冻结”在升级前。
+const DEFAULT_MOTD_PATTERN =
+  /^Welcome to (?:Succinix|WebUnix) [^ \n]+ — browser-native Linux\. Type 'help' for commands\.$/;
+
+function isDefaultMotd(text: string): boolean {
+  return DEFAULT_MOTD_PATTERN.test(text);
+}
+
 // 确保文件存在：缺失时写默认内容（boot 调用；用户可随后 motd <text> 编辑）。
 export async function ensureMotd(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID, statePrefix?: string): Promise<void> {
   const file = motdFilePath(instanceId, statePrefix);
   await ensureParentDir(fs, file);
+  let existing: string | null = null;
   try {
-    await fs.readFile(file, 'utf8');
+    existing = await fs.readFile(file, 'utf8');
   } catch {
+    /* 文件缺失：下面落默认内容 */
+  }
+  if (existing === null) {
     try {
       await fs.writeFile(file, DEFAULT_MOTD);
     } catch {
       /* 写入失败不影响 boot：命令读取时回落默认 */
+    }
+    return;
+  }
+  if (existing !== DEFAULT_MOTD && isDefaultMotd(existing)) {
+    try {
+      // 旧快照恢复的默认横幅：重写为当前版本并立即落盘，无需清空用户数据。
+      await writeMotd(fs, DEFAULT_MOTD, instanceId, statePrefix);
+    } catch {
+      /* 刷新失败不影响 boot：readMotd 仍会按默认横幅回落当前版本 */
     }
   }
 }
@@ -36,7 +58,9 @@ export async function ensureMotd(fs: FileSystemAPI, instanceId = DEFAULT_INSTANC
 // 读当前 motd 原文；文件缺失 / 不可读返回 null（调用方决定回落）。
 export async function readMotd(fs: FileSystemAPI, instanceId = DEFAULT_INSTANCE_ID, statePrefix?: string): Promise<string | null> {
   try {
-    return await fs.readFile(motdFilePath(instanceId, statePrefix), 'utf8');
+    const text = await fs.readFile(motdFilePath(instanceId, statePrefix), 'utf8');
+    // 即使快照尚未被 ensureMotd 重写，读取端也把旧默认横幅渲染为当前版本。
+    return isDefaultMotd(text) ? DEFAULT_MOTD : text;
   } catch {
     return null;
   }

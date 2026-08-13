@@ -717,7 +717,7 @@ C0 必须实测 `@cordisjs/plugin-loader`、`plugin-hmr`、`plugin-database-memo
 | DC-15 | 端口命名 | `ctx.succinix.ports` 为 canonical；不公开 `pagePorts` |
 | DC-16 | 协议 | `docs/PROTOCOL.md` v1 保持不变；能力面变化不触碰 wire 层 |
 | DC-17 | 单 ctx 消费者 | 不提供 client 插件形态（无第二套 ClientContext/UI 运行时）；`ctx.succinix.*` 为唯一服务面；UI（终端面板/容器视图等）由消费者（SunamAI）的 `ctx.ui` 插槽消费 |
-| DC-18 | 生态兼容（可移植性） | `@succinix/engine@0.5.0` 只依赖 `cordis` peer + 自身，零 `@deepseek-ai/dsh-*` 私有依赖 |
+| DC-18 | 生态兼容（可移植性） | `@succinix/engine@0.5.0` 只依赖 `cordis` peer + 自身，零 `@deepseek-ai/dsh-*` 私有依赖——任何 Cordis 宿主（含 dsh 生态，2026-08-13 已发布）可**直接消费，无需 shim**。浏览器沙箱/终端 = dsh 生态（桌面 harness）稀缺能力——生态卡位资产（已实测验证：dsh 服务面全部 Node 桌面实现，浏览器原生是我们的独占位） |
 | DC-19 | 可选注入 | rc.8 已移除 optional inject；capability 集成用 `ctx.get('capability')`，不用 `inject` |
 | DC-20 | 事件契约 | `succinix/*` 类型化事件 + `ctx.succinix.on`；telemetry/进程/工作区事件全部进 C4 |
 | DC-21 | 服务面补齐 | `persist`、`workspace`、`instance`、`container` 进 `ctx.succinix`，与 SunamAI §6.2 对齐 |

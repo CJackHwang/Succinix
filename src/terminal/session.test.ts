@@ -238,6 +238,13 @@ describe('cwd follow', () => {
     expect(s.getPrompt()).toBe('guest@succinix:~/proj$ ');
   });
 
+  it('显式传入 promptPrefix: undefined 时回落 guest@succinix 默认前缀', async () => {
+    const out = makeOutput();
+    const s = new SuccinixTerminalSession(makeRpc(), out, { promptPrefix: undefined });
+    await s.boot();
+    expect(s.getPrompt()).toBe('guest@succinix:~$ ');
+  });
+
   it('pwd 内置命令打印会话 cwd', async () => {
     const out = makeOutput();
     const s = new SuccinixTerminalSession(makeRpc(), out, { cwd: '/workspace/proj' });

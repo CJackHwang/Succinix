@@ -100,6 +100,8 @@ export class SuccinixTerminalSession {
   constructor(rpc: TerminalRpc, output: TerminalOutput, options: TerminalSessionOptions = {}) {
     this.rpc = rpc;
     this.output = output;
+    // 调用方显式传 undefined 时不能覆盖默认前缀（独立宿主 / 第三方集成常见）。
+    const mergedOptions = { ...options, promptPrefix: options.promptPrefix ?? 'guest@succinix:' };
     this.options = {
       cwd: '/workspace',
       timeoutMs: 60000,
@@ -107,8 +109,7 @@ export class SuccinixTerminalSession {
       history: true,
       tabComplete: true,
       interrupt: true,
-      promptPrefix: 'guest@succinix:',
-      ...options,
+      ...mergedOptions,
     };
     this.cwd = options.cwd ?? '/workspace';
     this.localHandlers = Object.freeze({

@@ -84,7 +84,7 @@ async function startHostApp(ctx: Context): Promise<AppShell | null> {
     const instance = await ctx.succinix.ensureInstance(instanceId, {
       output,
       terminal: {
-        promptPrefix: request.userMode ? `${request.id}@succinix:` : undefined,
+        promptPrefix: request.userMode ? `${request.id}@succinix:` : 'guest@succinix:',
         localHandlers,
         onCommand: logger.onCommand,
         onCommandError: logger.onCommandError,

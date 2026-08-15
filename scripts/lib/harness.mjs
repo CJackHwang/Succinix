@@ -150,6 +150,20 @@ export function makeHarness(cdp) {
       } catch {
         /* 导航中 */
       }
+      // 先等旧页面销毁（导航开始、句柄消失），再等新 boot 完成 —— 直接轮询句柄会
+      // 命中导航前残留的旧句柄而提前返回（页面随后进入 ~8s boot，句柄再次缺失），
+      // 导致下一个 eval/run 撞上 `Cannot read properties of undefined (reading 'wc'/'run')`。
+      const goneDeadline = Date.now() + 30000;
+      while (Date.now() < goneDeadline) {
+        try {
+          const v = await evalValue(cdp, '!window.__succinixScenario');
+          if (v === true) break;
+        } catch {
+          /* 导航中上下文销毁：视为已消失 */
+          break;
+        }
+        await sleep(200);
+      }
       await h.waitForScenario(timeoutMs);
     },
   };

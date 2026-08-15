@@ -236,7 +236,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 - **单测** —— Vitest（node）覆盖纯逻辑模块，用内存 mock FS / fake IndexedDB；v8 覆盖率门禁
   **>=70%**（核心文件）。 | TASK20
 - **e2e 流水线** —— `npm run test:e2e` 构建一次，然后依次跑 `verify-deploy` → `bench` →
-  `scenarios` → `lang-verify`。 | TASK20, TASK25
+  `scenarios` → `lang-verify` → `instance-demo` → `instance-routing` → `cordis-app`。 | TASK20, TASK25
 
 ## 12. 快速开始 + 文档索引
 

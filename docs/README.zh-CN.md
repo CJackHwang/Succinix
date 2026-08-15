@@ -106,10 +106,13 @@ Succinix 有分层测试体系，本地与 CI（GitHub Actions）一致。测试
 - **e2e** — `npm run test:e2e` 构建一次，然后在 headless Chrome 里对 `vite preview` 依次跑 CDP 脚本：
   1. `scripts/verify-deploy.mjs` — 部署就绪门禁 + `?test=1` 自检（门禁 **≥71 passed, 0 failed**）；
   2. `scripts/bench.mjs` — 性能基准（JSON 输出）；
-  3. `scripts/scenarios.mjs` — 十四场景真实工作流套件（S1–S14）；
-  4. `scripts/lang-verify.mjs` — 语言生态验证套件（TASK25）。
+  3. `scripts/scenarios.mjs` — 十四场景真实工作流套件（S1–S14；场景定义拆分在 `scripts/scenarios/`）；
+  4. `scripts/lang-verify.mjs` — 语言生态验证套件（TASK25）；
+  5. `scripts/instance-demo.mjs` — 多实例 + 多用户演示（双 tab，R3）；
+  6. `scripts/instance-routing.mjs` — 同页多实例路由（R5）；
+  7. `scripts/cordis-app-e2e.mjs` — 外部 `@succinix/engine` 消费者验证已发布 dsh-key 契约。
   有意不用 Playwright：CDP 脚本让流水线保持零依赖、与本地运行一致。
-- **CI** — `.github/workflows/ci.yml` 每次 push/PR 跑 lint → typecheck → 单测（含覆盖率）→ build → `verify-deploy`（headless 自检）；定时 nightly job 跑重场景套件。见本文件顶部 CI 徽章。
+- **CI** — `.github/workflows/ci.yml` 每次 push/PR 跑 lint → typecheck → 单测（含覆盖率）→ build → `verify-deploy`（headless 自检）；完整 e2e 门禁在 `.github/workflows/e2e-full.yml`（源码/脚本变更触发，deploy gate 在已知 scenario flake 上重试一次）；定时 nightly job 跑重场景 `scenarios` + `lang-verify` + `instance-demo` 套件。见本文件顶部 CI 徽章。
 - **pre-commit（可选，零依赖）** — `npm run setup:hooks` 写入 `.git/hooks/pre-commit`，对变更文件跑 `tsc --noEmit` 与 ESLint（`scripts/pre-commit.sh`）。**不强制**：跳过 `setup:hooks` 项目照常可提交。
 
 ### 依赖与审计
@@ -297,11 +300,20 @@ src/
   plugin/            # dsh Cordis 插件入口：服务、生命周期、事件、能力、HostManager
 scripts/
   build-host.mjs     # esbuild 打包容器内 host（host.js + 懒加载 lifo-core.js）
+  build-engine-package.mjs  # 构建可发布的 @succinix/engine 包（packages/engine/，不 publish）
   verify-deploy.mjs  # 部署就绪门禁：build + preview + COOP/COEP + ?test=1 自检
+  verify-bootgate.mjs  # boot 门禁验证：boot 期间输入无效、boot 日志按 N/M 步计数（CDP）
   bench.mjs          # headless Chrome 性能基准（JSON 输出）
   scenarios.mjs      # 十四场景真实工作流套件（headless Chrome + CDP；S14 = 语言防回归）
-  lang-verify.mjs    # 语言生态验证（TASK25；28 项检查，真实浏览器执行）
-  run-e2e.mjs        # npm run test:e2e：构建一次 + 依次跑 verify-deploy/bench/scenarios/lang-verify
+  scenarios/         # 场景定义按套件拆分：smoke / services / filesystem / kernel / languages（O11）
+  lang-verify.mjs    # 语言生态验证（TASK25；真实浏览器执行）
+  instance-demo.mjs  # 多实例 + 多用户演示（双 tab，R3）
+  instance-routing.mjs  # 同页多实例路由（R5）
+  cordis-app-e2e.mjs # 外部 @succinix/engine 消费者验证已发布契约
+  run-e2e.mjs        # npm run test:e2e：构建一次 + 依次跑上面 7 个 CDP 步骤
+  check-plugin-boundaries.mjs  # 插件边界门禁：engine/terminal/instance 保持 Cordis-free
+  check-dsh-shapes.mjs  # dsh shape 门禁：vendored dsh 表面 vs src/plugin/dsh-types.ts
+  check-dsh-keys.mjs   # 旧 key 门禁：allowlist 之外禁止 ctx.succinix* 残留 token
   pre-commit.sh      # 可选 pre-commit：变更文件跑 tsc + eslint（零依赖）
   setup-hooks.mjs    # npm run setup:hooks：把 .git/hooks/pre-commit 接到 pre-commit.sh
 tests/
@@ -316,6 +328,7 @@ eslint.config.js     # ESLint flat config（typescript-eslint recommended + 项�
 vitest.config.ts     # Vitest 配置 + v8 覆盖率门禁（核心纯逻辑模块 >=70%）
 .github/workflows/
   ci.yml             # CI：lint → typecheck → 单测（覆盖率）→ build → verify-deploy；nightly 场景
+  e2e-full.yml       # 完整 e2e 门禁：verify-deploy/bench/scenarios/lang-verify/instance-demo/instance-routing/cordis-app
 public/
   host.js            # 轻量容器内 host 守护进程（生成物）
   lifo-core.js       # @lifo-sh/core 内核 bundle，host.js 懒加载（生成物）

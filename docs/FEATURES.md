@@ -256,7 +256,7 @@ Accepted environment constraints — not bugs, and never simulated:
 - **Unit tests** — Vitest (node) covering pure-logic modules with an in-memory mock FS / fake
   IndexedDB; v8 coverage gate **>=70%** on core files. | TASK20
 - **e2e pipeline** — `npm run test:e2e` builds once, then runs `verify-deploy` → `bench` →
-  `scenarios` → `lang-verify`. | TASK20, TASK25
+  `scenarios` → `lang-verify` → `instance-demo` → `instance-routing` → `cordis-app`. | TASK20, TASK25
 
 ## 12. Quick start & docs index
 

@@ -106,10 +106,13 @@ Succinix has a layered test setup that runs locally and in CI (GitHub Actions). 
 - **e2e** — `npm run test:e2e` builds once, then runs the CDP scripts sequentially against `vite preview` in headless Chrome:
   1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥71 passed, 0 failed**);
   2. `scripts/bench.mjs` — performance benchmark (JSON output);
-  3. `scripts/scenarios.mjs` — the 14 real-workflow scenario suite (S1–S14);
-  4. `scripts/lang-verify.mjs` — the language-ecosystem verification suite (TASK25).
+  3. `scripts/scenarios.mjs` — the 14 real-workflow scenario suite (S1–S14; definitions split across `scripts/scenarios/`);
+  4. `scripts/lang-verify.mjs` — the language-ecosystem verification suite (TASK25);
+  5. `scripts/instance-demo.mjs` — multi-instance + multi-user demo (dual-tab, R3);
+  6. `scripts/instance-routing.mjs` — same-page instance routing (R5);
+  7. `scripts/cordis-app-e2e.mjs` — an external `@succinix/engine` consumer verifies the published dsh-key contract.
   Playwright is intentionally not used: the CDP scripts keep the pipeline zero-dependency and identical to local runs.
-- **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; a scheduled nightly job runs the heavy scenario suite. See the CI badge at the top of this file.
+- **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; the full e2e gate lives in `.github/workflows/e2e-full.yml` (source/script changes, deploy gate retried once on the known scenario flake); a scheduled nightly job runs the heavy `scenarios` + `lang-verify` + `instance-demo` suite. See the CI badge at the top of this file.
 - **pre-commit (optional, zero-dependency)** — `npm run setup:hooks` writes a `.git/hooks/pre-commit` that runs `tsc --noEmit` and ESLint on the changed files only (`scripts/pre-commit.sh`). It is **not forced**: skipping `setup:hooks` leaves the project fully commit-ready.
 
 ### Dependencies & audit
@@ -312,11 +315,20 @@ src/
   plugin/            # dsh Cordis plugin entry: services, lifecycle, events, capabilities, HostManager
 scripts/
   build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
+  build-engine-package.mjs  # build the publishable @succinix/engine package (packages/engine/, no publish)
   verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
+  verify-bootgate.mjs  # boot-gate verification: no input during boot, step-counted boot log (CDP)
   bench.mjs          # headless-Chrome performance benchmark (JSON output)
   scenarios.mjs      # 14 real-workflow scenario suite (headless Chrome + CDP; S14 = language regression)
+  scenarios/         # scenario definitions split by suite: smoke / services / filesystem / kernel / languages (O11)
   lang-verify.mjs    # language-ecosystem verification (TASK27; real browser execution)
-  run-e2e.mjs        # npm run test:e2e: build once + run verify-deploy/bench/scenarios/lang-verify sequentially
+  instance-demo.mjs  # multi-instance + multi-user demo (dual-tab, R3)
+  instance-routing.mjs  # same-page instance routing (R5)
+  cordis-app-e2e.mjs # external @succinix/engine consumer verifies the published contract
+  run-e2e.mjs        # npm run test:e2e: build once + run the 7 CDP steps above sequentially
+  check-plugin-boundaries.mjs  # plugin boundary gate: engine/terminal/instance stay Cordis-free
+  check-dsh-shapes.mjs  # dsh shape gate: vendored dsh surface vs src/plugin/dsh-types.ts
+  check-dsh-keys.mjs   # legacy-key gate: forbid stale ctx.succinix* tokens outside the allowlist
   pre-commit.sh      # optional pre-commit: tsc + eslint on changed files (zero-dependency)
   setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh
 tests/
@@ -331,6 +343,7 @@ eslint.config.js     # ESLint flat config (typescript-eslint recommended + proje
 vitest.config.ts     # Vitest config + v8 coverage gate (>=70% on core pure-logic modules)
 .github/workflows/
   ci.yml             # CI: lint → typecheck → unit tests (coverage) → build → verify-deploy; nightly scenarios
+  e2e-full.yml       # full e2e gate: verify-deploy/bench/scenarios/lang-verify/instance-demo/instance-routing/cordis-app
 public/
   host.js            # lightweight in-container host daemon (generated)
   lifo-core.js       # @lifo-sh/core kernel bundle, lazily imported by host.js (generated)

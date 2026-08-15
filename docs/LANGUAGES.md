@@ -108,7 +108,7 @@ Measured, environment-level constraints — not bugs.
 ## 4. How to reproduce
 
 ```bash
-npm run test:e2e                     # build once, then: verify-deploy → bench → scenarios → lang-verify
+npm run test:e2e                     # build once, then: verify-deploy → bench → scenarios → lang-verify → instance-demo → instance-routing → cordis-app
 node scripts/lang-verify.mjs         # language ecosystem verification (P1–P9, N1–N5, R1–R3)
 node scripts/scenarios.mjs --only S11 # python workflow + pip + persistence, or full S1–S14
 # self-test: open <deploy>/?test=1  → "7? passed, 0 failed, ? skipped" (gate >= 71)

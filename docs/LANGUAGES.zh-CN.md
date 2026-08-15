@@ -103,7 +103,7 @@ Pyodide 资产变化时会静默漂移。
 ## 4. 复现方式
 
 ```bash
-npm run test:e2e                      # 构建一次后：verify-deploy → bench → scenarios → lang-verify
+npm run test:e2e                      # 构建一次后：verify-deploy → bench → scenarios → lang-verify → instance-demo → instance-routing → cordis-app
 node scripts/lang-verify.mjs          # 语言生态验证（P1–P9、N1–N5、R1–R3）
 node scripts/scenarios.mjs --only S11  # python 工作流 + pip + 持久化，或完整 S1–S14
 # 自检：打开 <deploy>/?test=1 → "7? passed, 0 failed, ? skipped"（门禁 >= 71）

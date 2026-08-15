@@ -16,10 +16,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node 22 (npm cache)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -53,10 +53,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node 22 (npm cache)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -70,5 +70,5 @@ jobs:
       - name: Run language verification (TASK25)
         run: node scripts/lang-verify.mjs --skip-build
 
-      - name: Run instance/multi-user demo (27 checks, R3)
+      - name: Run instance/multi-user demo (R3)
         run: node scripts/instance-demo.mjs --skip-build

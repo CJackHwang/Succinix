@@ -17,7 +17,7 @@ const STEPS = [
   { name: 'bench (performance)', args: ['scripts/bench.mjs', '--skip-build'] },
   { name: 'scenarios (14 real-workflow scenarios)', args: ['scripts/scenarios.mjs', '--skip-build'] },
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },
-  { name: 'instance-demo (multi-instance + multi-user, 28 checks)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
+  { name: 'instance-demo (multi-instance + multi-user)', args: ['scripts/instance-demo.mjs', '--skip-build'] },
   { name: 'instance-routing (same-page instance routing, R5)', args: ['scripts/instance-routing.mjs', '--skip-build'] },
   { name: 'cordis-app (external dsh-key demo contract)', args: ['scripts/cordis-app-e2e.mjs'] },
 ];

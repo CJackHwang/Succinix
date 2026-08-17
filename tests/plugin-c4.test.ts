@@ -6,14 +6,13 @@ import enginePlugin, { type SuccinixConfig } from '../src/plugin/index.js';
 import { appPlugins } from '../src/host/plugins.js';
 import { getHostManager, resetPageSingletons } from '../src/plugin/host-manager.js';
 import { pagePorts } from '../src/engine/ports.js';
-import { tryHandleLocalCommand } from '../src/commands/index.js';
 import { FakeWebContainer, asWebContainer } from './helpers/fake-webcontainer.js';
 import { hostOf, installFakeIDB } from './helpers/fakes.js';
 import type { AppCommandsService } from '../src/host/types.js';
 
 const wcApi = vi.hoisted(() => ({ boot: vi.fn() }));
-const termMock = vi.hoisted(() => ({
-  term: {
+const termMock = vi.hoisted(() => {
+  const term = {
     onData: vi.fn(),
     writeln: vi.fn(),
     write: vi.fn(),
@@ -22,9 +21,16 @@ const termMock = vi.hoisted(() => ({
     open: vi.fn(),
     loadAddon: vi.fn(),
     focus: vi.fn(),
-  },
-  fitAddon: { fit: vi.fn() },
-}));
+  };
+  const fitAddon = { fit: vi.fn() };
+  return {
+    term,
+    fitAddon,
+    ensureTerminal: vi.fn(async () => term),
+    getTerm: vi.fn(() => term),
+    getFitAddon: vi.fn(() => fitAddon),
+  };
+});
 
 vi.mock('@webcontainer/api', () => ({ WebContainer: { boot: wcApi.boot } }));
 vi.mock('../src/app/xterm.js', () => termMock);
@@ -225,14 +231,14 @@ describe('failure isolation (C4)', () => {
       },
     });
     await expect(badFiber).rejects.toThrow(/engine apply exploded/);
-    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('succinix', false)).toBeUndefined();
     expect(getHostManager()).toBe(manager);
     expect(manager.handle().state).toBe('ready');
 
     const goodFiber = ctx.plugin(enginePlugin, {});
     await goodFiber;
     await hostOf(ctx).boot({ executor: BOOT_HOOKS });
-    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(ctx.get('succinix', false)).toBeTruthy();
     expect(hostOf(ctx).container.startedAt).toBe(hostStartedAt);
   });
 
@@ -245,7 +251,7 @@ describe('failure isolation (C4)', () => {
     const ctx = new Context();
     const badFiber = ctx.plugin(enginePlugin, { resultTtlMs: 0 });
     await expect(badFiber).rejects.toThrow();
-    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('succinix', false)).toBeUndefined();
     expect(manager.handle().state).toBe('ready');
 
     const goodFiber = ctx.plugin(enginePlugin, {});
@@ -281,7 +287,7 @@ describe('failure isolation (C4)', () => {
     });
     const settled = await Promise.allSettled([engineFiber, ...appFibers, boomFiber]);
     expect(settled.at(-1)?.status).toBe('rejected');
-    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(ctx.get('succinix', false)).toBeTruthy();
     expect(ctx.get('succinix-app-terminal', false)).toBeTruthy();
     expect(ctx.get('succinix-app-commands', false)).toBeTruthy();
     expect(ctx.get('succinix-app-container', false)).toBeTruthy();
@@ -290,32 +296,15 @@ describe('failure isolation (C4)', () => {
   });
 });
 
-describe('succinix status and plugins in the real app (C4)', () => {
+describe('app command context (C4)', () => {
   it('booted app command context exposes state and registry summaries', async () => {
     const { ctx, shell } = await bootApp();
     const commands = ctx.get('succinix-app-commands') as AppCommandsService;
     const context = commands.attach(shell as never);
-    expect(context.engineState?.version).toBe('0.6.0');
+    expect(context.engineState?.version).toBe('0.7.0');
     expect(context.engineState?.containerState).toBe('ready');
     expect(context.pluginSummaries?.map((plugin) => plugin.name)).toContain('succinix');
     expect(context.pluginSummaries?.map((plugin) => plugin.name)).toContain('succinix-app-container');
   });
 
-  it('succinix status and succinix plugins render through the terminal', async () => {
-    const { ctx, shell } = await bootApp();
-    const commands = ctx.get('succinix-app-commands') as AppCommandsService;
-    const context = commands.attach(shell as never);
-    termMock.term.writeln.mockClear();
-    expect(await tryHandleLocalCommand(context, 'succinix status')).toBe(true);
-    const statusText = termMock.term.writeln.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(statusText).toContain('Succinix plugin status');
-    expect(statusText).toContain('0.6.0');
-    expect(statusText).toContain('configRevision');
-
-    termMock.term.writeln.mockClear();
-    expect(await tryHandleLocalCommand(context, 'succinix plugins')).toBe(true);
-    const pluginsText = termMock.term.writeln.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(pluginsText).toContain('Plugins');
-    expect(pluginsText).toContain('succinix-app-container');
-  });
 });

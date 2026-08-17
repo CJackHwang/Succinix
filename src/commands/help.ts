@@ -10,7 +10,7 @@ export function printHelp(term: Terminal): void {
   term.writeln(`  db status    show tinbase status`);
   term.writeln(`  db stop      stop tinbase (data persists in workspace)`);
   term.writeln(`  snapshot     show persistent storage status`);
-  term.writeln(`  snapshot now  save a snapshot immediately (auto-saves every ~2.5s)`);
+  term.writeln('  snapshot now  save a snapshot immediately (auto-saves after changes)');
   term.writeln(`  snapshot clear  clear snapshot (= reset system, next boot fresh)`);
   term.writeln(`  free         show memory overview (device + JS heap; estimates marked ~)`);
   term.writeln(`  top          live process table — 3 snapshots, 2s apart`);

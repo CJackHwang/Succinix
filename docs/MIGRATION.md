@@ -18,10 +18,10 @@ unchanged.
 | 0.4.0 / 0.5.0 | 0.6.0 |
 | --- | --- |
 | `createTerminalExecutor()` / single-key `succinix` service | apply the plugin, then use `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, and `ctx.sessionPersistence` |
-| `ctx.fs` command facade (`exec` / `spawn` / `ps` / `kill`) | `ctx.fs` for files and `ctx.sandbox.confine` for confined argv; process management stays behind the `succinix-host` seam |
+| `ctx.fs` command facade (`exec` / `spawn` / `ps` / `kill`) | `ctx.fs` for files and `ctx.sandbox.confine` for confined argv; process management stays behind the `succinix` seam |
 | `terminal.create(output)` | `ctx.terminals` owner-scoped registry for dsh consumers; the app-level session remains behind the host seam |
 | `snapshot` / `persist` facade | `ctx.sessionPersistence` event-sourced log; snapshot remains an internal host capability |
-| `boot(wc, { onServerReady })` callback configuration | `succinix-host` seam (`host.boot` / `host.attach`) plus `host.onServerReady` or `succinix/server-ready` events |
+| `boot(wc, { onServerReady })` callback configuration | `succinix` seam (`host.boot` / `host.attach`) plus `host.onServerReady` or `succinix/server-ready` events |
 | `pagePorts` | `host.ports` behind the host seam |
 
 The root export of `@succinix/engine@0.6.0` is the plugin object
@@ -93,7 +93,7 @@ keys and `succinix/*` events type-check once the plugin is imported.
 **External mode** (the host application owns the WebContainer):
 
 ```ts
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 const wc = await WebContainer.boot();
 await host.attach(wc, {
   executor: {},
@@ -251,7 +251,7 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const legacyGone = ctx.get('succinix', false) === undefined;
-const host = ctx.get('succinix-host', false);
+const host = ctx.get('succinix', false);
 const fs = ctx.get('fs', false);
 const sandbox = ctx.get('sandbox', false);
 const terminals = ctx.get('terminals', false);
@@ -269,3 +269,34 @@ node scripts/cordis-app-e2e.mjs
 
 See [docs/cordis-contract.md](cordis-contract.md) for the full contract
 snapshot and [docs/PLUGIN.md](PLUGIN.md) for third-party plugin integration.
+
+## v0.7 migration notes
+
+`@succinix/engine@0.7.0` keeps the 0.6 single-track shape: the root export is
+still `{ name: 'succinix', apply, Config }`, and `inject: ['succinix']` plus
+the `ctx.succinix.*` services are unchanged. No service keys, lifecycle
+ownership, or wire-protocol changes are required to upgrade from 0.6.0.
+
+What changed for 0.7:
+
+- **New optional config**: `rubyAssetsUrl` (deferred `ruby` runtime asset,
+  same shape as `pythonAssetsUrl`). When unset, the `ruby` command fails
+  closed (exit 69) instead of guessing an asset location.
+- **Typed events are additive**: `succinix/command-start`,
+  `succinix/command-finish`, `succinix/runtime-ready`, `succinix/degradation`,
+  `succinix/persistence`, `succinix/terminal-open`, `succinix/terminal-close`,
+  and `succinix/terminal-backpressure` were added without removing or
+  repurposing existing events.
+- **Snapshot v2 replaces the v0.6 store**: v0.7 writes binary chunked
+  snapshots to a new IndexedDB database. v0.6 snapshots are **not**
+  auto-migrated and are never deleted; a legacy snapshot is detected and
+  reported through the persistence status (`degraded` with a warning) instead
+  of being silently imported.
+- **Interactive terminal semantics**: browser xterm is now only a device
+  plane. Interactive Lifo userland commands (`vi`, `nano`, third-party TUIs)
+  run through Lifo's exported `ITerminal` and `CommandContext.stdin` /
+  `setRawMode` inside WebContainer. App consumers get this automatically;
+  generic Node/Python child-process REPLs remain unsupported (see
+  `docs/PROTOCOL.md`).
+- **Runtime pins**: `@lifo-sh/core` is pinned to `0.10.10` (with
+  `browser-metro` `1.0.36`) for the WS-locked toolchain.

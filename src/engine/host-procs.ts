@@ -16,6 +16,8 @@ import type { ChildProcess } from 'node:child_process';
 
 /** 进程归属：system（Succinix 运行时）/ container（某虚拟容器 c-*）/ unknown（无法判定）。 */
 export type ProcessScope = 'system' | 'container' | 'unknown';
+export type ProcessRuntime = 'node' | 'python' | 'lifo' | 'wasi' | 'ruby';
+export type ProcessState = 'running' | 'sleeping' | 'stopped' | 'zombie' | 'exited';
 
 export interface ProcInfo {
   pid: number;
@@ -29,21 +31,37 @@ export interface ProcInfo {
   scope: ProcessScope;
   /** scope=container 时所属虚拟容器 id（如 c-1） */
   containerId?: string;
+  /** v0.7 normalized process contract (legacy fields above remain additive). */
+  runtime: ProcessRuntime;
+  instanceId: string;
+  cwd: string;
+  /** Normalized execution-world state; legacy `status` remains running/exited. */
+  state: ProcessState;
+  startedAt: number;
+  interactive: boolean;
+  terminalSessionId?: string;
 }
 
-interface ProcEntry extends Omit<ProcInfo, 'scope' | 'containerId'> {
+interface ProcEntry extends Omit<ProcInfo, 'scope' | 'containerId' | 'state' | 'startedAt'> {
   child: ChildProcess;
+  /** Child implementation of a Lifo wrapper; lifecycle stays tracked but ps
+   * exposes only the wrapper's host-wide projected PID. */
+  internal: boolean;
   /** 启动时工作目录（host 真实路径，spawn 的 cwd 选项）；归属判定的依据 */
-  cwd?: string;
-  /** M5：RPC 请求显式携带的实例 id（非默认实例时登记）；归属判定的权威依据 */
-  instanceId?: string;
   /** 可选的 SIGKILL 兜底定时器（killProcess 的 forceAfterMs 使用） */
   forceKillTimer?: ReturnType<typeof setTimeout>;
 }
 
 const table = new Map<number, ProcEntry>();
 const MAX_ENTRIES = 100;
-const OUTPUT_TAIL_MAX = 500;
+const OUTPUT_TAIL_MAX_BYTES = 64 * 1024;
+
+export interface RegisterProcessOptions {
+  runtime?: ProcessRuntime;
+  interactive?: boolean;
+  terminalSessionId?: string;
+  internal?: boolean;
+}
 
 // ─── 归属判定（TASK-CISOL R1，启发式）───
 // 与 SunamAI 侧 src/features/runtime/succinixProcesses.ts 的 SYSTEM_CMD_PATTERNS 对齐：
@@ -101,9 +119,27 @@ export function instanceIdFromPath(cwd?: string): string | undefined {
 // 登记一个刚 spawn 的子进程；进程退出时自动把状态更新为 exited。
 // cwd 为 spawn 时的启动工作目录（host 真实路径），供归属判定（R5：Lifo 链等 cwd 不可解析时
 // 归 unknown 并如实标注）。缺省不传时按 unknown 归属。
-export function registerProcess(cmd: string, child: ChildProcess, cwd?: string, instanceId?: string): number {
+export function registerProcess(
+  cmd: string,
+  child: ChildProcess,
+  cwd = '',
+  instanceId = 'default',
+  options: RegisterProcessOptions = {},
+): number {
   const pid = child.pid ?? -1;
-  const entry: ProcEntry = { pid, cmd, status: 'running', startTime: Date.now(), cwd, child, ...(instanceId ? { instanceId } : {}) };
+  const entry: ProcEntry = {
+    pid,
+    cmd,
+    status: 'running',
+    startTime: Date.now(),
+    cwd,
+    child,
+    instanceId,
+    runtime: options.runtime ?? 'node',
+    interactive: options.interactive ?? false,
+    internal: options.internal ?? false,
+    ...(options.terminalSessionId ? { terminalSessionId: options.terminalSessionId } : {}),
+  };
   table.set(pid, entry);
   child.on('close', (code) => {
     entry.status = 'exited';
@@ -130,7 +166,7 @@ function prune(): void {
 
 // 供 ps 使用：返回进程表的只读快照（不含 child 引用），并附加归属字段（scope/containerId）。
 export function listProcesses(): ProcInfo[] {
-  return [...table.values()].map((e) => {
+  return [...table.values()].filter((entry) => !entry.internal).map((e) => {
     // M5：显式实例归属优先于 cwd 启发式 —— 实例会话 cwd 是容器 home（/workspace 根），
     // 不含 `.succinix-<id>` 段；仅靠 cwd 判定会把实例进程判为 unknown，实例 ps 视图
     // 会漏掉自己的进程（service start 误报 exited）。请求带 instanceId 即权威归属。
@@ -142,6 +178,13 @@ export function listProcesses(): ProcInfo[] {
         status: e.status,
         startTime: e.startTime,
         exitCode: e.exitCode,
+        runtime: e.runtime,
+        instanceId: e.instanceId,
+        cwd: e.cwd,
+        state: e.status,
+        startedAt: e.startTime,
+        interactive: e.interactive,
+        ...(e.terminalSessionId ? { terminalSessionId: e.terminalSessionId } : {}),
         scope: 'container' as const,
         containerId: `.succinix-${e.instanceId}`,
         ...(e.outputTail !== undefined ? { outputTail: e.outputTail } : {}),
@@ -154,6 +197,13 @@ export function listProcesses(): ProcInfo[] {
       status: e.status,
       startTime: e.startTime,
       exitCode: e.exitCode,
+      runtime: e.runtime,
+      instanceId: e.instanceId,
+      cwd: e.cwd,
+      state: e.status,
+      startedAt: e.startTime,
+      interactive: e.interactive,
+      ...(e.terminalSessionId ? { terminalSessionId: e.terminalSessionId } : {}),
       scope,
       ...(containerId !== undefined ? { containerId } : {}),
       ...(e.outputTail !== undefined ? { outputTail: e.outputTail } : {}),
@@ -165,7 +215,18 @@ export function listProcesses(): ProcInfo[] {
 export function appendProcessOutput(pid: number, text: string): void {
   const entry = table.get(pid);
   if (!entry) return;
-  entry.outputTail = ((entry.outputTail ?? '') + text).slice(-OUTPUT_TAIL_MAX);
+  entry.outputTail = utf8Tail((entry.outputTail ?? '') + text, OUTPUT_TAIL_MAX_BYTES);
+}
+
+function utf8Tail(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value);
+  if (bytes.byteLength <= maxBytes) return value;
+  let start = bytes.byteLength - maxBytes;
+  // Skip UTF-8 continuation bytes so decoding never starts in the middle of a
+  // code point. Buffer decoding replaces malformed tails, which is forbidden
+  // for process output shown back to the user.
+  while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString('utf8');
 }
 
 // 强制把条目标记为 exited（TASK18：spawn 失败 ENOENT 等场景 close 事件不会触发，
@@ -185,7 +246,11 @@ export interface KillResult {
 // 终止真实子进程；不在表内（或本就是 Lifo 侧进程）时明确返回"仅支持列表"，不假装支持。
 // forceAfterMs 可选：SIGTERM 后若进程在宽限期内仍未退出，由 host 自动升级 SIGKILL，
 // 供 service/db stop 这类需要确定性终止的调用方使用；普通 kill 不传，保持 Linux 语义。
-export function killProcess(pid: number, forceAfterMs?: number): KillResult {
+export function killProcess(
+  pid: number,
+  forceAfterMs?: number,
+  signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM',
+): KillResult {
   const entry = table.get(pid);
   if (!entry) {
     return { killed: false, message: `process ${pid} not in process table; Lifo-side processes are list-only (kill not supported)` };
@@ -193,14 +258,14 @@ export function killProcess(pid: number, forceAfterMs?: number): KillResult {
   if (entry.status === 'exited') {
     return { killed: false, message: `process ${pid} already exited (exit=${entry.exitCode ?? '?'}), nothing to kill` };
   }
-  const ok = entry.child.kill('SIGTERM');
-  if (ok && typeof forceAfterMs === 'number' && forceAfterMs > 0 && !entry.forceKillTimer) {
+  const ok = entry.child.kill(signal);
+  if (ok && signal !== 'SIGKILL' && typeof forceAfterMs === 'number' && forceAfterMs > 0 && !entry.forceKillTimer) {
     entry.forceKillTimer = setTimeout(() => {
       entry.forceKillTimer = undefined;
       if (entry.status === 'running') entry.child.kill('SIGKILL');
     }, forceAfterMs);
   }
   return ok
-    ? { killed: true, message: `SIGTERM sent to process ${pid}` }
+    ? { killed: true, message: `${signal} sent to process ${pid}` }
     : { killed: false, message: `failed to send signal to process ${pid}` };
 }

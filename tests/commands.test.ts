@@ -1,12 +1,8 @@
-// commands.ts 纯函数单测（P3-11）：表格构建 / 端口匹配 / uname / workspace / 分发 smoke。
-// commands.ts 是最大的文件（1400+ 行），命令处理器大多需要真实容器，这里覆盖已导出的纯逻辑
-// + 用 capture shim 冒烟若干无副作用的浏览器侧命令。uname 运行时版本在 vitest 回落空串。
-import { describe, it, expect, beforeEach } from 'vitest';
-import type { Terminal } from '@xterm/xterm';
+// commands 纯函数单测：表格构建 / 端口匹配 / uname / workspace。
+// 人类终端命令由 WebContainer/Lifo 执行，不在浏览器单元测试中模拟第二套分发器。
+import { describe, it, expect } from 'vitest';
 import { FakeFS, FakeClient } from './helpers/fakes.js';
-import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
-import { instancePorts } from '../src/instance/ports.js';
-import { clearDbActivePorts } from '../src/services/index.js';
+import type { FileSystemAPI } from '@webcontainer/api';
 import {
   fmtUnit,
   buildWorkspaceList,
@@ -22,41 +18,11 @@ import {
   buildUnameAllLine,
   unameRuntimeVersion,
   detectUnameArch,
-  tryHandleLocalCommand,
   formatSuccinixStatus,
   formatSuccinixPlugins,
-  type CommandContext,
   type SuccinixPluginSummary,
 } from '../src/commands/index.js';
 import type { SuccinixPluginState } from '../src/plugin/index.js';
-
-beforeEach(() => {
-  instancePorts.clear();
-  clearDbActivePorts('c-1');
-});
-
-function captureTerm(): Terminal & { lines: string[] } {
-  const lines: string[] = [];
-  const term = {
-    lines,
-    writeln: (l: unknown) => void lines.push(String(l)),
-    write: (d: unknown) => void lines.push(String(d)),
-    clear: () => {},
-  } as unknown as Terminal & { lines: string[] };
-  return term;
-}
-
-function ctxOf(overrides: Partial<CommandContext> = {}): CommandContext {
-  const fs = new FakeFS() as unknown as WebContainer;
-  return {
-    wc: fs,
-    client: new FakeClient() as unknown as CommandContext['client'],
-    ports: new Map<number, string>(),
-    term: captureTerm() as unknown as Terminal,
-    fit: () => {},
-    ...overrides,
-  };
-}
 
 describe('fmtUnit', () => {
   it('二进制换算，整数尾数去 .0', () => {
@@ -162,36 +128,6 @@ describe('processLabel', () => {
   });
 });
 
-describe('db start statePrefix (D6)', () => {
-  it('custom statePrefix flows into tinbase --data-dir', async () => {
-    const client = new FakeClient();
-    client.whenTerminal('test -d /workspace/node_modules/tinbase', { ok: true }); // 已安装，跳过 npm install
-    const ctx = ctxOf({
-      client: client as unknown as CommandContext['client'],
-      instanceId: 'c-1',
-      statePrefix: '/var/succinix/',
-      ports: new Map([[3001, 'http://localhost:3001']]), // 预置就绪端口：spawn 后立即命中，不等 30s
-    });
-    const handled = await tryHandleLocalCommand(ctx, 'db start');
-    expect(handled).toBe(true);
-    expect(client.spawnCalls.length).toBe(1);
-    expect(client.spawnCalls[0].command).toContain('--engine wasm');
-    expect(client.spawnCalls[0].command).toContain('--data-dir /var/succinix/c-1/tinbase');
-  });
-
-  it('default instance keeps legacy data dir (no --data-dir flag)', async () => {
-    const client = new FakeClient();
-    client.whenTerminal('test -d /workspace/node_modules/tinbase', { ok: true });
-    const ctx = ctxOf({
-      client: client as unknown as CommandContext['client'],
-      ports: new Map([[3001, 'http://localhost:3001']]),
-    });
-    const handled = await tryHandleLocalCommand(ctx, 'db start');
-    expect(handled).toBe(true);
-    expect(client.spawnCalls[0].command).not.toContain('--data-dir');
-  });
-});
-
 describe('buildNetstatRows', () => {
   it('-p 关联进程；无匹配显示 -；无 -p 时 process 为空串', async () => {
     const ports = new Map<number, string>([[3001, 'http://x']]);
@@ -244,36 +180,9 @@ describe('uname 纯函数', () => {
   });
 });
 
-describe('tryHandleLocalCommand 冒烟（无副作用命令）', () => {
-  it('version / whoami / ports / clear 浏览器侧直接处理', async () => {
-    const term = captureTerm();
-    const ctx = ctxOf({ term: term as unknown as Terminal });
-    expect(await tryHandleLocalCommand(ctx, 'version')).toBe(true);
-    expect(term.lines[0]).toMatch(/^Succinix \d+\.\d+\.\d+ /);
-    expect(await tryHandleLocalCommand(ctx, 'whoami')).toBe(true);
-    expect(term.lines.at(-1)).toBe('guest');
-    expect(await tryHandleLocalCommand(ctx, 'ports')).toBe(true);
-    expect(await tryHandleLocalCommand(ctx, 'clear')).toBe(true);
-  });
-
-  it('host 命令不拦截（返回 false 交由 TerminalExecutor 路由）', async () => {
-    const ctx = ctxOf();
-    expect(await tryHandleLocalCommand(ctx, 'ls -la')).toBe(false);
-    expect(await tryHandleLocalCommand(ctx, 'node x.js')).toBe(false);
-  });
-
-  it('uname -a 走命令分发路径且不抛错', async () => {
-    const term = captureTerm();
-    const ctx = ctxOf({ term: term as unknown as Terminal });
-    expect(await tryHandleLocalCommand(ctx, 'uname -a')).toBe(true);
-    expect(term.lines.length).toBe(1);
-    expect(term.lines[0]).toMatch(/^Succinix /);
-  });
-});
-
 describe('succinix manageability commands (C4)', () => {
   const state: SuccinixPluginState = {
-    version: '0.6.0',
+    version: '0.7.0',
     containerMode: 'internal',
     containerState: 'ready',
     host: { pid: 42, startedAt: 1720000000000 },
@@ -292,7 +201,7 @@ describe('succinix manageability commands (C4)', () => {
     const lines = formatSuccinixStatus(state, 'ACTIVE');
     const text = lines.join('\n');
     expect(text).toContain('Succinix plugin status');
-    expect(text).toContain('0.6.0');
+    expect(text).toContain('0.7.0');
     expect(text).toContain('ACTIVE');
     expect(text).toContain('internal');
     expect(text).toMatch(/READY/);
@@ -314,27 +223,4 @@ describe('succinix manageability commands (C4)', () => {
     expect(lines.join('\n')).not.toMatch(/✅|❌|🎉|…/);
   });
 
-  it('succinix status and succinix plugins dispatch through tryHandleLocalCommand', async () => {
-    const term = captureTerm();
-    const ctx = ctxOf({
-      term: term as unknown as Terminal,
-      engineState: state,
-      pluginSummaries: plugins,
-    });
-    expect(await tryHandleLocalCommand(ctx, 'succinix status')).toBe(true);
-    expect(term.lines.join('\n')).toContain('Succinix plugin status');
-    expect(await tryHandleLocalCommand(ctx, 'succinix plugins')).toBe(true);
-    expect(term.lines.join('\n')).toContain('Plugins (2)');
-    expect(await tryHandleLocalCommand(ctx, 'succinix')).toBe(true);
-    expect(term.lines.at(-1)).toBe('usage: succinix status | succinix plugins');
-  });
-
-  it('unavailable manageability views report a clear error instead of crashing', async () => {
-    const term = captureTerm();
-    const ctx = ctxOf({ term: term as unknown as Terminal });
-    expect(await tryHandleLocalCommand(ctx, 'succinix status')).toBe(true);
-    expect(term.lines.at(-1)).toContain('unavailable');
-    expect(await tryHandleLocalCommand(ctx, 'succinix plugins')).toBe(true);
-    expect(term.lines.at(-1)).toContain('unavailable');
-  });
 });

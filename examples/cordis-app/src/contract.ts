@@ -48,8 +48,8 @@ function add(checks: ContractCheck[], name: string, ok: boolean, detail = ''): v
 }
 
 function hostOf(ctx: Context): SuccinixHostService {
-  const host = ctx.get('succinix-host', false) as SuccinixHostService | undefined;
-  if (!host) throw new Error('succinix-host service is not available');
+  const host = ctx.get('succinix', false) as SuccinixHostService | undefined;
+  if (!host) throw new Error('succinix service is not available');
   return host;
 }
 
@@ -179,7 +179,7 @@ export async function runContract(): Promise<ContractResult> {
     const fallbackFiber = fallbackCtx.plugin({
       name: 'contract-fallback',
       apply(consumerCtx: Context) {
-        fallbackValues.host = consumerCtx.get('succinix-host', false);
+        fallbackValues.host = consumerCtx.get('succinix', false);
         fallbackValues.fs = consumerCtx.get('fs', false);
         fallbackValues.sandbox = consumerCtx.get('sandbox', false);
         fallbackValues.terminals = consumerCtx.get('terminals', false);
@@ -278,10 +278,35 @@ export async function runContract(): Promise<ContractResult> {
     add(checks, 'dsh service surface is complete', surfaceOk);
 
     const node = await host.executor.exec('node -e "console.log(21*2)"', { timeoutMs: 30000 });
-    add(checks, 'node executes in the container', node.ok && node.exitCode === 0 && String(node.stdout ?? '').includes('42'), String(node.stdout ?? '').trim());
+    add(
+      checks,
+      'node executes in the container',
+      node.ok && node.exitCode === 0 && String(node.stdout ?? '').includes('42'),
+      node.ok
+        ? String(node.stdout ?? '').trim()
+        : `exit=${String(node.exitCode)} runtime=${String(node.runtime)} stderr=${String(node.stderr ?? '').trim()} error=${String(node.error ?? '').trim()}`
+    );
 
     const lifo = await host.executor.exec('echo lifo-ok', { timeoutMs: 30000 });
     add(checks, 'lifo executes in the container', lifo.ok && String(lifo.stdout ?? '').includes('lifo-ok'), String(lifo.stdout ?? '').trim());
+
+    const unregisterUserlandCommand = host.userland.registerCommand({
+      name: 'contract-userland',
+      status: 'adapter',
+      runtime: 'lifo',
+      execution: 'batch',
+      source: { kind: 'shell', command: 'echo contract-userland-ok', appendArgs: false },
+    });
+    await host.userland.flush();
+    const userland = await host.executor.exec('contract-userland', { timeoutMs: 30000 });
+    add(
+      checks,
+      'userland registration reaches the execution-world command registry',
+      userland.ok && String(userland.stdout ?? '').includes('contract-userland-ok'),
+      String(userland.stdout ?? '').trim()
+    );
+    unregisterUserlandCommand();
+    await host.userland.flush();
 
     if (!wc) throw new Error('boot did not return a WebContainer');
     await ensurePythonRuntime(wc, config.pythonAssetsUrl);
@@ -502,7 +527,7 @@ export async function runContract(): Promise<ContractResult> {
     add(
       checks,
       'service is gone after fiber dispose',
-      ctx.get('succinix-host', false) === undefined &&
+      ctx.get('succinix', false) === undefined &&
         ctx.get('fs', false) === undefined &&
         ctx.get('sandbox', false) === undefined &&
         ctx.get('terminals', false) === undefined &&
@@ -515,7 +540,7 @@ export async function runContract(): Promise<ContractResult> {
     add(
       checks,
       'reapply restores the service',
-      !!restoredCtx.get('succinix-host', false) &&
+      !!restoredCtx.get('succinix', false) &&
         !!restoredCtx.get('fs', false) &&
         !!restoredCtx.get('sandbox', false) &&
         !!restoredCtx.get('terminals', false) &&

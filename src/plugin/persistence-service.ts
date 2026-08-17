@@ -7,13 +7,11 @@ import type { FileSystemAPI } from '@webcontainer/api';
 import type { TerminalClient } from '../engine/index.js';
 import { browserPathFor } from './fs-service.js';
 import {
-  atomicWrite,
   isNotFoundError,
   readRaw,
 } from './fs-mutations.js';
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE,
-  JSONL_EXTENSION,
   SESSION_FORMAT_VERSION,
   artifactBase,
   artifactName,
@@ -28,7 +26,6 @@ import {
   type StoredLog,
 } from './persistence-jsonl.js';
 import {
-  SessionFormatUnsupportedError,
   SessionId,
   SessionPersistenceCorruptionError,
   SessionPersistenceRevision,
@@ -41,6 +38,7 @@ import {
   type SessionPreparation,
   type SessionRawArtifact,
 } from './dsh-types.js';
+import { JsonlSessionStore, PreparedEntry, PreparedSessionView, SegmentedSessionStore } from './persistence-jsonl-store.js';
 
 export interface SessionPersistenceServiceDeps {
   getFs(): FileSystemAPI | undefined;
@@ -49,20 +47,9 @@ export interface SessionPersistenceServiceDeps {
   isLive?(id: SessionId): boolean;
   liveEvents?(id: SessionId): readonly SessionEvent[] | undefined;
   onFlush?(): Promise<void> | void;
-}
-
-interface PreparedEntry {
-  id: SessionId;
-  inspection: SessionInspection;
-  revision: SessionPersistenceRevision;
-  reserved: boolean;
-  committed: boolean;
-}
-
-interface PreparedSessionView {
-  readonly id: SessionId;
-  readonly header: SessionHeader;
-  readonly events: readonly SessionEvent[];
+  /** Opt into v0.7 manifest + segmented JSONL storage. Legacy remains
+   * available for embedders that explicitly set false during migration. */
+  segmented?: boolean;
 }
 
 export class SuccinixSessionPersistence implements SessionPersistence {
@@ -72,20 +59,41 @@ export class SuccinixSessionPersistence implements SessionPersistence {
   private readonly chains = new Map<SessionId, Promise<void>>();
   private readonly prepared = new Map<SessionId, PreparedEntry>();
   private readonly reserved = new Set<SessionId>();
+  private readonly segmented: boolean;
+  private jsonlStore: JsonlSessionStore | null = null;
+  private readonly segmentedStore: SegmentedSessionStore;
 
   constructor(private readonly deps: SessionPersistenceServiceDeps) {
     this.stateRoot = deps.stateRoot ?? '/workspace/.succinix/sessions';
+    this.segmented = deps.segmented === true;
+    this.segmentedStore = new SegmentedSessionStore(() => this.requireFs(), this.stateRoot, deps.onFlush);
   }
 
   locate(meta: SessionHeader): SessionLocation {
+    if (this.segmented) return { kind: 'jsonl-segments', path: `${this.stateRoot}/segments/${artifactName(meta.id)}.manifest.json` };
     return { kind: 'jsonl', path: `${this.stateRoot}/${artifactName(meta.id)}` };
+  }
+
+  private requireStore(): JsonlSessionStore {
+    if (!this.jsonlStore) this.jsonlStore = new JsonlSessionStore(this.requireFs(), this.stateRoot);
+    return this.jsonlStore;
+  }
+
+  private async readSegmentedArtifact(id: SessionId, location: SessionLocation): Promise<StoredLog | undefined> {
+    return this.segmentedStore.readArtifact(id, location);
   }
 
   async readRaw(id: SessionId, signal?: AbortSignal): Promise<SessionRawArtifact | undefined> {
     return this.serialize(id, async () => {
       signal?.throwIfAborted();
+      if (this.segmented) {
+        const location = this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 });
+        const stored = await this.readSegmentedArtifact(id, location);
+        if (!stored) return undefined;
+        return { meta: structuredClone(stored.meta), filename: artifactBase(id), content: stored.rawText };
+      }
       const fs = this.requireFs();
-      const path = this.browserPath(this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path);
+      const path = this.requireStore().browserPath(this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path);
       let bytes: Uint8Array;
       try {
         bytes = await readRaw(fs, path);
@@ -99,7 +107,7 @@ export class SuccinixSessionPersistence implements SessionPersistence {
       } catch (error) {
         throw new SessionPersistenceCorruptionError(`stored session "${id}" is not valid UTF-8`, { cause: error });
       }
-      const location = { kind: 'jsonl', path: this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path };
+      const location = this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 });
       const meta = parseStoredLog(text, id, location).meta;
       return {
         meta: structuredClone(meta),
@@ -121,6 +129,9 @@ export class SuccinixSessionPersistence implements SessionPersistence {
       if (await this.readStoredMeta(snapshot.id) !== undefined) {
         throw new Error(`session "${snapshot.id}" already has a persisted log on disk; load/resume it instead of creating`);
       }
+      if (this.segmented) {
+        await this.segmentedStore.log(snapshot.id).create(snapshot.createdAt, snapshot);
+      }
       this.created.set(snapshot.id, structuredClone(snapshot));
     });
   }
@@ -135,7 +146,21 @@ export class SuccinixSessionPersistence implements SessionPersistence {
       if (this.reserved.has(id)) {
         throw new Error(`cannot append session "${id}" while its persisted preparation is reserved`);
       }
-      const location = { kind: 'jsonl', path: this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path };
+      if (this.segmented) {
+        const log = this.segmentedStore.log(id);
+        let expected: number;
+        try {
+          expected = (await log.manifest()).nextSeq;
+        } catch {
+          throw new Error(`session "${id}" not found`);
+        }
+        for (let index = 0; index < batch.length; index++) {
+          if (batch[index]!.seq !== expected + index) throw new Error(`append seq mismatch for "${id}": expected ${expected + index} at index ${index}, got ${batch[index]!.seq}`);
+        }
+        await log.append(batch as unknown as readonly { type: string; seq: number; [key: string]: unknown }[]);
+        return;
+      }
+      const location = this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 });
       const current = await this.readStoredLog(id, location);
       const expectedSeq = current.events.length;
       for (let index = 0; index < batch.length; index++) {
@@ -252,67 +277,29 @@ export class SuccinixSessionPersistence implements SessionPersistence {
     return fs;
   }
 
-  private browserPath(executionPath: string): string {
-    return browserPathFor(executionPath);
-  }
-
-  private browserStateRoot(): string {
-    return browserPathFor(this.stateRoot);
-  }
-
   private async readStoredMeta(id: SessionId): Promise<SessionHeader | undefined> {
-    const location = { kind: 'jsonl', path: this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path };
-    const stored = await this.readStoredArtifact(id, location);
-    return stored === undefined ? undefined : structuredClone(stored.meta);
+    if (this.segmented) {
+      const stored = await this.readSegmentedArtifact(id, this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }));
+      return stored ? structuredClone(stored.meta) : undefined;
+    }
+    const location = this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 });
+    return this.requireStore().readMeta(id, location);
   }
 
   private async readStoredArtifact(id: SessionId, location: SessionLocation): Promise<StoredLog | undefined> {
-    const fs = this.requireFs();
-    const path = this.browserPath(location.path);
-    let bytes: Uint8Array;
-    try {
-      bytes = await readRaw(fs, path);
-    } catch (error) {
-      if (isNotFoundError(error)) return undefined;
-      throw new SessionPersistenceCorruptionError(`cannot read stored session "${id}"`, { cause: error });
-    }
-    let text: string;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    } catch (error) {
-      throw new SessionPersistenceCorruptionError(`stored session "${id}" is not valid UTF-8`, { cause: error });
-    }
-    return parseStoredLog(text, id, location);
+    if (this.segmented) return this.readSegmentedArtifact(id, location);
+    return this.requireStore().readArtifact(id, location);
   }
 
   private async readStoredLog(id: SessionId, location: SessionLocation): Promise<StoredLog> {
-    const fs = this.requireFs();
-    const path = this.browserPath(location.path);
-    let bytes: Uint8Array;
-    try {
-      bytes = await readRaw(fs, path);
-    } catch (error) {
-      if (isNotFoundError(error)) {
-        const meta = this.created.get(id);
-        if (meta === undefined) throw new Error(`session "${id}" not found`, { cause: error });
-        return {
-          meta,
-          events: [],
-          validLength: 0,
-          torn: false,
-          revision: revisionFor(id, ''),
-          rawText: '',
-        };
-      }
-      throw new SessionPersistenceCorruptionError(`cannot read stored session "${id}"`, { cause: error });
+    if (this.segmented) {
+      const stored = await this.readSegmentedArtifact(id, location);
+      if (stored) return stored;
+      const meta = this.created.get(id);
+      if (meta === undefined) throw new Error(`session "${id}" not found`);
+      return { meta, events: [], validLength: 0, torn: false, revision: revisionFor(id, ''), rawText: '' };
     }
-    let text: string;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    } catch (error) {
-      throw new SessionPersistenceCorruptionError(`stored session "${id}" is not valid UTF-8`, { cause: error });
-    }
-    return parseStoredLog(text, id, location);
+    return this.requireStore().readLog(id, location, this.created.get(id));
   }
 
   private async prepareEntry(id: SessionId, commit: boolean, signal?: AbortSignal): Promise<PreparedEntry> {
@@ -339,11 +326,17 @@ export class SuccinixSessionPersistence implements SessionPersistence {
       committed: false,
     };
     if (commit && (stored.torn || closers.length > 0)) {
-      const repaired = stored.rawText.slice(0, stored.validLength)
-        + closers.map((event) => eventLine(event)).join('\n')
-        + (closers.length > 0 ? '\n' : '');
-      await this.writeArtifact(id, repaired);
-      entry.revision = revisionFor(id, repaired);
+      if (this.segmented) {
+        if (closers.length > 0) await this.segmentedStore.log(id).append(closers as unknown as readonly { type: string; seq: number; [key: string]: unknown }[]);
+        const repaired = await this.readSegmentedArtifact(id, location);
+        entry.revision = repaired?.revision ?? entry.revision;
+      } else {
+        const repaired = stored.rawText.slice(0, stored.validLength)
+          + closers.map((event) => eventLine(event)).join('\n')
+          + (closers.length > 0 ? '\n' : '');
+        await this.writeArtifact(id, repaired);
+        entry.revision = revisionFor(id, repaired);
+      }
       entry.committed = true;
       await this.flushAfterWrite();
     }
@@ -372,47 +365,33 @@ export class SuccinixSessionPersistence implements SessionPersistence {
   }
 
   private async writeArtifact(id: SessionId, text: string): Promise<void> {
-    const fs = this.requireFs();
-    const path = this.browserPath(this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }).path);
-    const dir = path.slice(0, path.lastIndexOf('/'));
-    await fs.mkdir(dir, { recursive: true });
-    await atomicWrite(fs, path, text);
+    const location = this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 });
+    await this.requireStore().writeArtifact(id, location, text);
   }
 
   private async listArtifacts(signal?: AbortSignal): Promise<Array<{ meta: SessionHeader; revision: SessionPersistenceRevision }>> {
     const fs = this.requireFs();
-    const dir = this.browserStateRoot();
-    let names: string[];
-    try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      names = entries
-        .filter((entry) => typeof entry.isFile === 'function' && entry.isFile())
-        .map((entry) => String(entry.name))
-        .filter((name) => name.endsWith(JSONL_EXTENSION))
-        .sort();
-    } catch (error) {
-      if (isNotFoundError(error)) return [];
-      throw new SessionPersistenceCorruptionError(`cannot list stored sessions`, { cause: error });
-    }
-    const found: Array<{ meta: SessionHeader; revision: SessionPersistenceRevision }> = [];
-    for (const name of names) {
-      signal?.throwIfAborted();
-      let id: SessionId;
+    if (this.segmented) {
+      const dir = `${browserPathFor(this.stateRoot)}/segments`;
+      let entries: Array<{ name: string; isFile(): boolean }>;
       try {
-        id = SessionId(decodeURIComponent(name.slice(0, -JSONL_EXTENSION.length)));
-      } catch {
-        continue;
-      }
-      const location = { kind: 'jsonl', path: `${this.stateRoot}/${name}` };
-      try {
-        const stored = await this.readStoredArtifact(id, location);
-        if (stored !== undefined) found.push({ meta: structuredClone(stored.meta), revision: stored.revision });
+        entries = await fs.readdir(dir, { withFileTypes: true });
       } catch (error) {
-        if (error instanceof SessionPersistenceCorruptionError || error instanceof SessionFormatUnsupportedError) throw error;
-        /* an artifact that disappeared mid-list is treated as absent */
+        if (isNotFoundError(error)) return [];
+        throw new SessionPersistenceCorruptionError('cannot list segmented stored sessions', { cause: error });
       }
+      const found: Array<{ meta: SessionHeader; revision: SessionPersistenceRevision }> = [];
+      for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith('.manifest.json')).sort((a, b) => a.name.localeCompare(b.name))) {
+        signal?.throwIfAborted();
+        const encoded = entry.name.slice(0, -'.manifest.json'.length);
+        let id: SessionId;
+        try { id = SessionId(decodeURIComponent(encoded)); } catch { continue; }
+        const stored = await this.readSegmentedArtifact(id, this.locate({ id, version: SESSION_FORMAT_VERSION, createdAt: 0 }));
+        if (stored) found.push({ meta: structuredClone(stored.meta), revision: stored.revision });
+      }
+      return found;
     }
-    return found;
+    return this.requireStore().listArtifacts(signal);
   }
 
   private liveEvents(id: SessionId): readonly SessionEvent[] | undefined {

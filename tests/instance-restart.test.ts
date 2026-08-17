@@ -1,6 +1,6 @@
 // D3：实例级 restart 语义 —— 停掉该实例仍运行的进程（host 侧 reset-instance 按归属 kill）、
 // 清端口期望与活动端口记录、清 host 侧实例缓存（会话 cwd / currentRun）、清快照与状态根、
-// 重建会话并重跑应用级 bootsteps（宿主注入）。单测覆盖浏览器侧编排 + host 侧归属/缓存清理
+// 保持执行器可用并重跑应用级 bootsteps（宿主注入）。单测覆盖浏览器侧编排 + host 侧归属/缓存清理
 // 的纯逻辑（host.ts 的 dispatch 实现在容器内，经协议命令由本测试的假 client 驱动断言）。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TerminalClient } from '../src/engine/client.js';
@@ -10,7 +10,6 @@ import { instanceStateRoot } from '../src/instance/paths.js';
 import { dbActivePortFor, setDbActivePort } from '../src/services/index.js';
 import { processesOwnedByInstance, CurrentRunRegistry } from '../src/engine/host-route.js';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalOutput } from '../src/terminal/index.js';
 
 // 假持久化（同 instance-m5.test.ts）：断言 restart 清快照。
 const persistMock = vi.hoisted(() => {
@@ -39,11 +38,12 @@ const persistMock = vi.hoisted(() => {
 vi.mock('../src/persist/index.js', () => persistMock);
 
 interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
   instanceId?: string;
+  bootNonce?: string;
 }
 
 function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
@@ -55,8 +55,9 @@ function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
       if (path === '/cmd.json') {
         const req = JSON.parse(content) as CmdReq;
         cmdWrites.push(req);
+        files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
         const payload = opts.respond?.(req);
-        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ id: req.id, ...(payload as object) }));
+        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
         return;
       }
       files.set(path, content);
@@ -98,12 +99,7 @@ beforeEach(() => {
 });
 
 describe('D3 实例级 restart', () => {
-  it('restart 全流程：停进程 → 清端口期望/活动端口/快照/状态根 → 重建会话 → 重跑应用级 bootsteps', async () => {
-    const written: string[] = [];
-    const output: TerminalOutput = {
-      write: (d) => void written.push(d),
-      clear: () => {},
-    };
+  it('restart 全流程：停进程 → 清端口期望/活动端口/快照/状态根 → 保持执行器可用 → 重跑应用级 bootsteps', async () => {
     const { wc, cmdWrites, rmCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : req.cmd === 'reset-instance' ? RESET() : RUN_OK()));
     const hostClient = new TerminalClient({ fs: (wc as unknown as { fs: unknown }).fs } as never, { instanceId: 'c-1' });
 
@@ -111,12 +107,12 @@ describe('D3 实例级 restart', () => {
     const onRestart = vi.fn(async (ctx: SuccinixRestartContext) => {
       restartState.ctx = ctx;
     });
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', rpc: hostClient, output, onRestart });
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', rpc: hostClient, onRestart });
 
-    // 造出"旧实例在跑"的状态：期望端口、db 活动端口、旧会话。
+    // 造出"旧实例在跑"的状态：期望端口、db 活动端口、现有执行器。
     instancePorts.expect('c-1', 8080);
     setDbActivePort('c-1', 8080);
-    const oldSession = inst.terminal;
+    const executor = inst.executor;
 
     await inst.restart();
 
@@ -129,15 +125,14 @@ describe('D3 实例级 restart', () => {
     // 3. 快照与状态根已清。
     expect(persistMock.ctx.clear).toHaveBeenCalled();
     expect(rmCalls).toContain(instanceStateRoot('c-1'));
-    // 4. 会话已重建（新会话对象 ≠ 旧会话）。
-    expect(inst.terminal).not.toBe(oldSession);
-    // 5. 应用级 bootsteps 钩子已跑，拿到新会话 + 引擎级产物。
+    // 4. reset 只清实例状态，共享 host 上的执行器与 RPC client 保持可用。
+    expect(inst.executor).toBe(executor);
+    expect(await inst.executor.ping()).toBe(true);
+    // 5. 应用级 bootsteps 钩子已跑，拿到引擎级产物。
     expect(onRestart).toHaveBeenCalledTimes(1);
-    expect(restartState.ctx?.terminal).toBe(inst.terminal);
     expect(restartState.ctx?.wc).toBe(wc);
     expect(restartState.ctx?.client).toBe(hostClient);
-    // 新会话已 boot（输出提示符）。
-    expect(written.some((d) => d.includes('$'))).toBe(true);
+    expect(restartState.ctx?.ports).toBe(inst.ports);
   });
 
   it('host 侧归属收集：只收集本实例非 system 进程；默认实例不批量 kill', () => {

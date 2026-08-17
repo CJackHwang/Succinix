@@ -1,6 +1,22 @@
 // 快照持久化契约（O4）：类型 / 常量 / 纯决策函数。实现见 context.ts（createPersist 闭包）。
 import type { FileSystemAPI } from '@webcontainer/api';
 
+/** Minimal WebContainer surface required by the v2 binary snapshot adapter. */
+export interface BinarySnapshotContainer {
+  export(path: string, options: { format: 'binary'; excludes?: string[] }): Promise<Uint8Array>;
+  mount(snapshot: Uint8Array | ArrayBuffer, options?: { mountPoint?: string }): Promise<void>;
+  /** Container-root absolute path of the workdir; export() resolves paths there while fs/mount() are rooted at it. */
+  workdir?: string;
+}
+
+export type PersistStatus = 'clean' | 'dirty' | 'saving' | 'saved' | 'quota-exceeded' | 'corrupt' | 'degraded';
+
+export interface SnapshotController {
+  stop(): void;
+  flush(): Promise<void>;
+  running(): boolean;
+}
+
 // 快照元数据：版本号固定 1，恢复时校验用。
 export interface SnapshotMeta {
   version: 1;
@@ -50,7 +66,7 @@ export const EMPTY_META: SnapshotMeta = { version: 1, savedAt: 0, fileCount: 0, 
 // ─── 实例持久化上下文（M1：persistenceKey 注入）───
 
 export interface PersistOptions {
-  /** IndexedDB 库名（缺省 succinix-persist = 单实例现状） */
+  /** Legacy IndexedDB library name; bound v0.7 contexts derive a `-v2` library. */
   dbName?: string;
   /** store 内记录 key（缺省 current = 单实例现状） */
   storeKey?: string;
@@ -63,6 +79,13 @@ export interface PersistOptions {
   instanceScope?: { stateRoot?: string; home?: string };
   /** 额外排除前缀（路径或子树，快照遍历剪枝用；宿主自定义布局的逃生舱）。 */
   excludePrefixes?: string[];
+  /** 默认排除 Git 元数据；设为 true 才将 `.git` 纳入快照。 */
+  includeGit?: boolean;
+  /** WebContainer binding enables binary v2 snapshots.  Unbound contexts retain
+   * the v0.6 text adapter solely for SDK/test compatibility. */
+  container?: BinarySnapshotContainer;
+  /** Explicit v2 storage tuning; defaults are the normative v0.7 values. */
+  binary?: { dbName?: string; chunkBytes?: number; maxBytes?: number };
 }
 
 export interface PersistContext {
@@ -72,4 +95,14 @@ export interface PersistContext {
   meta(): Promise<SnapshotMeta | null>;
   /** 写盘成功后强制落盘（H1 / P2-6 收敛）：等长编辑也要持久。tag 供 console.warn 前缀 */
   force(fs: FileSystemAPI, tag?: string): Promise<void>;
+  /** Bind this context to the execution-world container.  The product instance
+   * factory calls it before first restore, making binary v2 the default path. */
+  bindContainer?(container: BinarySnapshotContainer): void;
+  /** A reliable editor/FS mutation signal.  It bypasses content-size dedup. */
+  markDirty?(): void;
+  /** Subscribe to execution-world mutations for debounced snapshot scheduling. */
+  onDirty?(listener: () => void): () => void;
+  status?(): PersistStatus;
+  /** Releases FS watchers and rejects no in-flight work; save/load remain valid. */
+  dispose?(): void;
 }

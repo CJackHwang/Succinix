@@ -4,20 +4,27 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTerminalExecutor, type TerminalExecutor } from '../src/engine/index.js';
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
+import { mailboxPath } from '../src/terminal/transport-protocol.js';
 
 interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
+  bootNonce?: string;
+  instanceId?: string;
 }
 
 // 假 wc：内存 FS + 假 host（写 /cmd.json 即按响应函数生成 /result-<id>.json）+ spawn/on 桩。
-function makeFakeWc(respond?: (req: CmdReq) => unknown) {
+function makeFakeWc(
+  respond?: (req: CmdReq) => unknown,
+  options: { hostOutput?: unknown } = {},
+) {
   const files = new Map<string, string>();
   const spawnCalls: Array<{ prog: string; args: string[] }> = [];
   const on = vi.fn();
-  const hostProc: WebContainerProcess = { kill: vi.fn() } as unknown as WebContainerProcess;
+  const hostOutput = (options.hostOutput ?? { pipeTo: vi.fn(async () => {}) }) as ReadableStream<string>;
+  const hostProc: WebContainerProcess = { kill: vi.fn(), output: hostOutput } as unknown as WebContainerProcess;
 
   const fs = {
     readFile: async (path: string) => {
@@ -28,15 +35,33 @@ function makeFakeWc(respond?: (req: CmdReq) => unknown) {
     writeFile: async (path: string, content: string) => {
       if (path === '/cmd.json') {
         const req = JSON.parse(content) as CmdReq;
+        files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
         const payload = respond?.(req);
         // undefined = host 不响应（模拟挂起/超时）
-        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ id: req.id, ...(payload as object) }));
+        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
         return;
       }
       files.set(path, content);
     },
     rm: async (path: string) => {
       files.delete(path);
+    },
+    mkdir: async () => {},
+    readdir: async (path: string, options?: { withFileTypes?: boolean }) => {
+      const prefix = path.endsWith('/') ? path : `${path}/`;
+      const names = [...files.keys()]
+        .filter((file) => file.startsWith(prefix))
+        .map((file) => file.slice(prefix.length).split('/')[0]!)
+        .filter((name, index, all) => all.indexOf(name) === index);
+      return options?.withFileTypes
+        ? names.map((name) => ({ name, isDirectory: () => false }))
+        : names;
+    },
+    rename: async (from: string, to: string) => {
+      const value = files.get(from);
+      if (value === undefined) throw new Error(`ENOENT: ${from}`);
+      files.delete(from);
+      files.set(to, value);
     },
   };
 
@@ -49,7 +74,7 @@ function makeFakeWc(respond?: (req: CmdReq) => unknown) {
     on,
   };
 
-  return { wc: wc as unknown as WebContainer, hostProc, spawnCalls, files, on };
+  return { wc: wc as unknown as WebContainer, hostProc, hostOutput, spawnCalls, files, on };
 }
 
 const PONG = () => ({ ok: true, kind: 'pong' });
@@ -70,6 +95,14 @@ describe('createTerminalExecutor boot', () => {
     expect(fake.spawnCalls).toEqual([{ prog: 'node', args: ['host.js'] }]);
     expect(fake.files.get('/lifo-core.js')).toBe('// lifo-core.js');
     expect(fake.on).toHaveBeenCalled(); // server-ready / port 监听器注册
+    expect(fake.hostOutput.pipeTo).toHaveBeenCalledTimes(1);
+  });
+
+  it('host output stream unavailable 时仍能完成启动', async () => {
+    const fake = makeFakeWc(PONG, { hostOutput: {} });
+    const ex = createTerminalExecutor();
+
+    await expect(ex.boot(fake.wc, { hostSrc: '// host.js' })).resolves.toBeUndefined();
   });
 
   it('未 boot 就调用 exec 抛错', async () => {
@@ -139,6 +172,29 @@ describe('createTerminalExecutor spawn / listProcesses / kill / ping', () => {
   });
 });
 
+describe('createTerminalExecutor interactive transport', () => {
+  it('reads mailbox output through WebContainer directory entries', async () => {
+    const fake = makeFakeWc(PONG);
+    const ex = createTerminalExecutor();
+    await ex.boot(fake.wc, { hostSrc: '// host.js' });
+    const session = await ex.interactive!.open({ instanceId: 'demo', cols: 80, rows: 24 });
+    const openFile = [...fake.files.keys()].find((path) => path.endsWith('/open.json'))!;
+    const identity = JSON.parse(fake.files.get(openFile)!) as { instanceId: string; sessionId: string; bootNonce: string };
+    const output: string[] = [];
+    session.onData((data) => output.push(data));
+    const outputFile = mailboxPath(identity, 'out-000000000001.json');
+    await (fake.wc.fs as unknown as { writeFile(path: string, content: string): Promise<void> }).writeFile(
+      outputFile,
+      JSON.stringify({ ...identity, protocolVersion: 1, type: 'output', seq: 1, data: 'terminal-dsh-ok' }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(output).toEqual(['terminal-dsh-ok']);
+    await session.close();
+  });
+});
+
 describe('createTerminalExecutor pingDirect / respawn（P1-3）', () => {
   it('pingDirect：pong → true（绕过队列的直接探活）', async () => {
     const { ex } = await makeBooted(PONG);
@@ -160,7 +216,9 @@ describe('createTerminalExecutor pingDirect / respawn（P1-3）', () => {
     await new Promise((r) => setTimeout(r, 0));
     const run2 = ex.exec('queued', { timeoutMs: 300 }); // 排队 → pending > active
     await new Promise((r) => setTimeout(r, 0));
-    expect(await ex.pingDirect(100)).toBeNull();
+    // v2 priority control is delivered alongside the hanging run; it must not
+    // wait behind the normal queue.
+    expect(await ex.pingDirect(100)).toBe(true);
     await Promise.all([run1, run2]);
   });
 

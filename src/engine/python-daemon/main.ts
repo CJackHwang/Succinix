@@ -33,6 +33,7 @@ import {
   setError,
   setOutput,
   setPythonCwd,
+  setPythonEnv,
   PYTHON_VERSION,
 } from './loader.js';
 import { enqueue, formatError, appendInstallHint, type PydRequest } from './rpc.js';
@@ -105,6 +106,7 @@ async function handleRequest(req: PydRequest): Promise<{ code: number }> {
   const args = req.args ?? [];
   // 先跟随会话 cwd（相对路径读写 / os.getcwd() 语义）。
   setPythonCwd(req.cwd);
+  setPythonEnv(req.env);
   const first = args[0];
   if (first === undefined) {
     setError(

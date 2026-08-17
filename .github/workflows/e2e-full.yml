@@ -53,6 +53,12 @@ jobs:
           set -o pipefail
           node scripts/run-e2e.mjs 2>&1 | tee e2e-full.log
 
+      - name: Run benchmark gate (median + 20% variance)
+        run: npm run test:bench -- --skip-build
+
+      - name: Run soak gates (10k / 100k / 100-release)
+        run: npm run test:bench:soak
+
       - name: Upload e2e logs on failure
         if: failure()
         uses: actions/upload-artifact@v7

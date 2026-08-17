@@ -3,6 +3,10 @@
 import type { WebContainer } from '@webcontainer/api';
 import { sleep } from './sleep.js';
 import { DEFAULT_INSTANCE_ID } from './host-route.js';
+import {
+  RPC_PROTOCOL_VERSION, inferRuntimeHint, makeRpcBootNonce, makeRpcRequestPrefix,
+  rpcAckPath, rpcResultPath, type RpcRequestId, type RpcTiming, type RpcV2Envelope,
+} from './rpc-v2.js';
 
 // host 响应统一形状；具体字段依 cmd 而定（run/ps/kill/spawn/cwd/ping/exit）。
 export interface ExecResult {
@@ -10,7 +14,7 @@ export interface ExecResult {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
-  runtime?: 'node' | 'lifo' | 'browser';
+  runtime?: 'node' | 'python' | 'lifo' | 'wasi' | 'ruby' | 'browser';
   kind?: string;
   cwd?: string;
   pid?: number;
@@ -20,6 +24,7 @@ export interface ExecResult {
   error?: string;
   /** 引擎 exec 超时时置 true（原始 RPC 超时抛异常，引擎层捕获转结果） */
   timedOut?: boolean;
+  timing?: RpcTiming;
   [key: string]: unknown;
 }
 
@@ -43,10 +48,6 @@ export interface TerminalClientOptions {
 // ping/ps/cwd 重发安全；kill / run / spawn 等非幂等命令一律不重试。
 const READONLY_PROTO = new Set(['ping', 'ps', 'cwd']);
 
-// host 轮询 /cmd.json 的间隔（host.ts setInterval 50ms）。看门狗直接探活要保证
-// 覆盖的不是 host"尚未读取"的在途请求：距上次写 /cmd.json 超过该余量才允许覆盖。
-const HOST_POLL_MARGIN_MS = 250;
-
 // ─── 同页共享 RPC 通道（M5）───
 // /cmd.json 是单槽信箱：同一页面的多个 TerminalClient（同页多实例，DM-11）若各有独立
 // 互斥队列，并发写会互相覆盖（后写吞先写，先发请求等不到结果、30s 超时）。通道按
@@ -54,11 +55,22 @@ const HOST_POLL_MARGIN_MS = 250;
 // （看门狗 pingDirect 与 Ctrl+C interruptDirect 的覆盖安全窗口也共享，跨实例不误判）。
 // 单 client 时行为与独立队列完全一致（同一通道，无竞争者）。
 interface Channel {
-  id: number;
-  chain: Promise<unknown>;
-  pending: number;
-  active: number;
+  sequence: number;
+  requestPrefix: string;
+  bootNonce: string;
+  normal: DeliveryTask[];
+  priority: DeliveryTask[];
+  delivering: boolean;
+  activeResults: number;
   lastCmdWrite: number;
+}
+
+interface DeliveryTask {
+  request: RpcV2Envelope;
+  timeoutMs: number;
+  startedAt: number;
+  resolve: (acceptedAt: number) => void;
+  reject: (error: Error) => void;
 }
 
 const channels = new WeakMap<WebContainer, Channel>();
@@ -66,7 +78,10 @@ const channels = new WeakMap<WebContainer, Channel>();
 function channelFor(wc: WebContainer): Channel {
   let ch = channels.get(wc);
   if (!ch) {
-    ch = { id: 0, chain: Promise.resolve(), pending: 0, active: 0, lastCmdWrite: 0 };
+    ch = {
+      sequence: 0, requestPrefix: makeRpcRequestPrefix(), bootNonce: makeRpcBootNonce(),
+      normal: [], priority: [], delivering: false, activeResults: 0, lastCmdWrite: 0,
+    };
     channels.set(wc, ch);
   }
   return ch;
@@ -158,57 +173,126 @@ export class TerminalClient {
     }
   }
 
-  // 排队执行：同一时刻只有一个在途请求（前一个完成或超时才轮到下一个）。
   private enqueue(cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
-    const ch = this.ch;
-    ch.pending++;
-    const run = ch.chain.then(() => this.doExec(++ch.id, cmd, opts, timeoutMs));
-    // 请求 settle（成功或失败）后释放 pending 计数；链不中断（单个请求失败不影响后续排队）。
-    ch.chain = run.then(
-      () => {
-        ch.pending--;
-      },
-      () => {
-        ch.pending--;
-      }
-    );
-    return run;
+    const id = `${this.ch.requestPrefix}-${++this.ch.sequence}`;
+    return this.doExec(id, cmd, opts, timeoutMs, false);
   }
 
-  // 单次 RPC：写 /cmd.json，轮询 /result-<id>.json，读到即删。
-  // TASK21：请求带 protocol 版本字段（向后兼容 —— host 忽略缺失/未知字段，按 v1 处理）。
-  private async doExec(id: number, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number): Promise<ExecResult> {
+  private request(id: RpcRequestId, cmd: string, opts: Record<string, unknown> | undefined): RpcV2Envelope {
+    return this.stamp({
+      protocolVersion: RPC_PROTOCOL_VERSION,
+      id,
+      cmd,
+      opts,
+      bootNonce: this.ch.bootNonce,
+      runtimeHint: inferRuntimeHint(cmd, opts),
+      queuedAt: Date.now(),
+    }) as unknown as RpcV2Envelope;
+  }
+
+  private deliver(request: RpcV2Envelope, timeoutMs: number, priority: boolean): Promise<number> {
+    const startedAt = Date.now();
+    return new Promise<number>((resolve, reject) => {
+      const task: DeliveryTask = { request, timeoutMs, startedAt, resolve, reject };
+      (priority ? this.ch.priority : this.ch.normal).push(task);
+      this.pumpDeliveries();
+    });
+  }
+
+  private pumpDeliveries(): void {
     const ch = this.ch;
-    ch.active++;
+    if (ch.delivering) return;
+    const task = ch.priority.shift() ?? ch.normal.shift();
+    if (!task) return;
+    ch.delivering = true;
+    void (async () => {
+      try {
+        await this.wc.fs.writeFile('/cmd.json', JSON.stringify(task.request));
+        ch.lastCmdWrite = Date.now();
+        const ackFile = rpcAckPath(task.request.id);
+        // A cold interactive terminal can trigger Lifo's lazy kernel load in
+        // the host process. That work temporarily blocks the file-poll loop,
+        // so delivery must use the caller's end-to-end budget rather than an
+        // unrelated five-second cap.
+        const deadline = task.timeoutMs;
+        for (;;) {
+          try {
+            const ack = JSON.parse(await this.wc.fs.readFile(ackFile, 'utf8')) as {
+              protocolVersion?: number;
+              id?: RpcRequestId;
+              bootNonce?: string;
+              instanceId?: string;
+            };
+            if (!this.matchesIdentity(ack, task.request)) throw new Error('invalid RPC acknowledgement');
+            try { await this.wc.fs.rm(ackFile); } catch { /* best effort */ }
+            task.resolve(Date.now());
+            break;
+          } catch {
+            if (Date.now() - task.startedAt > deadline) {
+              task.reject(new Error(`delivery timeout: ${task.request.cmd}`));
+              break;
+            }
+            await sleep(15);
+          }
+        }
+      } catch (error) {
+        task.reject(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        ch.delivering = false;
+        this.pumpDeliveries();
+      }
+    })();
+  }
+
+  private async doExec(id: RpcRequestId, cmd: string, opts: Record<string, unknown> | undefined, timeoutMs: number, priority: boolean): Promise<ExecResult> {
+    const ch = this.ch;
+    const startedAt = Date.now();
+    const request = this.request(id, cmd, opts);
+    ch.activeResults++;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd, opts })));
-      ch.lastCmdWrite = Date.now();
-      const resultFile = `/result-${id}.json`;
-      const start = Date.now();
-      // TASK18 自适应轮询：快命令（echo / ls / ps）密集轮询尽快拿到结果（往返减半）；
-      // 长命令（npm install / curl）指数退避到 150ms 上限，避免对结果文件做无谓的 FS 读。
+      const acceptedAt = await this.deliver(request, timeoutMs, priority);
+      const resultFile = rpcResultPath(id);
       let delay = 25;
       for (;;) {
         try {
-          const raw = await this.wc.fs.readFile(resultFile, 'utf8');
-          const m = JSON.parse(raw) as ExecResult;
-          // 读到即删：每个请求独立结果文件，避免与迟到的异步写入互相覆盖
-          try {
-            await this.wc.fs.rm(resultFile);
-          } catch {
-            /* 清理失败不影响 */
-          }
-          return m;
+          const m = JSON.parse(await this.wc.fs.readFile(resultFile, 'utf8')) as ExecResult & {
+            protocolVersion?: number;
+            id?: RpcRequestId;
+            bootNonce?: string;
+            instanceId?: string;
+          };
+          if (!this.matchesIdentity(m, request)) throw new Error('stale or mismatched RPC result ignored');
+          try { await this.wc.fs.rm(resultFile); } catch { /* best effort */ }
+          const now = Date.now();
+          return {
+            ...m,
+            timing: {
+              queueMs: Math.max(0, acceptedAt - startedAt),
+              hostMs: typeof m.timing?.hostMs === 'number' ? m.timing.hostMs : undefined,
+              resultPollMs: Math.max(0, now - acceptedAt),
+              totalMs: Math.max(0, now - startedAt),
+            },
+          };
         } catch {
-          /* 结果未就绪 */
+          /* result not ready */
         }
-        if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${cmd}`);
+        if (Date.now() - startedAt > timeoutMs) throw new Error(`timeout: ${cmd}`);
         await sleep(delay);
         delay = Math.min(delay * 2, 150);
       }
     } finally {
-      ch.active--;
+      ch.activeResults--;
     }
+  }
+
+  private matchesIdentity(
+    message: { protocolVersion?: number; id?: RpcRequestId; bootNonce?: string; instanceId?: string },
+    request: RpcV2Envelope,
+  ): boolean {
+    return message.protocolVersion === RPC_PROTOCOL_VERSION &&
+      message.id === request.id &&
+      message.bootNonce === request.bootNonce &&
+      message.instanceId === (request.instanceId ?? DEFAULT_INSTANCE_ID);
   }
 
   // 看门狗直接探活（r4 B）：绕过互斥队列——长命令（node 子进程等待 30-150s 期间
@@ -217,34 +301,11 @@ export class TerminalClient {
   // 返回：true=host 存活（pong）；false=超时（host 无响应）；null=通道忙，本轮跳过（中性）。
   async pingDirect(timeoutMs = 30000): Promise<boolean | null> {
     const ch = this.ch;
-    // 队列里还有未开始的请求：下一拍 doExec 会写 /cmd.json 覆盖本 ping → 必然被吞，跳过。
-    if (ch.pending > ch.active) return null;
-    // 刚写过 /cmd.json（host 轮询周期内可能还没读取）：覆盖会吞掉在途请求 → 跳过。
-    if (Date.now() - ch.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
-    const id = ++ch.id;
+    if (ch.delivering || ch.normal.length > 0) return null;
+    const id = `${ch.requestPrefix}-${++ch.sequence}`;
     try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd: 'ping' })));
-    } catch {
-      return false; // FS 不可写：按 host 不可达处理
-    }
-    const resultFile = `/result-${id}.json`;
-    const start = Date.now();
-    for (;;) {
-      try {
-        const raw = await this.wc.fs.readFile(resultFile, 'utf8');
-        const m = JSON.parse(raw) as ExecResult;
-        try {
-          await this.wc.fs.rm(resultFile);
-        } catch {
-          /* 清理失败不影响 */
-        }
-        return m.kind === 'pong';
-      } catch {
-        /* 结果未就绪 */
-      }
-      if (Date.now() - start > timeoutMs) return false;
-      await sleep(100); // TASK18：看门狗探活轮询 150→100ms（非热路径，100ms 已足够）
-    }
+      return (await this.doExec(id, 'ping', undefined, timeoutMs, true)).kind === 'pong';
+    } catch { return false; }
   }
 
   // P5-15：中断当前在途命令（浏览器 Ctrl+C）。必须绕过互斥队列 —— 当前命令占着队列，
@@ -256,31 +317,9 @@ export class TerminalClient {
   // null = 通道忙 / 无法发送（浏览器侧如实提示，不假装成功）。
   async interruptDirect(timeoutMs = 2000): Promise<ExecResult | null> {
     const ch = this.ch;
-    if (ch.pending > ch.active) return null;
-    if (Date.now() - ch.lastCmdWrite < HOST_POLL_MARGIN_MS) return null;
-    const id = ++ch.id;
-    try {
-      await this.wc.fs.writeFile('/cmd.json', JSON.stringify(this.stamp({ protocol: 1, id, cmd: 'interrupt' })));
-    } catch {
-      return null; // FS 不可写：按无法发送处理
-    }
-    const resultFile = `/result-${id}.json`;
-    const start = Date.now();
-    for (;;) {
-      try {
-        const raw = await this.wc.fs.readFile(resultFile, 'utf8');
-        const m = JSON.parse(raw) as ExecResult;
-        try {
-          await this.wc.fs.rm(resultFile);
-        } catch {
-          /* 清理失败不影响 */
-        }
-        return m;
-      } catch {
-        /* 结果未就绪 */
-      }
-      if (Date.now() - start > timeoutMs) return null;
-      await sleep(100);
-    }
+    if (ch.delivering || ch.normal.length > 0) return null;
+    const id = `${ch.requestPrefix}-${++ch.sequence}`;
+    try { return await this.doExec(id, 'interrupt', undefined, timeoutMs, true); }
+    catch { return null; }
   }
 }

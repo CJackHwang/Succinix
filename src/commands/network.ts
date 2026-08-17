@@ -145,3 +145,37 @@ export async function ipCmd(ctx: CommandContext, args: string[]): Promise<void> 
   }
   term.writeln(`ip: only the virtual 'addr' view is available (no real network interfaces)`);
 }
+
+// ─── succinix net（v0.7）：诚实网络视图 ───
+// doctor/preview/tunnel 全部只报告浏览器与 WebContainer 的真实能力边界：
+// virtual|preview|outbound|unavailable 标签，不编造公网网卡、ICMP 或真实入站 socket。
+export async function netCmd(ctx: CommandContext, args: string[]): Promise<void> {
+  const { term } = ctx;
+  const sub = args[0] ?? '';
+  if (sub === 'doctor') {
+    term.writeln('Network capability report');
+    term.writeln('[  OK  ] preview URLs   (virtual ports; browser-side preview only)');
+    term.writeln('[SKIP]  inbound sockets (no real inbound networking in this environment)');
+    term.writeln('[  OK  ] outbound HTTP  (CORS-limited; use https://r.jina.ai/<url> proxies)');
+    term.writeln('[SKIP]  ICMP / ping     (no ICMP in this environment)');
+    term.writeln('[SKIP]  tunnels         (outbound tunnel bridge is not implemented)');
+    return;
+  }
+  if (sub === 'preview') {
+    if (ctx.ports.size === 0) {
+      term.writeln('No preview ports ready yet');
+      return;
+    }
+    term.writeln('Preview ports (virtual)');
+    term.writeln('PORT  URL');
+    for (const [port, url] of [...ctx.ports.entries()].sort((a, b) => a[0] - b[0])) {
+      term.writeln(`${port}  ${url}  (preview)`);
+    }
+    return;
+  }
+  if (sub === 'tunnel') {
+    term.writeln('succinix: net tunnel: unavailable in this environment (no outbound tunnel bridge)');
+    return;
+  }
+  term.writeln('usage: succinix net doctor | succinix net preview | succinix net tunnel');
+}

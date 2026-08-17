@@ -16,12 +16,24 @@ export interface PortEventHooks {
 
 export class PagePortRegistry {
   private ready = new Map<number, string>();
+  private readyGenerations = new Map<number, number>();
+  private generation = 0;
   private hooksByInstance = new Map<string, PortEventHooks>();
   private bound = new WeakSet<WebContainer>();
 
   /** 页面级就绪端口源（server-ready 到达即登记；无归属/待归属端口都在这里）。 */
   readyPorts(): Map<number, string> {
     return this.ready;
+  }
+
+  /** 当前页面已观察到的 server-ready 事件代次。 */
+  currentGeneration(): number {
+    return this.generation;
+  }
+
+  /** 指定端口最近一次 server-ready 事件的代次。 */
+  generationFor(port: number): number | undefined {
+    return this.readyGenerations.get(port);
   }
 
   /** 订阅/替换某实例的端口事件钩子。同实例重复订阅 = 覆盖（R3.2 重试不叠加）；
@@ -41,6 +53,7 @@ export class PagePortRegistry {
   /** 测试辅助：清空页面级就绪端口与实例订阅（wc 绑定去重保留，不影响单测隔离）。 */
   reset(): void {
     this.ready.clear();
+    this.readyGenerations.clear();
     this.hooksByInstance.clear();
   }
 
@@ -55,12 +68,15 @@ export class PagePortRegistry {
   }
 
   private dispatchReady(port: number, url: string): void {
+    this.generation += 1;
     this.ready.set(port, url);
+    this.readyGenerations.set(port, this.generation);
     for (const hooks of this.hooksByInstance.values()) hooks.onServerReady?.(port, url);
   }
 
   private dispatchClosed(port: number): void {
     this.ready.delete(port);
+    this.readyGenerations.delete(port);
     for (const hooks of this.hooksByInstance.values()) hooks.onServerClosed?.(port);
   }
 }

@@ -1,5 +1,5 @@
 // invariant: per-instance stack creation, release, and process listing for
-// the internal succinix-host lifecycle seam.
+// the internal succinix lifecycle seam.
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import {
   pagePorts,
@@ -10,14 +10,9 @@ import {
 import { createSuccinixInstance as createEngineInstance } from '../instance/index.js';
 import { instanceStateRoot } from '../instance/paths.js';
 import { instancePorts } from '../instance/ports.js';
-import { clearActivePorts, clearDbActivePorts } from '../services/index.js';
-import type { TerminalSessionOptions } from '../terminal/index.js';
 import type { ResolvedSuccinixConfig } from './config.js';
 import type { HostManager } from './host-manager.js';
 import { invariantString } from './invariant.js';
-import {
-  noOpOutput,
-} from './service-runtime.js';
 import { makeServicesService } from './services-service.js';
 import type { SuccinixPluginState, SuccinixStateReason } from './state.js';
 import type {
@@ -40,9 +35,6 @@ export interface HostInstanceManagerDeps {
   requireWc(): WebContainerType;
   setError(message: string): never;
   wrapExecutor(instanceId: string, executor: TerminalExecutor): TerminalExecutor;
-  pythonBeforeRpc(
-    beforeRpc?: TerminalSessionOptions['beforeRpc']
-  ): (command: string) => Promise<void>;
   makeWorkspaceBackend(instanceId: string): WorkspaceBackend;
   publish<K extends keyof SuccinixEventMap>(event: K, payload: SuccinixEventMap[K]): void;
   emitState(reason: SuccinixStateReason): void;
@@ -59,7 +51,6 @@ export class SuccinixHostInstanceManager {
       resolvedConfig,
       requireWc,
       wrapExecutor,
-      pythonBeforeRpc,
       makeWorkspaceBackend,
       publish,
       emitState,
@@ -79,14 +70,6 @@ export class SuccinixHostInstanceManager {
       statePrefix,
       home,
       persistence: opts.persistence ?? config.defaultInstance.persistence,
-      output: opts.output ?? noOpOutput,
-      // 会话层也注入 Python 资产：宿主直取 instance.terminal 时不经过 wrapped executor。
-      // 保留消费方自带的 beforeRpc，链式执行。
-      terminal: {
-        ...config.terminal,
-        ...opts.terminal,
-        beforeRpc: pythonBeforeRpc(opts.terminal?.beforeRpc),
-      },
       executor: {
         ...opts.executor,
         instanceId: containerId,
@@ -107,9 +90,6 @@ export class SuccinixHostInstanceManager {
     const view: SuccinixInstance = {
       instanceId: instance.instanceId,
       client: instance.client,
-      get terminal() {
-        return instance.terminal;
-      },
       executor: wrapExecutor(containerId, instance.executor),
       persist: instance.persist,
       ports: instance.ports,
@@ -137,11 +117,14 @@ export class SuccinixHostInstanceManager {
     invariantString(containerId, 'containerId');
     const instance = instances.get(containerId);
     if (!instance) return;
+    try {
+      await instance.client.resetInstance();
+    } catch {
+      // The browser-owned resources still need release when the host is gone.
+    }
     await instance.dispose();
     pagePorts.unsubscribe(containerId);
     instancePorts.releaseAll(containerId);
-    clearActivePorts(containerId);
-    clearDbActivePorts(containerId);
     instances.delete(containerId);
     state.instances = state.instances.filter((item) => item.instanceId !== containerId);
     publish('succinix/instance', { containerId, state: 'released' });

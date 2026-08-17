@@ -1,4 +1,4 @@
-// CommandContext：本地命令的统一上下文（浏览器侧命令拦截的入参契约，O1 拆分）。
+// CommandContext：浏览器设备/API 适配器所需的实例上下文；不参与 shell 命令解析。
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { PersistContext, SuccinixPluginState, TerminalClient } from '@succinix/engine';
@@ -18,7 +18,7 @@ export interface CommandContext {
   fit: () => void;
   /** 当前 host 进程句柄（main.ts 的 host 重启路径 kill 用；自检构造的假 context 可缺省） */
   hostProc?: WebContainerProcess;
-  /** 实例上下文（M2/M5，additive）：本地命令的状态文件/持久化按实例解析；缺省 = 默认实例 */
+  /** 实例上下文（M2/M5，additive）：管理 API 的状态文件/持久化按实例解析；缺省 = 默认实例 */
   instanceId?: string;
   /** 状态根前缀覆盖（M5，additive）：缺省 = DM-12 内置前缀 */
   statePrefix?: string;

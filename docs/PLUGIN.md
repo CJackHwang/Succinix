@@ -1,8 +1,22 @@
 # Writing Third-Party Cordis Plugins for Succinix
 
 This guide is for Cordis plugin authors who want to consume or extend
-`@succinix/engine@0.6.0`. It complements [SDK.md](SDK.md), which documents the
+`@succinix/engine@0.7.0`. It complements [SDK.md](SDK.md), which documents the
 engine's service surface.
+
+## Execution-world rule
+
+Succinix plugins extend the WebContainer/Lifo execution world. A command, runtime, package,
+service, editor, TUI, or interactive tool must run inside the container userland and use the
+engine's shared filesystem, instance, process, service, package, persistence, and capability
+models. Browser code is only a control/device plane and may provide xterm rendering, keyboard/
+resize transport, or unavoidable Web APIs; it must not implement a parallel command or editor.
+
+The current v0.6 host uses headless `Sandbox.commands.run()` for batch execution. The v0.7
+interactive path connects xterm to Lifo's in-container `ITerminal` and public
+`CommandContext.stdin`/`setRawMode` seam. Third-party
+interactive tools must use that same seam and declare `execution: 'batch' | 'interactive' | 'both'`
+in their capability/package metadata. See [PLAN-v0.7.0.md](PLAN-v0.7.0.md).
 
 ## Plugin contract
 
@@ -36,10 +50,10 @@ export function apply(ctx: Context) {
 
 Do not rely on implicit globals or top-level `ctx.mixin`. The old
 single-key `succinix` service is gone; app-level lifecycle facades are
-available only through the internal `succinix-host` seam:
+available only through the internal `succinix` seam:
 
 ```ts
-const host = ctx.get('succinix-host', false);
+const host = ctx.get('succinix', false);
 ```
 
 ## Type augmentation
@@ -76,7 +90,7 @@ If your application already owns a WebContainer (for example a runtime plugin
 that manages containers), use external mode so there is exactly one container.
 
 ```ts
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 const wc = await myRuntime.boot();
 await host.attach(wc, { executor: {} });
 await host.ensureInstance('default', {
@@ -223,6 +237,32 @@ The engine does not export a separate client/UI runtime. Extend it by:
   your own equivalents;
 - using `host.capabilities` to enforce your product policy;
 - using `host.state` and `succinix/*` events to drive a management UI.
+
+To add a userland command, publish a structured definition through the running
+host. It is installed in the WebContainer/Lifo command registry, not in the
+browser plugin:
+
+```ts
+const host = ctx.get('succinix', false)!;
+const unregister = host.userland.registerCommand({
+  name: 'project-greeting',
+  status: 'adapter',
+  runtime: 'lifo',
+  execution: 'batch',
+  source: { kind: 'shell', command: 'printf "project-ready\\n"', appendArgs: false },
+});
+
+await host.userland.flush();
+await host.executor.exec('project-greeting');
+
+ctx.effect(() => unregister);
+```
+
+`flush()` is required before the command is first used. Register packages and
+service templates through the same `host.userland` surface. Interactive tools
+must use Lifo's public stdin/raw-mode contract and the existing terminal seam;
+browser-side command or editor implementations are outside this API. See
+[SDK.md](SDK.md#userland-extensions) for the full contract.
 
 ## Examples in this repository
 

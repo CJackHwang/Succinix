@@ -5,10 +5,19 @@ export {
   isAgeForced,
   EMPTY_META,
 } from './types.js';
-export type { SnapshotMeta, SnapshotRecord, SaveResult, PersistOptions, PersistContext } from './types.js';
+export type {
+  BinarySnapshotContainer,
+  PersistStatus,
+  SnapshotController,
+  SnapshotMeta,
+  SnapshotRecord,
+  SaveResult,
+  PersistOptions,
+  PersistContext,
+} from './types.js';
 export { isExcludedPath, excludedByInstanceScope } from './exclusions.js';
+export { createPersist } from './context.js';
 export {
-  createPersist,
   instancePersistKey,
   getPersist,
   saveSnapshot,
@@ -16,4 +25,34 @@ export {
   clearSnapshot,
   getSnapshotMeta,
   forcePersist,
-} from './context.js';
+} from './registry.js';
+export {
+  BINARY_SNAPSHOT_FORMAT_VERSION,
+  DEFAULT_BINARY_CHUNK_BYTES,
+  DEFAULT_BINARY_QUOTA_BYTES,
+  BinarySnapshotQuotaError,
+  BinarySnapshotCorruptionError,
+  createBinarySnapshotStore,
+  createWebContainerBinarySnapshotStore,
+} from './binary-v2.js';
+export type {
+  BinarySnapshotManifest,
+  BinarySnapshotPointer,
+  BinarySnapshotExport,
+  BinarySnapshotOptions,
+  BinarySnapshotStore,
+} from './binary-v2.js';
+export {
+  SESSION_SEGMENT_FORMAT_VERSION,
+  DEFAULT_SESSION_SEGMENT_EVENTS,
+  DEFAULT_SESSION_SEGMENT_BYTES,
+  SessionSegmentCorruptionError,
+  SessionSequenceError,
+  SegmentedSessionLog,
+} from './session-segments.js';
+export type {
+  SessionSegmentEvent,
+  SessionSegmentDescriptor,
+  SessionSegmentManifest,
+  SegmentedSessionOptions,
+} from './session-segments.js';

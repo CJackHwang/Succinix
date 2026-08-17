@@ -6,7 +6,7 @@ your app. It provides a real Node runtime (`node`, `npm`, `npx`), a built-in
 Pyodide Python (`python`, `pip`), and a Lifo Unix userland for everything
 else.
 
-This is the 0.6.0 single-track plugin form. It is built for
+This is the 0.7.0 single-track plugin form. It is built for
 `@deepseek-ai/cordis@4.0.1` and exposes the dsh service keys `ctx.fs`,
 `ctx.sandbox`, `ctx.terminals`, and `ctx.sessionPersistence`. The old 0.4.0
 standalone SDK exports and the 0.5.0 single-key `succinix` service are
@@ -38,7 +38,7 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const wc = await WebContainer.boot();
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 await host.attach(wc);
 await host.ensureInstance('default', { executor: {} });
 
@@ -81,9 +81,9 @@ import {
 
 ### Host seam
 
-`succinix-host` is the internal lifecycle and app-observability seam. It is
+`succinix` is the lifecycle and app-observability service. It is
 not a dsh service key; trusted consumers probe it with
-`ctx.get('succinix-host', false)`.
+`ctx.get('succinix', false)`.
 
 | Member | Purpose |
 | --- | --- |

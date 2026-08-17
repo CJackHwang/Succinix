@@ -1,5 +1,5 @@
 // S0.7: event-sourced JSONL ctx.sessionPersistence mirror over the browser FS.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { FileSystemAPI } from '@webcontainer/api';
 import { FakeFS } from './helpers/fakes.js';
 import {
@@ -13,6 +13,7 @@ import {
   SuccinixSessionPersistence,
   type SessionPersistenceServiceDeps,
 } from '../src/plugin/persistence-service.js';
+import { SegmentedSessionLog } from '../src/persist/session-segments.js';
 
 function header(id = 's-1', overrides: Partial<SessionHeader> = {}): SessionHeader {
   return { version: 0, id: SessionId(id), createdAt: 1000, ...overrides };
@@ -34,6 +35,7 @@ function setup(options: {
   isLive?: (id: string) => boolean;
   liveEvents?: (id: string) => readonly SessionEvent[] | undefined;
   onFlush?: () => Promise<void> | void;
+  segmented?: boolean;
 } = {}) {
   const fake = new FakeFS();
   const flushes: number[] = [];
@@ -46,6 +48,7 @@ function setup(options: {
     onFlush: options.onFlush ?? (() => {
       flushes.push(flushes.length);
     }),
+    segmented: options.segmented,
   };
   const service = new SuccinixSessionPersistence(deps);
   return { fake, service, flushes };
@@ -322,6 +325,35 @@ describe('ctx.sessionPersistence live sessions', () => {
     await service.create(meta);
     await expect(service.inspect(meta.id)).rejects.toThrow('no live event view');
     await expect(service.load(meta.id)).rejects.toThrow('live');
+  });
+});
+
+describe('ctx.sessionPersistence segmented v0.7 storage', () => {
+  it('stores the dsh session as a manifest plus JSONL segments while preserving the public raw/read contract', async () => {
+    const { fake, service } = setup({ segmented: true });
+    const meta = header('segmented');
+    await service.create(meta);
+    await service.append(meta.id, Array.from({ length: 501 }, (_, seq) => event('assistant/chunk', seq, { seq })));
+    const root = '/.succinix/sessions/segments';
+    expect(fake.has(`${root}/segmented.manifest.json`)).toBe(true);
+    expect(fake.has(`${root}/segmented.0.jsonl`)).toBe(true);
+    expect(fake.has(`${root}/segmented.1.jsonl`)).toBe(true);
+    expect((await service.readFrom(meta.id, 500)).events.map((entry) => entry.seq)).toEqual([500]);
+    const raw = await service.readRaw(meta.id);
+    expect(raw?.content.split('\n').filter(Boolean)).toHaveLength(502);
+    expect((await service.listSnapshots())[0]?.header.id).toBe(meta.id);
+  });
+
+  it('keeps 10k individual appends contiguous without rebuilding prior segments', async () => {
+    const { service } = setup({ segmented: true });
+    const meta = header('segmented-incremental');
+    const readFrom = vi.spyOn(SegmentedSessionLog.prototype, 'readFrom');
+    await service.create(meta);
+    for (let seq = 0; seq < 10_000; seq++) await service.append(meta.id, [event('assistant/chunk', seq, { seq })]);
+    expect(readFrom).not.toHaveBeenCalled();
+    const restored = await service.readFrom(meta.id, 0);
+    expect(restored.events).toHaveLength(10_000);
+    expect(restored.events.at(-1)?.seq).toBe(9_999);
   });
 });
 

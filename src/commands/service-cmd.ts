@@ -7,6 +7,7 @@ import {
   readServices,
   startService,
   stopService,
+  restartService,
   type ServiceContext,
 } from '@succinix/engine';
 import { AMBER, RED, RESET } from '../theme.js';
@@ -36,7 +37,7 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
   const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix };
   const sub = args[0] ?? '';
 
-  if (sub === '') {
+  if (sub === '' || sub === 'list-units') {
     const states = await listServiceStates(svc);
     if (states.length === 0) {
       term.writeln('Services');
@@ -78,6 +79,17 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
     return;
   }
 
+  if (sub === 'restart') {
+    const name = args[1];
+    if (!name) {
+      term.writeln('usage: service restart <name>');
+      return;
+    }
+    const r = await restartService(svc, name);
+    term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
+    return;
+  }
+
   if (sub === 'status') {
     const name = args[1];
     if (!name) {
@@ -115,5 +127,6 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
     return;
   }
 
-  term.writeln('usage: service | service start <name> | service stop <name> | service status <name> | service enable <name> | service disable <name>');
+  term.writeln('Succinix declarative service manager (no PID 1)');
+  term.writeln('usage: service | service list-units | service start|stop|restart|status|enable|disable <name>');
 }

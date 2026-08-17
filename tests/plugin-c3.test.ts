@@ -11,8 +11,8 @@ import { hostOf, installFakeIDB } from './helpers/fakes.js';
 import type { AppContainerService, AppShellService, AppCommandsService } from '../src/host/types.js';
 
 const wcApi = vi.hoisted(() => ({ boot: vi.fn() }));
-const termMock = vi.hoisted(() => ({
-  term: {
+const termMock = vi.hoisted(() => {
+  const term = {
     onData: vi.fn(),
     writeln: vi.fn(),
     write: vi.fn(),
@@ -21,9 +21,16 @@ const termMock = vi.hoisted(() => ({
     open: vi.fn(),
     loadAddon: vi.fn(),
     focus: vi.fn(),
-  },
-  fitAddon: { fit: vi.fn() },
-}));
+  };
+  const fitAddon = { fit: vi.fn() };
+  return {
+    term,
+    fitAddon,
+    ensureTerminal: vi.fn(async () => term),
+    getTerm: vi.fn(() => term),
+    getFitAddon: vi.fn(() => fitAddon),
+  };
+});
 
 vi.mock('@webcontainer/api', () => ({ WebContainer: { boot: wcApi.boot } }));
 vi.mock('../src/app/xterm.js', () => termMock);
@@ -102,7 +109,7 @@ describe('instance request parsing (C3)', () => {
 describe('Cordis app plugin tree (C3)', () => {
   it('loads the engine and every app plugin in one Context', async () => {
     const { ctx } = await loadApp();
-    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(ctx.get('succinix', false)).toBeTruthy();
     for (const name of [
       'succinix-app-terminal',
       'succinix-app-commands',
@@ -174,7 +181,7 @@ describe('Cordis app plugin tree (C3)', () => {
   it('engine remains available after an app plugin fiber is disposed', async () => {
     const { ctx, containerFiber } = await bootApp();
     await containerFiber.dispose();
-    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(ctx.get('succinix', false)).toBeTruthy();
     expect(hostOf(ctx).state.containerState).toBe('ready');
   });
 });

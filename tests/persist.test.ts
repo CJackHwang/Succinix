@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { FakeFS, installFakeIDB } from './helpers/fakes.js';
 import type { FileSystemAPI } from '@webcontainer/api';
 import {
+  createPersist,
   saveSnapshot,
   loadSnapshot,
   clearSnapshot,
@@ -22,7 +23,7 @@ beforeEach(async () => {
 });
 
 describe('persist exclusion rules', () => {
-  it('excludes node_modules/dist/.git/.tinbase dirs and host/rpc files', async () => {
+  it('excludes node_modules/dist/.git and runtime transport dirs', async () => {
     const src = new FakeFS();
     await src.writeFile('/keep.txt', 'keep me');
     await src.writeFile('/node_modules/lodash/index.js', 'nope');
@@ -33,6 +34,8 @@ describe('persist exclusion rules', () => {
     await src.writeFile('/lifo-core.js', 'nope');
     await src.writeFile('/cmd.json', 'nope');
     await src.writeFile('/result-42.json', 'nope');
+    await src.writeFile('/.succinix-control/request-control-test.json', 'nope');
+    await src.writeFile('/.succinix-terminal/default/session/open.json', 'nope');
 
     const res = await saveSnapshot(src as unknown as FileSystemAPI, true);
     expect(res.skipped).toBe(false);
@@ -43,11 +46,24 @@ describe('persist exclusion rules', () => {
     expect(dst.has('/node_modules')).toBe(false);
     expect(dst.has('/dist')).toBe(false);
     expect(dst.has('/.git')).toBe(false);
-    expect(dst.has('/.tinbase')).toBe(false);
+    expect(dst.has('/.tinbase')).toBe(true);
     expect(dst.has('/host.js')).toBe(false);
     expect(dst.has('/lifo-core.js')).toBe(false);
     expect(dst.has('/cmd.json')).toBe(false);
     expect(dst.has('/result-42.json')).toBe(false);
+    expect(dst.has('/.succinix-control')).toBe(false);
+    expect(dst.has('/.succinix-terminal')).toBe(false);
+  });
+
+  it('keeps .git only when explicitly configured', async () => {
+    const src = new FakeFS();
+    await src.writeFile('/project/.git/config', 'remote=origin');
+    const persist = createPersist({ dbName: `persist-git-${Math.random()}`, includeGit: true });
+    await persist.save(src as unknown as FileSystemAPI, true);
+
+    const dst = new FakeFS();
+    await persist.load(dst as unknown as FileSystemAPI);
+    expect(dst.raw('/project/.git/config')).toBe('remote=origin');
   });
 });
 

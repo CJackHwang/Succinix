@@ -15,7 +15,7 @@ import {
 } from './terminal/boot.js';
 import { TerminalClient, bootEngineHost, waitForHostReady, type EngineBootHooks } from './engine/index.js';
 import { getSetting, readEnvFile, isValidWorkspaceName } from './config.js';
-import { ensureServicesFiles, readAutostart, startService } from './services/index.js';
+import { ensureExecutionServices, executionAutostart, startExecutionService } from './services/world-client.js';
 import { initLogger, log } from './log.js';
 import { ensureMotd } from './motd.js';
 import { respawnWithKillFirst } from './host-restart.js';
@@ -90,9 +90,9 @@ export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootSt
   }
   boot.ok(`Loaded ${envCount} environment variables`);
 
-  // 服务管理（TASK11）：确保定义/自启文件存在（缺失时落内置预置 / 空清单，用户可随后编辑）。
+  // 服务管理：unit 和 enablement 由执行世界的 Lifo ServiceManager 持有。
   try {
-    await ensureServicesFiles(wc.fs, ctx.instanceId, ctx.statePrefix);
+    await ensureExecutionServices({ wc, client, ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix });
   } catch (e) {
     boot.noteOnly(`Service files init failed (${String(e).slice(0, 80)})`);
   }
@@ -125,9 +125,10 @@ export async function runApplicationBootSteps(boot: TerminalBoot, ctx: AppBootSt
   // 服务自启（TASK11）：声明式重启 —— boot 后按 autostart 逐个拉起（M5：按实例）。
   // 失败只记日志不阻塞 boot（继续）；不是守护进程，不做崩溃自愈（AGENTS.md 边界）。
   try {
-    const autostart = await readAutostart(wc.fs, ctx.instanceId, ctx.statePrefix);
+    const serviceContext = { wc, client, ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix };
+    const autostart = await executionAutostart(serviceContext);
     for (const name of autostart) {
-      const r = await startService({ wc, client, ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix }, name);
+      const r = await startExecutionService(serviceContext, name);
       if (r.ok) boot.ok(`Started service '${name}' (autostart)`);
       else boot.failStep(`service '${name}' failed to start`);
     }

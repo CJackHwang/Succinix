@@ -4,27 +4,39 @@
 >
 > 这是 Succinix 命令执行引擎（`src/engine/`）的**契约（contract）**。
 > 生态使用方应能仅凭本文档构建替代客户端或 host，而无需阅读实现。仓库内实现是参考：
-> `src/engine/client.ts`（浏览器侧）与 `src/engine/host/`（容器内 daemon）。协议版本：**1**。
+> `src/engine/client.ts`（浏览器侧）与 `src/engine/host/`（容器内 daemon）。协议版本：**2**。
 
 ## 1. 概览（Overview）
 
 Succinix 在 WebContainer 内运行常驻 **host daemon**（`node host.js`）。
 浏览器持有 **TerminalClient**，经容器共享文件系统发送命令并接收结果。
-没有 socket、没有 stdin 管道、没有共享结果文件——每个请求独享一个文件。这正是命令在
-交互式 stdin 已知不可靠的环境中依然可靠的原因。
+没有 socket、没有通用子进程 stdin 管道、没有共享结果文件——每个请求独享一个文件。
+这使批处理命令在当前 host 中保持可靠；当前交互应用路径不是通用子进程 PTY 路径。
 
 ```
 Browser (TerminalClient)                Container (node host.js)
         │  write /cmd.json                    │
         │  ──────────────────────────────────►│  poll every 50ms
+        │  poll /ack-<id>.json                │  validate + accept
+        │  ◄──────────────────────────────────│  atomic ack
         │                                     │  dispatch command
         │  poll /result-<id>.json             │
         │  ◄──────────────────────────────────│  write /result-<id>.json
         │  read + delete                       │
 ```
 
-**单槽通道（single-slot channel）。** `/cmd.json` 是单文件邮箱：同一时刻最多一个请求在途。
-浏览器客户端经互斥队列串行化所有请求，host 一次处理一个请求。这是有意为之——让失败变得确定。
+该协议是批处理命令传输，不是第二套执行世界。`host.js` 和懒加载的 `lifo-core.js` 都在
+WebContainer 内执行；每实例 Lifo SandboxContext 与 Node/Python/Ruby/WASI adapter 共用虚拟化
+`node:fs`、cwd/env、进程、包与服务状态。浏览器只是控制/设备平面。交互 userland 命令走独立的
+session mailbox 终端传输，连接 Lifo `ITerminal` 与公开 `CommandContext.stdin` / `setRawMode`；
+它不在浏览器侧创建 Shell、编辑器或 TUI，也不会自动为任意 Python/Node 子进程开放 REPL。
+
+本文描述已实现的 v0.7 文件 RPC v2 契约：严格协议版本、带前缀的请求 id、boot nonce、
+instance identity、独立 delivery ack、原子结果、计时字段与有界去重均为线上要求。
+
+**单槽投递通道（single-slot delivery channel）。** `/cmd.json` 是单文件邮箱。客户端一次只投递
+一个请求，并等严格匹配的 ack 后才投递下一个；已接受请求可各自在独立结果文件上等待。host 的
+普通 scheduler 一次执行一个请求，`ping` / `interrupt` 使用优先队列，不覆盖未确认的普通请求。
 
 ## 2. 请求格式（`/cmd.json`）
 
@@ -32,10 +44,13 @@ Browser (TerminalClient)                Container (node host.js)
 
 ```jsonc
 {
-  "protocol": 1,        // protocol version（协议版本，v1 加入；字段缺失视为 1）
-  "id": 42,             // 唯一请求 id，按客户端严格递增
+  "protocolVersion": 2, // 必须严格等于 2
+  "id": "m8q2-abc-1",  // 页面/时间/随机前缀 + 客户端序号；也接受非负安全整数
   "cmd": "run",         // 取值：run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
-  "instanceId": "c-1",  // 实例上下文（可选，additive；缺失 = 默认实例）
+  "bootNonce": "boot-m8q2-abc-x", // 当前客户端/页面 epoch；必填
+  "instanceId": "c-1",  // 实例上下文（可选；缺失 = "default"）
+  "runtimeHint": "node", // node | python | lifo | protocol；调度提示
+  "queuedAt": 1786900000000,
   "opts": {             // 命令特定选项（可选）
     "command": "...",   // 完整命令字符串（run / spawn）
     "pid": 1234,        // 目标进程 id（kill）
@@ -58,15 +73,38 @@ Browser (TerminalClient)                Container (node host.js)
 | `ping`   | 存活探针                                       | —                    |
 | `exit`   | 优雅关闭握手                                   | —                    |
 
-host 每 **50 ms** 轮询 `/cmd.json`。它跟踪上次处理的 `id`，对 `id` 不是数字或等于上次值的请求
-直接忽略（去重）。未知 `cmd` 值以 `{ "ok": false, "error": "unknown command: <cmd>" }` 应答。
+host 每 **50 ms** 轮询 `/cmd.json`。请求 id 只能是非负安全整数，或匹配
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}` 的字符串；路径穿越 id 被拒绝。host 严格要求
+`protocolVersion === 2`、非空 `bootNonce` 与字符串 `cmd`。格式错误写结构化错误：
+`MALFORMED_JSON`、`INVALID_REQUEST`、`INVALID_REQUEST_ID` 或 `UNSUPPORTED_PROTOCOL`。
+未知 `cmd` 值以 `{ "ok": false, "error": "unknown command: <cmd>" }` 应答。
 
-处理完一个请求后 host **删除 `/cmd.json`**（P0-2）。`processedId` 是进程内去重，新 spawn 的
-host 起步为 `-1`，因此看门狗 kill + respawn 后残留的陈旧 `/cmd.json` 会被新 host 当作新命令
-真实执行一次——删除把这个窗口关掉（浏览器下一拍仍会覆盖写入，行为不变）。
+host 用容量 **4096** 的 FIFO processed-ID set 去重。重投已处理 id 时会再次写 ack，但不会二次
+执行；这让客户端重试投递不产生重复副作用。集合有界，旧 id 按插入顺序淘汰。
+
+接受一个请求后 host 写 ack 并**选择性删除 `/cmd.json`**。processed-ID set 是进程内状态，
+因此删除已接受请求仍是阻止 host respawn 后重放陈旧命令的必要边界。
 删除是**选择性**的：只删「文件内容仍是刚处理的那个请求」的文件；若处理期间有绕过队列的
 直接写入（`pingDirect`/`interruptDirect`）把 `/cmd.json` 覆盖成新请求，则保留它待下一轮
 轮询处理（否则看门狗等不到 pong 会误判 host 失联）。
+
+### 投递确认（`/ack-<id>.json`）
+
+host 完成校验、去重登记并接管请求后，以临时文件 + rename 原子写入：
+
+```jsonc
+{
+  "protocolVersion": 2,
+  "id": "m8q2-abc-1",
+  "bootNonce": "boot-m8q2-abc-x",
+  "instanceId": "c-1",
+  "acceptedAt": 1786900000015
+}
+```
+
+客户端最长等待 `min(请求超时, 5000 ms)`。只有 `protocolVersion`、`id`、`bootNonce` 与归一化
+`instanceId` 全部匹配才算送达；陈旧或跨实例 ack 被忽略。读到有效 ack 后客户端删除 ack 文件，
+释放投递槽，但继续独立轮询该请求的结果。
 
 ## 3. 响应格式（`/result-<id>.json`）
 
@@ -77,15 +115,28 @@ host 为每个请求恰好写一个结果文件，以请求 id 命名。浏览�
 
 ```jsonc
 {
-  "id": 42,            // 回显请求 id
+  "protocolVersion": 2,
+  "id": "m8q2-abc-1", // 回显请求 id
+  "bootNonce": "boot-m8q2-abc-x",
+  "instanceId": "c-1",
   "ok": true,          // 整体成功
   "exitCode": 0,       // 进程退出码（run/spawn）；无进程运行时为 -1
   "stdout": "...",     // 捕获的输出（run）
   "stderr": "...",     // 捕获的错误输出（run）
   "runtime": "node",   // "node" | "lifo" —— 实际执行该命令的路由
-  "kind": "pong"       // 协议命令判别器（ps/cwd/ping/exit）
+  "kind": "pong",      // 协议命令判别器（ps/cwd/ping/exit）
+  "timing": {
+    "queueMs": 15,
+    "hostMs": 2,
+    "resultPollMs": 25,
+    "totalMs": 40
+  }
 }
 ```
+
+结果同样以临时文件 + rename 原子落地。客户端仅接受四元身份
+`protocolVersion + id + bootNonce + instanceId` 完全匹配的结果；陈旧 host/page epoch 或其他实例的
+文件不会被当作成功。有效结果读后即删。
 
 各命令响应字段：
 
@@ -103,12 +154,10 @@ host 为每个请求恰好写一个结果文件，以请求 id 命名。浏览�
 
 ### 中断（`interrupt`）
 
-`interrupt` 实现浏览器 **Ctrl+C**（P5-15）。host 跟踪最近一个前台 `run` 子进程（真实 Node
-子进程）的 pid；`interrupt` 向它发 SIGTERM。范围：只针对那个前台 `run`——**后台 `spawn` 服务
-绝不被打断**，纯 Lifo 命令（在沙箱内运行、不在进程表里）不可中断（沙箱无 abort API）。kill
-后子进程的 `close` 事件结算原 `run` 请求（其结果文件出现）并清除跟踪的 pid，浏览器在途等待
-随即解除。客户端经 `interruptDirect()` 发送——直接写 `/cmd.json`、绕过串行化队列（排队的
-`interrupt` 只会在它要停掉的命令结束后才执行，毫无意义）。
+`interrupt` 实现浏览器 **Ctrl+C**。host 先中断该实例当前前台真实子进程；没有真实子进程时，
+则 abort 该实例当前 Lifo run。后台 `spawn` 服务不受影响。真实子进程的 `close` 或 Lifo
+AbortSignal 会结算原 `run` 结果。客户端把 `interruptDirect()` 放入优先投递队列，使其可在普通
+请求执行期间被 host 接受，而无需等被中断命令先结束。
 
 ### 会话 cwd（`cwd` / `setCwd`）
 
@@ -126,29 +175,27 @@ TTL（默认 **120 s**）更老的文件。TTL 可经在 host 启动前向 `/etc
 
 ### 实例上下文（`instanceId`）
 
-`instanceId` 是 **additive** 的可选请求字段（M3）。不带该字段的请求——即所有既有客户端——
-指向**默认实例**，与单实例协议逐字节兼容。每个结果文件回带归一化的 `instanceId`
-（缺失时回 `"default"`），客户端可据此核对路由。
+`instanceId` 是可选请求字段；缺失时归一化为 `"default"`。每个 ack 与结果都必须回带归一化的
+`instanceId`，客户端将其纳入严格身份校验，跨实例文件不能结算当前请求。
 
 共享 host 上的按实例语义（一页 = 一条 RPC 通道 + 一个 host）：
 
 | 面          | 行为 |
 |-------------|------|
 | 状态文件     | 会话 cwd（`/etc/succinix.cwd`）、env（`/etc/succinix.env`）、settings / services / autostart / motd / `succinix.engine.json` 按实例状态根 `<stateRoot>/etc/...` 解析（`stateRoot = /workspace/.succinix-<id>`；默认 = `/etc`）。 |
-| `ps`        | 带 `instanceId` 时只返回该实例进程 **+** `system` 进程；不带时返回全部（现状）。归属是启发式（spawn cwd），非安全边界。 |
-| `kill`      | 带 `instanceId`（非默认）时只能 kill 该实例归属进程；`system` 进程与外部/归属不明进程拒绝：`permission denied: process <pid> is not owned by instance '<id>'`。默认实例不变（可 kill 任意表条目）。组织性拦截，与 `ps` 同为启发式。 |
-| `interrupt` | 只中断请求实例的当前前台 `run` 子进程（`Map<instanceId, pid>`；default 键 = 旧单值行为全等）。中断 A 不会杀 B 的 run。 |
-| 共享队列     | `/cmd.json` 仍是单槽串行邮箱；`instanceId` 只区分归属。 |
-| 共享运行时   | Lifo sandbox 是页面级（每 host 一个）：交互 Lifo cwd **不**按实例同步。每实例 cwd 是浏览器侧逻辑值；node/python spawn 用显式绝对 cwd。完整边界见 SDK.md「多实例」节。 |
+| `ps`        | 返回该实例的真实子进程与 Lifo ProcessRegistry 投影；默认实例视图还包含全页/system 条目。归属是组织性边界，不是权限隔离。 |
+| `kill`      | 非默认实例只能 signal 自己的真实或 Lifo 进程；system 与外部/归属不明进程拒绝。默认实例可管理其可见表。 |
+| `interrupt` | 只中断请求实例的当前前台真实子进程或 Lifo run；中断 A 不会杀 B。 |
+| 共享队列     | 页面共享 `/cmd.json` 投递槽；ack 后可排下一个请求，普通执行仍由 host scheduler 串行。 |
+| 执行上下文   | 每实例一个 SandboxContext，拥有 CommandRegistry、ProcessRegistry、ServiceManager、cwd/env、package state 与 terminal session；浏览器不保存镜像状态。 |
 
 **多用户（U1）**：`userId` 与 `instanceId` 是同一字段 —— demo URL `?user=<id>` 映射为
 `instanceId=<id>` 外加每用户 home（`/workspace/users/<id>`；会话 cwd 种子为 home 的
 Lifo 视图，提示符渲染 `~`、node/python spawn 从 home 起步）。上面的 `ps` / `kill`
 对用户与实例完全同义；独立应用（`guest`）保持默认实例行为。
 
-验证盲区（如实标注）：两个浏览器 tab 是独立容器（各自 host），永远不会向共享 host 发
-`instanceId`——同页共享 host 的按实例路由（Map 分键 / ps 过滤 / 按实例 interrupt）由协议级
-单测覆盖，不由双 tab e2e 证明。
+同页共享 host 的 `instanceId` 路由、进程过滤、signal 授权与跨实例结果拒绝由协议单测覆盖；
+双 tab e2e 另验证独立容器与 IndexedDB scope，二者不是同一隔离层。
 
 ## 4. 命令路由（Command routing）
 
@@ -169,7 +216,10 @@ host 对 `run` 命令应用一条固定路由规则：
   执行代码字符串，`python <script.py>` 执行脚本（绝对路径按浏览器文件系统根 = host 进程 cwd 解析），
   `python -m pip install <pkg>` 映射到 Pyodide 的 micropip。交互式 REPL 不支持（AGENTS.md 边界）；
   `pip` 经 micropip 可用。
-- **其余一切** → **Lifo 沙箱**（`sandbox.commands.run`）。结果 `runtime: "lifo"`。
+- **其余一切** → 对应实例的 **Lifo SandboxContext**。其中 `ruby`、`wasi-run` / `wasi-info`、
+  `vi` / `nano`、`systemctl` 与第三方 UserlandRegistry command 都是注册到同一 CommandRegistry
+  的 adapter/命令。批处理结果通常标 `runtime: "lifo"`；进程表另按实际 adapter 标
+  `ruby` / `wasi` / `lifo`。
 
 命令字符串以 shlex 风格 tokenizer（`src/engine/tokenize.ts`）切分：单/双引号分组空白，反斜杠
 转义下一个字符（引号内 `\"` → 字面 `"`、`\\` → `\`、单引号内 `\'` → `'`），**未闭合引号抛**
@@ -182,13 +232,16 @@ host 对 `run` 命令应用一条固定路由规则：
 | 条件                       | 响应                                                            |
 |---------------------------------|---------------------------------------------------------------------|
 | 未知协议 `cmd`          | `{ ok: false, error: "unknown command: <cmd>" }`                    |
+| 非 v2 `protocolVersion` | `UNSUPPORTED_PROTOCOL` 结构化错误；不执行请求 |
+| 非法 id / 缺失 nonce    | `INVALID_REQUEST_ID` / `INVALID_REQUEST`；不执行请求 |
+| ack/result 身份不匹配   | 客户端忽略该文件并继续等待；超时后报告 delivery/result timeout |
 | Node 子进程未找到       | `{ ok: false, exitCode: -1, stderr: String(e), runtime: "node" }`   |
 | Node 子进程超时       | 子进程被杀；`{ ok: false, exitCode: -1, stderr: "node subprocess timed out after <ms>ms, killed", runtime: "node" }` |
 | Node/npm stderr 含 `EACCES` + `/usr/local` | 原 stderr，换行后追加 `hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`（TASK24） |
 | Python 资产未注入      | `{ ok: false, exitCode: -1, stderr: "python runtime failed to load: assets not injected yet ...", runtime: "node" }` |
 | Lifo 命令抛错             | `{ ok: false, exitCode: -1, stderr: <前 200 字符>, runtime: "lifo" }` |
 | 对非 node 命令 `spawn` | `{ ok: false, error: "spawn only supports node/npm/npx background processes ...", runtime: "lifo" }` |
-| `kill` 表外 pid       | `{ ok: false, killed: false, message: "process <pid> not in process table; Lifo-side processes are list-only (kill not supported)" }` |
+| `kill` 表外 pid       | `{ ok: false, killed: false, message: "process <pid> not in process table" }` |
 | `setCwd` 路径非法        | `{ ok: false, error: "setCwd: cwd must be an absolute path ..." / "setCwd: not a directory: ..." }` |
 
 **输出上限（output cap）。** 每条命令的 `stdout` 与 `stderr` 各自上限约 1 MB（保留尾部）。
@@ -196,13 +249,17 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
 
 ## 5. 进程模型（Process model）
 
-- **`spawn`** 启动后台长驻进程（仅 node 系；Lifo 无后台概念）。host 立即返回 pid，进程输出
-  流入其进程表条目（`outputTail`，最近约 500 字符）。
+- **`spawn` RPC** 启动后台长驻进程（仍限 node 系）。host 立即返回 pid，进程输出流入其进程表
+  条目（`outputTail`，最近约 500 字符）。Lifo 后台 job/service 由自身 ProcessRegistry /
+  ServiceManager 管理，不经 `spawn` RPC 伪造。
 - **启动确认窗口（2 s）。** 2 秒内非零退出的 spawn 进程报告为**失败**（`ok: false`）——例如
   不存在的 `npx` 包，或带语法错误的 node 脚本。健康服务（tinbase、http 服务器）越过窗口且
   调用方无感知。
-- **进程表**（`host-procs`）：每个真实子进程注册为 `{ pid, cmd, status: running|exited,
-  startTime, exitCode?, outputTail? }`。表上限 100 条，清理最老的 exited 条目。
+- **统一进程视图**：`ps` 聚合 host 真实子进程与每实例 Lifo ProcessRegistry。Lifo 本地 pid
+  会映射为 host 内稳定且不冲突的公开 pid；条目统一携带 runtime、instanceId、cwd、state、
+  interactive 与 terminalSessionId（适用时）。Ruby、WASI 与交互工具因此走同一查询/信号面。
+- **真实子进程表**（`host-procs`）条目为 `{ pid, cmd, status: running|exited, startTime,
+  exitCode?, outputTail? }`，上限 100 条，清理最老的 exited 条目。
 - **进程归属**（TASK-CISOL）：每个 `ps` 条目额外携带 `scope`（`system` | `container` |
   `unknown`），`scope=container` 时带 `containerId`（如 `c-1`）。判定为启发式：命令命中
   Succinix 系统资产（`node host.js`、`node python-daemon.js`、任何 `/usr/lib/succinix/`
@@ -213,11 +270,17 @@ host 在 2 倍上限处增量裁剪，并在落定结果时做最终截断，因
     长得像系统资产就会被标为 `system`）。仅用于 **UI 展示、查询过滤与组织性 kill 授权**——
     不可作为真实权限 / 安全隔离的信任依据。需要硬语义时改显式声明制（spawn 时调用方显式传
     `scope`）。
-- **`kill`** 向表条目发 SIGTERM；子进程 `close` 事件后条目翻转为 `exited`。设置
+- **`kill`** 支持 `SIGINT` / `SIGTERM` / `SIGKILL`，按公开 pid 路由到 Lifo ProcessRegistry 或
+  真实子进程。真实子进程 `close` 后条目翻转为 `exited`。设置
   `opts.forceAfterMs` 时，host 在宽限期后若条目仍为 `running` 则升级 SIGKILL，保证
   service/db stop 这类生命周期路径能确定终止。失败 spawn（如 ENOENT）显式标记 `exited`，
   因为该情况下 `close` 永不触发。
-- **Lifo 侧进程仅可列出**——它们不在表中，`kill` 报 "not in process table" 消息而非假装终止。
+- **交互生命周期**：terminal session id 进入对应 Lifo 进程条目；session close、实例 release 与
+  host teardown 都清理 terminal、进程、service 与 registry 状态。
+
+服务使用同一实例的 Lifo ServiceManager / ProcessRegistry。`systemctl` 是该 manager 的 ASCII
+adapter；官方模板 `node-http`、`vite`、`static-http`、`python-http`、`tinbase`、`websocket`、
+`worker` 写入同一 unit 数据源。它是声明式服务管理器，不模拟 PID 1。
 
 ## 6. 端口事件（Port events）
 
@@ -258,10 +321,10 @@ engine 自身不隧道端口；它把 WebContainer 的端口生命周期中继�
 
 ### `pingDirect` 看门狗
 
-host 存活看门狗以绕过互斥队列的直接 `ping` 探测 host，因此持队列的长命令无法推迟存活检测。
-通道繁忙时探测跳过（中性）：若存在排队未开始的请求，或上次 `/cmd.json` 写入在 **250 ms**
-host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、`false` = 超时（host 不可达）、
-`null` = 跳过。
+host 存活看门狗以绕过普通队列的优先 `ping` 探测 host，因此长命令不会推迟存活检测。
+通道繁忙时探测跳过（中性）：若存在普通投递正在等待 ack，或普通队列已有请求，则跳过；
+优先 ping 不会覆盖未确认的普通投递。`true` = pong、`false` = 超时（host 不可达）、
+`null` = 本轮跳过。
 
 ## 8. 客户端行为（Client behavior）
 
@@ -269,16 +332,19 @@ host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、
 - **自适应轮询（adaptive polling）。** 浏览器从 25 ms 起轮询结果文件，指数退避到 150 ms 上限，
   因此快命令快速返回、长命令不锤击文件系统。
 - **读后删（read-then-delete）。** 结果文件成功读取后立即删除。
-- **协议版本（protocol version）。** 每个请求携带 `protocol: 1`。字段缺失视为版本 1。host
-  **不**严格拒绝版本不匹配——未知字段被忽略，因此版本是咨询性而非硬门禁。未来改动应保持向后
-  兼容；破坏性改动会把本文档版本号升级，客户端适配新响应形态，而非被直接拒绝。
+- **协议版本（protocol version）。** 每个请求与 ack/result 都携带 `protocolVersion: 2`。
+  host 严格拒绝其他版本；客户端严格匹配版本、id、bootNonce 与 instanceId，不把陈旧文件
+  当作当前响应。v2 之外的兼容由迁移层处理，不在 host 中保留 v1 回退。
+- **身份与时间。** `bootNonce` 标记页面/host epoch；`queuedAt`、ack `acceptedAt` 与结果
+  `timing` 用于 queue/host/poll/total 可观测性。请求 id 受路径安全字符集与 bounded processed-ID
+  set 约束。
 
 ## 9. Engine 公开 API（摘要）
 
-0.6.0 起 engine 是面向 `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件：
+0.7.0 起 engine 是面向 `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件：
 `@succinix/engine` 导出 `{ name: 'succinix', apply, Config }`，提供 dsh 服务键
 `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`，并通过
-内部 `succinix-host` seam 暴露应用生命周期。0.4.0 独立 SDK 导出
+内部 `succinix` seam 暴露应用生命周期。0.4.0 独立 SDK 导出
 （`createTerminalExecutor`、`createSuccinixInstance`、`./terminal`、
 `./instance`）与单键服务均已移除，迁移见 [MIGRATION.md](MIGRATION.md)。
 
@@ -289,8 +355,9 @@ host 轮询余量内（host 可能尚未读取），则跳过。`true` = pong、
 - `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` —— 插件与 Succinix boot
   序列共享的底层 boot 助手。
 
-`succinix-host` seam 保留命令风格门面语义：`host.executor.exec(command, opts)`、
-`spawn(command, opts)`、`listProcesses()`、`kill(pid)`、`ping()`、`dispose()`。
+`succinix` seam 保留命令风格门面语义：`host.executor.exec(command, opts)`、
+`spawn(command, opts)`、`listProcesses()`、`kill(pid, options)`、`ping()`、`respawn()`、
+`dispose()`；`host.terminal.open({ instanceId, cols, rows })` 打开执行世界交互 session。
 `TerminalExecutor.exec` 在 RPC 等待超时时返回 `{ ok: false, timedOut: true }` 而非
 抛异常（底层 `TerminalClient.exec` 仍抛）。`spawn` 返回完整 `ExecResult`
 （`{ pid }` 的超集），调用方可读取 `ok`/`runtime`/`error`。
@@ -300,7 +367,8 @@ dsh 服务面对应同一底层运行时：
 - `ctx.fs` 在共享 WebContainer 文件系统上暴露文件原语。
 - `ctx.sandbox.confine(argv, policy)` 同步包装 Lifo argv，并对
   `node|npm|npx` fail-closed。
-- `ctx.terminals` 是 owner 隔离的 PTY registry。
+- `ctx.terminals` 是 owner 隔离的 PTY registry；其 Succinix backend 包装同一
+  `InteractiveTerminalSession`，不维护浏览器 Shell 状态。
 - `ctx.sessionPersistence` 是 event-sourced JSONL 日志。
 
 插件打包/内嵌设计见 [SDK.zh-CN.md](SDK.zh-CN.md)，第三方接入见
@@ -310,11 +378,13 @@ dsh 服务面对应同一底层运行时：
 
 这些是环境/协议的有意限制：
 
-- **交互式 stdin** 在 WebContainer 中不可靠——文件 RPC 替代它。`log -f` 与 REPL 风格进程
-  不支持。这也是 `python` 没有交互式 REPL 的原因（用 `python -c "<code>"` /
-  `python <script.py>` / `python -m pip <cmd>`）。`pip` 经 Pyodide 的 micropip 可用
-  （纯 Python wheel 经 NODEFS site-packages 刷新后仍在；编译 wheel 如 numpy 刷新后需一次
-  `pip install`——文本快照不带 `.so` 文件，见 `docs/LANGUAGES.md`）。
+> 批处理 stdin 与交互终端是两条传输面：前者是文件 RPC v2，后者是 session-scoped
+> WebContainer mailbox，二者落到同一个 Lifo execution world。
+
+- **通用子进程 stdin** 仍不可用——文件 RPC v2 是批处理通道；交互 session 只服务显式声明
+  `CommandContext.stdin` / `setRawMode` 的 Lifo userland 命令。`log -f` 与任意 Node/Python
+  子进程 REPL 不受此 seam 自动支持。`pip` 经 Pyodide micropip 可用，纯 Python 与编译 wheel
+  随 snapshot v2 binary export 恢复。
 - **会话 cwd 同步仅覆盖 `/workspace` 挂载**：Lifo 进入 VFS 私有路径（如 `/tmp`、
   `/home/user`）的 `cd` 在 Lifo 内成功，但无 host 文件系统等价物，因此会话 cwd 保持不变
   （Node/Python 子进程保持上次同步的 cwd）。

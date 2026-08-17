@@ -1,11 +1,11 @@
 # Succinix Manageability (C4)
 
-`@succinix/engine@0.6.0` exposes a management surface through the internal
-`succinix-host` seam: `host.state`, typed `succinix/*` events,
+`@succinix/engine@0.7.0` exposes a management surface through the internal
+`succinix` seam: `host.state`, typed `succinix/*` events,
 `onServerReady` / `onServerClosed`, configuration reload, and failure
-isolation. The Succinix app provides two minimal local commands for
-self-verification; full plugin-management UI belongs to the host (for example
-SunamAI's plugin manager).
+isolation. The Succinix app provides the `succinix` management commands for the
+`succinix-linux-userland/0.7` profile; full plugin-management UI belongs to the
+host (for example SunamAI's plugin manager).
 
 ## State
 
@@ -33,6 +33,14 @@ Every mutation is broadcast as `succinix/state` with
 | `succinix/server-ready` | Port became ready with instance attribution |
 | `succinix/server-closed` | Port closed with instance attribution |
 | `succinix/command` | Telemetry: id, instance, runtime, exit code, timing, pid, error |
+| `succinix/command-start` | Command lifecycle start: id, instance, command, startedAt |
+| `succinix/command-finish` | Command completion; same payload as `succinix/command` |
+| `succinix/runtime-ready` | Runtime asset booted: runtime, loadedAt, cached (node/python/lifo/ruby/wasi) |
+| `succinix/degradation` | Capability degradation, e.g. `RUNTIME_ASSET_INJECTION_FAILED`, with retryable flag |
+| `succinix/persistence` | Persistence state transitions: clean/saving/saved/quota-exceeded/corrupt/degraded |
+| `succinix/terminal-open` | Terminal session opened: instanceId, sessionId, bootNonce |
+| `succinix/terminal-close` | Terminal session closed with the same identity fields |
+| `succinix/terminal-backpressure` | Terminal output buffered beyond the watermark: queuedBytes, limitBytes |
 | `succinix/instance` | Instance created or released |
 | `succinix/workspace` | Snapshot/workspace save, restore, clear, or flush |
 | `succinix/process` | Process-table snapshot from `listProcesses()` |
@@ -53,11 +61,25 @@ Consumers can subscribe through `host.on(...)` or the Cordis event channel
 
 ## Local Commands
 
+The `succinix` namespace covers browser-only management for the
+`succinix-linux-userland/0.7` profile:
+
 - `succinix status` prints `host.state` plus the engine fiber state.
 - `succinix plugins` lists each Cordis plugin runtime and its fiber states,
   including `FAILED`.
+- `succinix capabilities` prints the profile: every command with
+  status/runtime/execution contract plus the fail-closed denylist (exit 126).
+- `succinix doctor` runs the self-check (host RPC ping, persistence, userland
+  profile, engine state) with `[  OK  ]` / `[ FAIL ]` / `[SKIP]` markers.
+- `succinix net doctor` / `net preview` / `net tunnel` report network
+  capability, virtual preview ports, and the fail-closed outbound bridge
+  (`unavailable`).
+- `succinix init` / `run` / `serve` / `open [port]` detect the project
+  (`package.json`, `pyproject.toml`, `requirements.txt`, Vite config,
+  `index.html`), spawn the dev command, register the declarative service, and
+  print the preview URL.
 
-Both outputs are ASCII, English, and emoji-free.
+All outputs are ASCII, English, and emoji-free.
 
 ## Failure Isolation
 

@@ -1,7 +1,8 @@
-// invariant: internal succinix-host seam + dsh Context augmentation.
+// invariant: internal succinix seam + dsh Context augmentation.
 import type { WebContainer } from '@webcontainer/api';
 import type {
   EngineBootHooks,
+  InteractiveTerminalService,
   ProcInfo,
   TerminalClient,
   TerminalExecutor,
@@ -12,11 +13,6 @@ import type {
   PersistContext,
   SnapshotMeta,
 } from '../persist/index.js';
-import type {
-  SuccinixTerminalSession,
-  TerminalOutput,
-  TerminalSessionOptions,
-} from '../terminal/index.js';
 import type { SuccinixConfig } from './config.js';
 import type {
   SuccinixEventMap,
@@ -31,6 +27,7 @@ import type {
   SessionPersistence,
   TerminalSessionService,
 } from './dsh-types.js';
+import type { SuccinixUserlandService } from './userland-service.js';
 
 export type { SuccinixConfig } from './config.js';
 export type {
@@ -48,6 +45,13 @@ export type {
   SuccinixStateEvent,
   SuccinixPortEvent,
   SuccinixCommandEvent,
+  SuccinixCommandStartEvent,
+  SuccinixCommandFinishEvent,
+  SuccinixRuntimeReadyEvent,
+  SuccinixDegradationEvent,
+  SuccinixPersistenceEvent,
+  SuccinixTerminalEvent,
+  SuccinixTerminalBackpressureEvent,
   SuccinixInstanceEvent,
   SuccinixWorkspaceEvent,
   SuccinixProcessEvent,
@@ -59,6 +63,8 @@ export type {
   ProcInfo,
   TerminalClient,
   TerminalExecutor,
+  InteractiveTerminalService,
+  InteractiveTerminalSession,
 } from '../engine/index.js';
 export type {
   PersistContext,
@@ -66,15 +72,7 @@ export type {
   SnapshotMeta,
 } from '../persist/index.js';
 export type { SuccinixRestartContext } from '../instance/index.js';
-export type {
-  SuccinixTerminalSession,
-  TerminalOutput,
-  TerminalSessionOptions,
-} from '../terminal/index.js';
-
 export interface AttachOptions {
-  output?: TerminalOutput;
-  terminal?: TerminalSessionOptions;
   statePrefix?: string;
   home?: string;
   persistence?: SuccinixInstanceOptions['persistence'];
@@ -99,7 +97,7 @@ export interface SuccinixContainerHandle {
 }
 
 export interface SuccinixTerminalService {
-  create(output: TerminalOutput, opts?: TerminalSessionOptions): SuccinixTerminalSession;
+  open(options: Parameters<InteractiveTerminalService['open']>[0]): ReturnType<InteractiveTerminalService['open']>;
 }
 
 export interface SuccinixSnapshotService {
@@ -160,6 +158,7 @@ export interface SuccinixServicesService {
   status(name: string): Promise<SuccinixServiceState>;
   start(name: string): Promise<SuccinixServiceAction>;
   stop(name: string): Promise<SuccinixServiceAction>;
+  restart(name: string): Promise<SuccinixServiceAction>;
   enable(name: string): Promise<boolean>;
   disable(name: string): Promise<boolean>;
   add(name: string, command: string, port: number | null): Promise<void>;
@@ -188,7 +187,6 @@ export interface SuccinixCapabilityService {
 export interface SuccinixInstance {
   instanceId: string;
   client: TerminalClient;
-  terminal: SuccinixTerminalSession;
   executor: TerminalExecutor;
   persist: PersistContext;
   ports: Map<number, string>;
@@ -214,6 +212,7 @@ export interface SuccinixHostService {
   readonly workspace: SuccinixWorkspaceService;
   readonly ports: SuccinixPortsService;
   readonly services: SuccinixServicesService;
+  readonly userland: SuccinixUserlandService;
   readonly capabilities: SuccinixCapabilityService;
   readonly instance: SuccinixInstance | null;
 
@@ -238,7 +237,7 @@ export interface SuccinixHostService {
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    'succinix-host': SuccinixHostService;
+    succinix: SuccinixHostService;
     fs: FileSystem;
     sandbox: SandboxProvider;
     terminals: TerminalSessionService;

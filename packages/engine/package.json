@@ -1,6 +1,6 @@
 {
   "name": "@succinix/engine",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Succinix engine as a dsh-compatible Cordis plugin: a Unix-like sandbox (real Node runtime + Lifo userland) inside a WebContainer, exposed through ctx.fs, ctx.sandbox, ctx.terminals and ctx.sessionPersistence.",
   "type": "module",
   "main": "./dist/index.js",

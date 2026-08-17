@@ -1,6 +1,6 @@
 # Succinix Engine — dsh Cordis Integration
 
-> Status: **0.6.0 dsh service provider (release-ready)**. `@succinix/engine` is a
+> Status: **0.7.0 dsh service provider (release-ready)**. `@succinix/engine` is a
 > Cordis plugin for `@deepseek-ai/cordis@4.0.1` and the only public integration
 > surface. It provides the dsh service keys `ctx.fs`, `ctx.sandbox`,
 > `ctx.terminals`, and `ctx.sessionPersistence`. The old 0.4.0 standalone SDK
@@ -22,7 +22,7 @@ This document is the integration reference. For the wire protocol, see
 ## Install
 
 ```bash
-npm install @succinix/engine@0.6.0
+npm install @succinix/engine@0.7.0
 npm install @deepseek-ai/cordis @webcontainer/api   # peer dependencies
 ```
 
@@ -48,7 +48,7 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const wc = await WebContainer.boot();
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 await host.attach(wc);
 await host.ensureInstance('default', { executor: {} });
 
@@ -86,7 +86,7 @@ or probe with `ctx.get('fs', false)`. The published `.d.ts` augments the
   types and the host-seam types.
 - `./host.js`, `./lifo-core.js`, and `./assets/*` are static assets for the
   host daemon, Lifo kernel, Pyodide runtime, and `sha256.json`.
-- There is no `./terminal` or `./instance` subpath in 0.6.0.
+- There is no `./terminal` or `./instance` subpath in 0.7.0.
 
 ## Public dsh services
 
@@ -175,8 +175,10 @@ process-local and are not restored after a host restart.
 
 ### `ctx.sessionPersistence`
 
-`SessionPersistence` is an append-only event log stored as JSONL under
-`/workspace/.succinix/sessions`:
+`SessionPersistence` is an append-only event log stored as a manifest plus
+segmented JSONL files under `/workspace/.succinix/sessions/segments` in v0.7.
+The old single-artifact `.jsonl` format remains readable only when a host is
+explicitly configured for the v0.6 compatibility adapter:
 
 - `create(meta)` may be lazy: a session with no appended events does not appear
   in `list` / `listSnapshots`.
@@ -185,18 +187,36 @@ process-local and are not restored after a host restart.
 - `load` repairs only torn trailing lines and never rewrites a complete log.
 - `inspect` is read-only and does not commit repair.
 - `readRaw` returns the verbatim artifact when `supportsRawArtifacts` is true.
-- Durability is WebContainer filesystem write plus an active snapshot flush; it
-  is best-effort across page reload, not a crash-hard guarantee.
+- Segments roll at 500 events or 1 MiB; appends touch only the active segment,
+  and compaction switches a temporary manifest atomically.
+- `readRaw` reconstructs the header and segment payload on demand; revisions are
+  source-qualified and contiguous sequence gaps fail closed.
+- Durability is a WebContainer filesystem write plus the active binary snapshot
+  generation flush. Snapshot chunks are SHA-256 verified and retain a
+  last-known-good generation; v0.6 IndexedDB records are reported as
+  `legacy snapshot detected` and are never imported automatically.
+
+### Snapshot v2 lifecycle
+
+Instance snapshots are exported from the WebContainer as binary data and stored
+in generation-scoped IndexedDB chunks (256 KiB by default). A manifest is
+committed only after all chunks and its SHA-256 digest verify; the active pointer
+then advances while retaining the previous generation as last-known-good. The
+instance persistence status is `clean`, `dirty`, `saving`, `saved`,
+`quota-exceeded`, `corrupt`, or `degraded`. `pagehide`, hidden-page lifecycle
+events, `snapshot now`, and the 30-second maximum-age backstop request a
+best-effort flush. Files absent from a verified generation are removed after a
+successful mount; a failed verification does not advance the active pointer.
 
 ## Host seam
 
-`succinix-host` is the internal lifecycle and app-observability seam. It is not
+`succinix` is the internal lifecycle and app-observability seam. It is not
 a dsh service key; trusted consumers that run inside the same Cordis context
 can probe it:
 
 ```ts
-const host = ctx.get('succinix-host', false);
-if (!host) throw new Error('succinix-host is not available');
+const host = ctx.get('succinix', false);
+if (!host) throw new Error('succinix is not available');
 ```
 
 The seam exposes:
@@ -206,12 +226,13 @@ The seam exposes:
 | `state` | Plugin state: version, container, host, instances, capabilities, `configRevision`, `lastError` |
 | `container` | Current container handle: `mode`, `state`, `wc`, `hostPid`, `startedAt` |
 | `executor` | Default-instance `TerminalExecutor`: `exec`, `spawn`, `listProcesses`, `kill`, `ping`, `pingDirect`, `interruptDirect`, `respawn` |
-| `terminal` | `terminal.create(output, opts?)` returns a UI-free terminal session for the app shell |
+| `terminal` | `terminal.open({ instanceId, cols, rows })` opens the WebContainer-native interactive Lifo terminal |
 | `snapshot` | `save`, `restore`, `meta`, `clear` for the default instance |
 | `persist` | Persistence context (snapshot keys, force save) |
 | `workspace` | `restore`, `flush`, `list`, plus `stateRoot` and `home` |
 | `ports` | `list`, `ready`, `expect`, `release`, `hasConflict`, `onServerReady`, `onServerClosed` |
 | `services` | Declarative service management: `list`, `read`, `status`, `start`, `stop`, `enable`, `disable`, `add`, `remove`, `autostart`, `ensureFiles` |
+| `userland` | Execution-world extension registry: structured commands, packages, and service templates; `flush` publishes registrations to the active host |
 | `capabilities` | Local capability registry: `check`, `list`, `define` |
 | `instance` | Default `SuccinixInstance` or `null` |
 | `boot` | Boot an internal WebContainer |
@@ -280,7 +301,7 @@ export interface SuccinixConfig {
     instanceId?: string;
     statePrefix?: string;
     home?: string;
-    persistence?: { dbName?: string; storeKey?: string };
+    persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
   terminal?: {
     cwd?: string;
@@ -331,23 +352,39 @@ boundary.
 
 ## Terminal sessions
 
-The app shell brings its own rendering. `TerminalOutput` is a two-method
-contract:
+The human shell runs inside the instance's WebContainer/Lifo Sandbox. The
+browser terminal is only a device: it forwards input, output, and live
+dimensions through `InteractiveTerminalService.open()`.
 
 ```ts
-const session = host.terminal.create({
-  write: (data) => term.write(data),
-  clear: () => term.clear(),
+const session = await host.terminal.open({
+  instanceId: 'default',
+  cols: term.cols,
+  rows: term.rows,
 });
 
-term.onData((data) => session.handleData(data));
-await session.boot();
+const output = session.onData((data) => term.write(data));
+const input = term.onData((data) => void session.send(data));
+const resize = term.onResize(({ cols, rows }) => {
+  void session.resize(cols, rows);
+});
+
+// During teardown:
+input.dispose();
+resize.dispose();
+output();
+await session.close();
 ```
 
-`SuccinixTerminalSession` owns history, Tab completion, command queueing,
-Ctrl+C interrupt, and cwd-following prompts. xterm is not a dependency. The
-public `ctx.terminals` service is the dsh-shaped owner-scoped registry; the
-app-level session above is the internal rendering backend.
+The returned `InteractiveTerminalSession` exposes `id`, `send`, `resize`,
+`onData`, `signal`, and `close`. History, completion, raw mode, cwd, shell jobs,
+and `vi`/`nano` state remain in Lifo. The removed
+`SuccinixTerminalSession`, `TerminalOutput`, and `terminal.create()` APIs have
+no compatibility wrapper. Batch `executor.exec()` continues to use RPC v2.
+
+The public `ctx.terminals` service remains the dsh owner-scoped registry. Its
+Succinix backend delegates to the same interactive session, so built-in tools
+and third-party terminal consumers share one execution-world path.
 
 ## Ports and services
 
@@ -393,6 +430,42 @@ const dispose = host.capabilities.define('fs.write', () => isAllowed());
 The registry defaults to allow; `capabilities.defaultAllow` and
 `capabilities.rules` override it.
 
+## Userland extensions
+
+Register extensions on the running host, after `boot()` or `attach()`. The
+registration is serialized to the WebContainer mailbox; `flush()` is the
+deterministic boundary before executing the newly registered command.
+
+```ts
+const host = ctx.get('succinix', false)!;
+const unregister = host.userland.registerCommand({
+  name: 'hello-userland',
+  status: 'adapter',
+  runtime: 'lifo',
+  execution: 'batch',
+  source: { kind: 'shell', command: 'printf "hello\\n"', appendArgs: false },
+});
+
+await host.userland.flush();
+const result = await host.executor.exec('hello-userland');
+unregister();
+await host.userland.flush();
+```
+
+`host.userland` is the only registration surface connected to the active
+execution world. `createUserlandRegistry()` is exported for offline
+descriptions and tests; it does not install a command in a running host.
+Commands accept only structured execution-world sources, never browser
+functions. The registry rejects duplicate names and the kernel-dependent
+denylist. Package and service-template registrations use the same mailbox,
+package manifest, VFS, process, service, instance, and lifecycle state.
+
+Interactive commands must declare `execution: 'interactive'` and use Lifo's
+public `CommandContext.stdin` and `setRawMode` contract. They share the same
+terminal transport as `vi`, `nano`, and installed Lifo packages; consumers
+must not import Lifo's internal terminal implementation or create a browser
+terminal application.
+
 ## Lifecycle and hot reload
 
 - The HostManager is a page-level module singleton, not a Cordis fiber.
@@ -427,6 +500,13 @@ through `host.on` and the Cordis context:
 | `succinix/server-ready` | `{ port, url?, instanceId? }` |
 | `succinix/server-closed` | `{ port, instanceId? }` |
 | `succinix/command` | command telemetry: id, instance, runtime, exit, duration |
+| `succinix/command-start` | `{ id, instanceId, command, startedAt }` before execution |
+| `succinix/command-finish` | same payload as `succinix/command` |
+| `succinix/runtime-ready` | `{ runtime, loadedAt, cached, instanceId? }` runtime asset booted |
+| `succinix/degradation` | `{ code, message, runtime, retryable, degraded, instanceId? }` |
+| `succinix/persistence` | `{ instanceId, state, generation?, savedAt?, error? }` state transitions |
+| `succinix/terminal-open` / `succinix/terminal-close` | `{ instanceId, sessionId, bootNonce }` session lifecycle |
+| `succinix/terminal-backpressure` | `{ instanceId, sessionId, bootNonce, queuedBytes, limitBytes }` |
 | `succinix/instance` | `{ containerId, state: 'created' \| 'released' }` |
 | `succinix/workspace` | `{ instanceId, reason, savedAt? }` |
 | `succinix/process` | `{ instanceId, processes }` (polled aggregate) |
@@ -458,7 +538,15 @@ verified against `sha256.json` before injection.
   `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: credentialless`.
 - Ports are virtual previews; there is no real inbound network.
-- No interactive REPL stdin; file-based RPC is the channel.
+- File-based RPC v2 is the batch channel; it is not a generic child-process PTY.
+- The execution-world boundary is intentional: WebContainer/Lifo owns userland commands,
+  runtimes, packages, services, editors, TUIs, and third-party extensions. The browser is only
+  the control/device plane and must not implement a parallel command or editor model. The current
+  host connects explicitly interactive userland commands to Lifo's exported
+  `ITerminal` and public `CommandContext.stdin`/`setRawMode` seam through thin
+  transport.
+- This does not make arbitrary Node/Python child-process REPLs supported. Generic child-process
+  stdin remains unavailable until a separate, verified host transport exists.
 - Lifo does not support symlinks or hard links.
 - `chmod` semantics and permission bits are not simulated.
 - Precise OS-level memory/CPU stats are unavailable; estimates are labeled.
@@ -468,8 +556,8 @@ verified against `sha256.json` before injection.
 
 ## Related documents
 
-- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 to 0.6.0 guide
+- [MIGRATION.md](MIGRATION.md) — migration to the 0.7.0 single-track plugin
 - [PLUGIN.md](PLUGIN.md) — third-party Cordis plugin integration
 - [cordis-contract.md](cordis-contract.md) — authoritative contract snapshot
-- [PROTOCOL.md](PROTOCOL.md) — file-RPC wire contract (v1)
+- [PROTOCOL.md](PROTOCOL.md) — RPC v2 and interactive-terminal wire contracts
 - [FEATURES.md](FEATURES.md) — supported capabilities

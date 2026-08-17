@@ -11,17 +11,17 @@ async function s5(h) {
     return entries.map((e) => e.name + (e.isDirectory() ? '/' : '')).join(',');
   })()`);
   note(`[S5] /ws at start: ${wsInit}`);
-  await h.run('workspace create proj-a');
-  await h.run('workspace create proj-b');
-  await h.run('workspace switch proj-a');
+  await h.run('succinix workspace create proj-a');
+  await h.run('succinix workspace create proj-b');
+  await h.run('succinix workspace switch proj-a');
   await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/ws/proj-a/a.txt','a-file-content')`);
 
-  await h.run('workspace switch proj-b');
+  await h.run('succinix workspace switch proj-b');
   const aInB = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-b/a.txt','utf8').then(()=>true).catch(()=>false)`);
   check(checks, 'proj-b does not see proj-a file', aInB === false, `a.txt visible in proj-b: ${aInB}`);
   await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/ws/proj-b/b.txt','b-file-content')`);
 
-  await h.run('workspace switch proj-a');
+  await h.run('succinix workspace switch proj-a');
   const aTxt = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-a/a.txt','utf8').catch(()=>'MISSING')`);
   check(checks, 'proj-a file intact after switch', aTxt === 'a-file-content', aTxt);
   const bInA = await h.evalValue(`window.__succinixScenario.wc.fs.readFile('/ws/proj-a/b.txt','utf8').then(()=>true).catch(()=>false)`);
@@ -42,15 +42,15 @@ async function s5(h) {
   check(checks, 'proj-a file retained after refresh', aAfter === 'a-file-content', aAfter);
 
   // 清理：切回 main，删除两个测试工作区
-  const swMain = await h.run('workspace switch main');
-  const rmA = await h.run('workspace rm proj-a --yes');
-  const rmB = await h.run('workspace rm proj-b --yes');
-  const wsList = await h.run('workspace');
+  const swMain = await h.run('succinix workspace switch main');
+  const rmA = await h.run('succinix workspace rm proj-a --yes');
+  const rmB = await h.run('succinix workspace rm proj-b --yes');
+  const wsList = await h.run('succinix workspace');
   check(
     checks,
     'workspace cleanup',
     swMain.handled === true && rmA.handled === true && rmB.handled === true && !wsList.output.includes('proj-a') && !wsList.output.includes('proj-b'),
-    `switch=${swMain.output.trim().slice(0, 40)} | rmA=${rmA.output.trim().slice(0, 40)} | rmB=${rmB.output.trim().slice(0, 40)} | list=${wsList.output.trim().split('\n').slice(0, 3).join('; ')}`
+    `switch=${swMain.ok}/${swMain.output.trim().slice(0, 40)} | rmA=${rmA.ok}/${String(rmA.error || rmA.stderr || rmA.output).trim().slice(0, 80)} | rmB=${rmB.ok}/${String(rmB.error || rmB.stderr || rmB.output).trim().slice(0, 80)} | list=${wsList.output.trim().split('\n').slice(0, 3).join('; ')}`
   );
   return checks;
 }
@@ -66,9 +66,9 @@ async function s8(h) {
   })()`);
   check(checks, '300 files written', n === 300, `n=${n}`);
 
-  // snapshot now（强制落盘）
-  const sn = await h.run('snapshot now', 60000);
-  check(checks, 'snapshot now', sn.handled === true && sn.output.includes('Snapshot saved'), sn.output ? sn.output.trim().slice(0, 140) : '');
+  // succinix snapshot now（强制落盘）
+  const sn = await h.run('succinix snapshot now', 60000);
+  check(checks, 'succinix snapshot now', sn.handled === true && sn.output.includes('Snapshot saved'), sn.output ? sn.output.trim().slice(0, 140) : '');
 
   // 刷新 → 全恢复 + 抽样校验
   await h.reloadAndWait(120000);
@@ -91,7 +91,7 @@ async function s8(h) {
 
   // 清理
   await h.evalValue(`window.__succinixScenario.wc.fs.rm('/pstress', { recursive: true, force: true })`);
-  await h.run('snapshot now', 60000);
+  await h.run('succinix snapshot now', 60000);
   return checks;
 }
 

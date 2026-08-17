@@ -1,6 +1,6 @@
 # Succinix Engine — dsh Cordis 集成参考
 
-> 状态：**0.6.0 dsh 服务提供方（发布就绪）**。`@succinix/engine` 是面向
+> 状态：**0.7.0 dsh 服务提供方（发布就绪）**。`@succinix/engine` 是面向
 > `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件，也是唯一对外集成面。它提供 dsh
 > 服务键 `ctx.fs`、`ctx.sandbox`、`ctx.terminals` 与
 > `ctx.sessionPersistence`。旧的 0.4.0 独立 SDK 导出（`createTerminalExecutor`、
@@ -8,9 +8,9 @@
 > 见 [MIGRATION.md](MIGRATION.md)。
 
 `@succinix/engine` 为任意 dsh 兼容 Cordis 应用提供浏览器原生 Unix 执行世界：
-WebContainer 内真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python
-（`python|python3|pip|pip3`）以及处理其余命令的 Lifo Unix 用户态。容器文件系统
-与宿主应用共享。
+WebContainer 内真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Python、Ruby WASM、
+WASI adapter，以及处理其余命令的 Lifo Unix 用户态。批处理 RPC 与交互终端共用同一
+实例级 SandboxContext、文件系统、cwd/env、进程、包与服务状态。
 
 本文是集成参考。线上协议见 [PROTOCOL.md](PROTOCOL.md)，能力矩阵见
 [FEATURES.md](FEATURES.md)，第三方插件开发见 [PLUGIN.md](PLUGIN.md)。
@@ -18,7 +18,7 @@ WebContainer 内真实 Node 运行时（`node|npm|npx`）、内置 Pyodide Pytho
 ## 安装
 
 ```bash
-npm install @succinix/engine@0.6.0
+npm install @succinix/engine@0.7.0
 npm install @deepseek-ai/cordis @webcontainer/api   # peer dependencies
 ```
 
@@ -44,13 +44,12 @@ const fiber = ctx.plugin(engine, {
 await fiber;
 
 const wc = await WebContainer.boot();
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 await host.attach(wc);
 await host.ensureInstance('default', { executor: {} });
 
 const node = await host.executor.exec('node -e "console.log(1+1)"');
 const lifo = await host.executor.exec('grep -i foo file.txt');
-
 await host.shutdown();
 await fiber.dispose();
 ```
@@ -82,7 +81,7 @@ await fiber.dispose();
   host seam 类型。
 - `./host.js`、`./lifo-core.js`、`./assets/*` 是 host daemon、Lifo 内核、
   Pyodide 运行时与 `sha256.json` 的静态资产。
-- 0.6.0 没有 `./terminal` 或 `./instance` 子路径。
+- 0.7.0 没有 `./terminal` 或 `./instance` 子路径。
 
 ## 公开 dsh 服务
 
@@ -182,12 +181,12 @@ host.unregisterAgent(agent);
 
 ## Host seam
 
-`succinix-host` 是内部生命周期与应用可观测 seam，不是 dsh 服务键。可信的
+`succinix` 是内部生命周期与应用可观测 seam，不是 dsh 服务键。可信的
 同 Context 消费方可探测：
 
 ```ts
-const host = ctx.get('succinix-host', false);
-if (!host) throw new Error('succinix-host is not available');
+const host = ctx.get('succinix', false);
+if (!host) throw new Error('succinix is not available');
 ```
 
 seam 暴露：
@@ -197,12 +196,12 @@ seam 暴露：
 | `state` | 插件状态：version、container、host、instances、capabilities、`configRevision`、`lastError` |
 | `container` | 当前容器句柄：`mode`、`state`、`wc`、`hostPid`、`startedAt` |
 | `executor` | 默认实例 `TerminalExecutor`：`exec`、`spawn`、`listProcesses`、`kill`、`ping`、`pingDirect`、`interruptDirect`、`respawn` |
-| `terminal` | `terminal.create(output, opts?)` 返回应用 Shell 使用的无 UI 终端会话 |
+| `terminal` | `InteractiveTerminalService`：`open({ instanceId, cols, rows })` 打开执行世界终端 |
 | `snapshot` | 默认实例的 `save`、`restore`、`meta`、`clear` |
 | `persist` | 持久化上下文（快照键、强制保存） |
 | `workspace` | `restore`、`flush`、`list`，以及 `stateRoot` / `home` |
 | `ports` | `list`、`ready`、`expect`、`release`、`hasConflict`、`onServerReady`、`onServerClosed` |
-| `services` | 声明式服务：`list`、`read`、`status`、`start`、`stop`、`enable`、`disable`、`add`、`remove`、`autostart`、`ensureFiles` |
+| `services` | 声明式服务：`list`、`read`、`status`、`start`、`stop`、`restart`、`enable`、`disable`、`add`、`remove`、`autostart`、`ensureFiles` |
 | `capabilities` | 本地能力注册表：`check`、`list`、`define` |
 | `instance` | 默认 `SuccinixInstance` 或 `null` |
 | `boot` | 启动内部 WebContainer |
@@ -258,6 +257,7 @@ export interface SuccinixConfig {
   hostJsUrl?: string;        // 默认 '/host.js'
   lifoCoreUrl?: string;      // 默认 '/lifo-core.js'
   pythonAssetsUrl?: string;  // 默认 '/pyodide/'
+  rubyAssetsUrl?: string;    // 默认 '/ruby/'
   resultTtlMs?: number;
   container?: {
     mode?: 'internal' | 'external';
@@ -269,7 +269,7 @@ export interface SuccinixConfig {
     instanceId?: string;
     statePrefix?: string;
     home?: string;
-    persistence?: { dbName?: string; storeKey?: string };
+    persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
   terminal?: {
     cwd?: string;
@@ -313,26 +313,38 @@ await alice.snapshot.save(true);
 await alice.workspace.flush('manual');
 ```
 
-实例状态根、快照键、服务/端口视图与进程视图按 `containerId` 分区。这是组织性
-隔离，不是安全边界。
+实例状态根、快照键、SandboxContext、服务/端口视图与进程视图按 `containerId` 分区。
+绑定真实 WebContainer 的实例默认使用 snapshot v2：binary export 分块写入 IndexedDB，
+SHA-256 校验后才切换 generation，并保留 last-known-good。所属实例的 tinbase 数据也进入
+快照；其他实例状态根与用户 home 被排除。这是组织性隔离，不是安全边界。
 
 ## 终端会话
 
-应用 Shell 自带渲染。`TerminalOutput` 是两个方法的契约：
+`host.terminal` 是 `InteractiveTerminalService`。它连接浏览器设备与 WebContainer 内由
+`Sandbox.create({ terminal })` 启动的 Lifo Shell；浏览器不再维护命令解析、history、Tab、
+队列或编辑器状态。SDK/dsh 的非交互 `exec()` 继续使用文件 RPC v2 批处理通道。
 
 ```ts
-const session = host.terminal.create({
-  write: (data) => term.write(data),
-  clear: () => term.clear(),
+const session = await host.terminal.open({
+  instanceId: 'default',
+  cols: 80,
+  rows: 24,
 });
 
-term.onData((data) => session.handleData(data));
-await session.boot();
+const received: string[] = [];
+const off = session.onData((data) => received.push(data));
+await session.send('printf "hello\\n"\r');
+await session.resize(120, 40);
+
+await session.signal('SIGINT');
+off();
+await session.close();
 ```
 
-`SuccinixTerminalSession` 拥有历史、Tab 补全、命令队列、Ctrl+C 中断与跟随 cwd
-的提示符。xterm 不是依赖。公开的 `ctx.terminals` 是 dsh 形状的 owner 隔离
-registry；上面的应用级会话是其内部渲染后端。
+`InteractiveTerminalSession` 只暴露 `id`、`send`、`resize`、`onData`、`signal` 与
+`close`。传输使用 session/instance/boot nonce 身份、连续序列、ack/replay 与有界背压；
+host respawn 后丢弃旧 nonce 帧。公开的 `ctx.terminals` 仍是 dsh 形状的 owner 隔离 PTY
+registry，其 Succinix backend 包装同一个执行世界交互会话，而不是第二套浏览器 Shell。
 
 ## 端口与服务
 
@@ -347,6 +359,10 @@ host.onServerReady(({ port, url, instanceId }) => {
 `host.ports` 是 canonical 页面级视图；spawn 前用 `expect(port)` /
 `release(port)` 把端口归属到实例。
 
+`host.listProcesses()` 聚合真实 Node/Python/Ruby 子进程与每实例 Lifo ProcessRegistry。
+Ruby、WASI、交互命令与普通 Lifo 命令都带统一 runtime/instance/cwd/terminal 信息；
+`host.executor.kill()` 把信号发送到对应真实子进程或 Lifo 进程。
+
 声明式服务用 `host.services` 管理：
 
 ```ts
@@ -356,6 +372,10 @@ const start = await host.services.start('web');
 const status = await host.services.status('web');
 await host.services.stop('web');
 ```
+
+执行世界另提供 `systemctl` adapter，直接复用该实例的 Lifo ServiceManager 与
+ProcessRegistry。官方模板为 `node-http`、`vite`、`static-http`、`python-http`、
+`tinbase`、`websocket`、`worker`；它是声明式服务管理器，不模拟 PID 1。
 
 ## 能力注册表
 
@@ -375,6 +395,39 @@ const dispose = host.capabilities.define('fs.write', () => isAllowed());
 ```
 
 默认放行；`capabilities.defaultAllow` 与 `capabilities.rules` 可覆盖。
+
+## Userland 扩展
+
+在 `boot()` 或 `attach()` 后，必须从运行中的 host 注册扩展。注册会序列化到
+WebContainer mailbox；执行新命令前，`flush()` 是确定性的发布边界：
+
+```ts
+const host = ctx.get('succinix', false)!;
+const unregister = host.userland.registerCommand({
+  name: 'hello-userland',
+  status: 'adapter',
+  runtime: 'lifo',
+  execution: 'batch',
+  source: { kind: 'shell', command: 'printf "hello\\n"', appendArgs: false },
+});
+
+await host.userland.flush();
+const result = await host.executor.exec('hello-userland');
+unregister();
+await host.userland.flush();
+```
+
+`host.userland` 是唯一接入运行中执行世界的注册面。包仍导出
+`createUserlandRegistry()`、`UserlandRegistry`、`UserlandCommandDefinition`、
+`UserlandPackageSource` 与 `UserlandServiceTemplate`，但
+`createUserlandRegistry()` 只用于离线描述和测试，不会向运行中的 host 安装命令。
+命令只能声明结构化执行世界来源，不能传入浏览器函数；注册表拒绝重复名称和
+fail-closed denylist。package 与 service template 通过同一 mailbox，复用 package manifest、
+VFS、进程、服务、实例和生命周期状态。
+
+交互命令必须声明 `execution: 'interactive'`，并使用 Lifo 公开的
+`CommandContext.stdin` / `setRawMode` 合同。它们与 `vi`、`nano` 及已安装 Lifo 包共用
+同一终端传输；消费者不得导入 Lifo 内部终端实现，也不得另建浏览器终端应用。
 
 ## 生命周期与热重载
 
@@ -406,6 +459,13 @@ const dispose = host.capabilities.define('fs.write', () => isAllowed());
 | `succinix/server-ready` | `{ port, url?, instanceId? }` |
 | `succinix/server-closed` | `{ port, instanceId? }` |
 | `succinix/command` | 命令遥测：id、instance、runtime、exit、duration |
+| `succinix/command-start` | `{ id, instanceId, command, startedAt }` 执行前发出 |
+| `succinix/command-finish` | 与 `succinix/command` 相同 payload |
+| `succinix/runtime-ready` | `{ runtime, loadedAt, cached, instanceId? }` 运行时资产就绪 |
+| `succinix/degradation` | `{ code, message, runtime, retryable, degraded, instanceId? }` 能力降级 |
+| `succinix/persistence` | `{ instanceId, state, generation?, savedAt?, error? }` 持久化状态迁移 |
+| `succinix/terminal-open` / `succinix/terminal-close` | `{ instanceId, sessionId, bootNonce }` 会话生命周期 |
+| `succinix/terminal-backpressure` | `{ instanceId, sessionId, bootNonce, queuedBytes, limitBytes }` 输出背压 |
 | `succinix/instance` | `{ containerId, state: 'created' \| 'released' }` |
 | `succinix/workspace` | `{ instanceId, reason, savedAt? }` |
 | `succinix/process` | `{ instanceId, processes }`（轮询聚合） |
@@ -435,7 +495,8 @@ const fiber = ctx.plugin(engine, {
 - 页面必须跨源隔离：`Cross-Origin-Opener-Policy: same-origin` 与
   `Cross-Origin-Embedder-Policy: credentialless`。
 - 端口是虚拟 preview；没有真实入站网络。
-- 无交互式 REPL stdin；文件 RPC 是通道。
+- 执行世界边界是有意的：WebContainer/Lifo 拥有 userland 命令、运行时、包、服务、编辑器、TUI 与第三方扩展；浏览器只是控制/设备平面，不得另建一套命令或编辑器模型。显式交互 userland 命令已通过轻薄传输接入 Lifo `ITerminal` 与公开 `CommandContext.stdin` / `setRawMode`。
+- 通用子进程 stdin 仍未支持；交互 userland 终端不会自动让任意 Node/Python 子进程 REPL 可用。
 - Lifo 不支持符号链接或硬链接。
 - 不模拟 `chmod` 语义与权限位。
 - 无精确 OS 级内存/CPU 统计；估算必须标注。
@@ -444,8 +505,8 @@ const fiber = ctx.plugin(engine, {
 
 ## 相关文档
 
-- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 到 0.6.0 迁移指南
+- [MIGRATION.md](MIGRATION.md) — 旧 API 到 0.7.0 单轨插件迁移指南
 - [PLUGIN.md](PLUGIN.md) — 第三方 Cordis 插件开发
 - [cordis-contract.md](cordis-contract.md) — 权威契约快照
-- [PROTOCOL.md](PROTOCOL.md) — 文件 RPC 线上契约（v1）
+- [PROTOCOL.md](PROTOCOL.md) — 文件 RPC 线上契约（v2）
 - [FEATURES.md](FEATURES.md) — 支持能力清单

@@ -24,6 +24,8 @@ export {
   listServiceStates,
   startService,
   stopService,
+  restartService,
   waitForProcessExit,
 } from './lifecycle.js';
+export { SERVICE_TEMPLATES, serviceTemplate, type ServiceTemplate } from './templates.js';
 export type { ServiceDef, ServiceState, ServiceContext, ServiceActionResult } from './types.js';

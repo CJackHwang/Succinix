@@ -9,16 +9,16 @@ import { instanceStateRoot, statePath, tinbaseDataDir, INSTANCE_STATE_ROOT_PREFI
 import { envFilePath, settingsFilePath } from '../src/config.js';
 import { servicesFilePath, autostartFilePath } from '../src/services/index.js';
 import { motdFilePath } from '../src/motd.js';
-import { SuccinixTerminalSession, type TerminalOutput } from '../src/terminal/index.js';
 import type { WebContainer } from '@webcontainer/api';
 import { sleep } from '../src/engine/sleep.js';
 
 interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
   instanceId?: string;
+  bootNonce?: string;
 }
 
 // ─── 假持久化（vi.mock 在文件级生效；工厂的 snapshot/services 绑定都经它）───
@@ -53,14 +53,16 @@ function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
   const files = new Map<string, string>();
   const cmdWrites: CmdReq[] = [];
   const rmCalls: string[] = [];
+  const mkdirCalls: Array<{ path: string; options?: unknown }> = [];
   const fs = {
     writeFile: async (path: string, content: string) => {
       if (path === '/cmd.json') {
         const req = JSON.parse(content) as CmdReq;
         cmdWrites.push(req);
+        files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
         const payload = opts.respond?.(req);
         if (payload !== undefined) {
-          files.set(`/result-${req.id}.json`, JSON.stringify({ id: req.id, ...(payload as object) }));
+          files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
         }
         return;
       }
@@ -75,10 +77,12 @@ function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
       files.delete(path);
       rmCalls.push(path);
     },
-    mkdir: async () => {},
+    mkdir: async (path: string, options?: unknown) => {
+      mkdirCalls.push({ path, options });
+    },
     readdir: async () => [],
   };
-  return { fs, files, cmdWrites, rmCalls };
+  return { fs, files, cmdWrites, rmCalls, mkdirCalls };
 }
 
 function makeWc(respond?: (req: CmdReq) => unknown) {
@@ -98,8 +102,6 @@ function makeWc(respond?: (req: CmdReq) => unknown) {
 
 const PONG = () => ({ ok: true, kind: 'pong' });
 const RUN_OK = () => ({ ok: true, stdout: 'hi', runtime: 'lifo', exitCode: 0 });
-
-const silentOutput: TerminalOutput = { write: () => {}, clear: () => {} };
 
 beforeEach(() => {
   persistMock.getPersist.mockClear();
@@ -141,7 +143,9 @@ describe('TerminalClient instanceId 打标 + 同页共享通道（M5）', () => 
     const [ra, rb] = await Promise.all([a.terminal('echo a'), b.terminal('echo b')]);
     expect(ra.ok).toBe(true);
     expect(rb.ok).toBe(true);
-    expect(rpc.cmdWrites.map((r) => r.id)).toEqual([1, 2]); // 全局 id 计数器
+    const ids = rpc.cmdWrites.map((r) => String(r.id));
+    expect(ids[0]).toMatch(/.+-1$/);
+    expect(ids[1]).toBe(ids[0]?.replace(/-1$/, '-2')); // 全局随机前缀下单调 sequence
     expect(rpc.cmdWrites.map((r) => r.instanceId)).toEqual(['a', 'b']);
     // 每次写都是完整 JSON（无交错片段）——共享队列串行化已由单线程 + chain 保证。
     for (const w of rpc.cmdWrites) {
@@ -156,24 +160,31 @@ describe('TerminalClient instanceId 打标 + 同页共享通道（M5）', () => 
     const inst = new TerminalClient(wc, { instanceId: 'x' });
     await def.pingDirect(500);
     await inst.pingDirect(500);
-    expect(rpc.cmdWrites.map((r) => r.id)).toEqual([1, 2]);
+    const ids = rpc.cmdWrites.map((r) => String(r.id));
+    expect(ids[0]).toMatch(/.+-1$/);
+    expect(ids[1]).toBe(ids[0]?.replace(/-1$/, '-2'));
     expect(rpc.cmdWrites[1]?.instanceId).toBe('x');
   });
 });
 
 describe('createSuccinixInstance 聚合组装（M5）', () => {
   it('rpc 共享通道路径：返回 terminal/executor/persist/snapshot/services 全部绑定', async () => {
-    const { wc, files } = makeWc((req) => (req.cmd === 'ping' ? PONG() : req.cmd === 'ps' ? { ok: true, processes: [] } : RUN_OK()));
+    const { wc, files } = makeWc((req) => {
+      if (req.cmd === 'ping') return PONG();
+      if (req.cmd === 'ps') return { ok: true, processes: [] };
+      if (req.cmd === 'run' && String(req.opts?.command).includes("succinix service 'inspect'")) {
+        return { ok: true, stdout: JSON.stringify([{ name: 'tinbase', command: 'npx tinbase start --port 3001 --engine wasm', port: 3001, description: 'Tinbase', enabled: false, state: 'stopped' }]), runtime: 'lifo', exitCode: 0 };
+      }
+      return RUN_OK();
+    });
     const client = new TerminalClient({ fs: (wc as never as { fs: unknown }).fs } as never, { instanceId: 'c-1' });
     const inst = await createSuccinixInstance({
       wc,
       instanceId: 'c-1',
-      output: silentOutput,
       rpc: client,
       executor: { onCommand: () => {} },
     });
     expect(inst.instanceId).toBe('c-1');
-    expect(inst.terminal).toBeInstanceOf(SuccinixTerminalSession);
     expect(inst.client).toBe(client);
     expect(typeof inst.executor.exec).toBe('function');
     // 快照绑定：save/restore 落到实例 persist + wc.fs。
@@ -182,28 +193,33 @@ describe('createSuccinixInstance 聚合组装（M5）', () => {
     expect(inst.persist.save).toHaveBeenCalled();
     await inst.snapshot.restore();
     expect(inst.persist.load).toHaveBeenCalled();
-    // 服务绑定：真实 services.ts 走实例视图（无进程 → stopped；preview-port 回落默认 3001）。
+    // 服务绑定：执行世界 unit 走实例视图（无进程 → stopped）。
     const states = (await inst.services.list()) as Array<{ def: { name: string }; state: string; effectivePort: number | null }>;
     expect(states[0]?.def.name).toBe('tinbase');
     expect(states[0]?.state).toBe('stopped');
     expect(states[0]?.effectivePort).toBe(3001);
-    expect(files.has('/workspace/.succinix-c-1/etc/succinix.services')).toBe(false); // 假 FS 无文件 → 回落预置
+    expect(files.has('/workspace/.succinix-c-1/etc/succinix.services')).toBe(false); // SDK 不再维护浏览器侧服务定义文件
   });
 
   it('缺省 rpc：自建 client 带 instanceId，host 就绪（ping）后返回', async () => {
-    const { wc, cmdWrites } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-2', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    const { wc, cmdWrites, mkdirCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-2', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     // 自建 client 的 ping（waitForHostReady）已打标 instanceId。
     expect(cmdWrites.some((r) => r.cmd === 'ping' && r.instanceId === 'c-2')).toBe(true);
+    expect(mkdirCalls).toContainEqual({ path: '/workspace/.succinix-c-2', options: { recursive: true } });
     expect(inst.instanceId).toBe('c-2');
   });
 
   it('persistence 选项 → createPersist(自定义键)；缺省 → getPersist(instanceId)', async () => {
     const { wc } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
-    await createSuccinixInstance({ wc, instanceId: 'u-1', output: silentOutput, persistence: { storeKey: 'custom' }, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
-    expect(persistMock.createPersist).toHaveBeenCalledWith({ storeKey: 'custom' });
+    await createSuccinixInstance({ wc, instanceId: 'u-1', persistence: { storeKey: 'custom' }, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    expect(persistMock.createPersist).toHaveBeenCalledWith(expect.objectContaining({
+      storeKey: 'custom',
+      scopeRoot: '/workspace',
+      instanceScope: expect.objectContaining({ stateRoot: '/workspace/.succinix-u-1' }),
+    }));
     persistMock.createPersist.mockClear();
-    await createSuccinixInstance({ wc, instanceId: 'u-2', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    await createSuccinixInstance({ wc, instanceId: 'u-2', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     expect(persistMock.getPersist).toHaveBeenCalledWith(
       'u-2',
       expect.objectContaining({ scopeRoot: '/workspace', instanceScope: expect.objectContaining({ stateRoot: '/workspace/.succinix-u-2' }) })
@@ -211,40 +227,37 @@ describe('createSuccinixInstance 聚合组装（M5）', () => {
   });
 
   it('默认实例等价：instanceId=default / 空串 → getPersist(default)，restart 不重置状态', async () => {
-    const { wc, rmCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
-    const inst = await createSuccinixInstance({ wc, instanceId: 'default', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    const { wc, rmCalls, mkdirCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
+    const inst = await createSuccinixInstance({ wc, instanceId: 'default', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     expect(inst.instanceId).toBe('default');
     expect(persistMock.getPersist).toHaveBeenCalledWith('default', undefined);
     await inst.restart(); // 默认实例 = 整页语义（node 无 location → no-op，不清状态）
     expect(persistMock.ctx.clear).not.toHaveBeenCalled();
     // RPC 轮询会清理 /result-*.json（启动 ping 的残留），但不得触碰任何状态根。
-    expect(rmCalls.filter((p) => !p.startsWith('/result-'))).toHaveLength(0);
+    expect(rmCalls.filter((p) => !p.startsWith('/result-') && !p.startsWith('/ack-'))).toHaveLength(0);
+    expect(mkdirCalls).not.toContainEqual({ path: '/workspace/.succinix-default', options: { recursive: true } });
     // 空串归一化
-    const inst2 = await createSuccinixInstance({ wc, instanceId: '', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    const inst2 = await createSuccinixInstance({ wc, instanceId: '', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     expect(inst2.instanceId).toBe('default');
   });
 
-  it('restart（非默认实例）：清快照 + 删状态根 + 重建会话（terminal getter 指向新会话）', async () => {
+  it('restart（非默认实例）：清快照 + 删状态根并保持执行器可用', async () => {
     const { wc, rmCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', output: silentOutput, executor: { hostSrc: 'x', lifoCoreSrc: '' } });
-    const oldSession = inst.terminal;
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
     await inst.restart();
     expect(persistMock.ctx.clear).toHaveBeenCalled();
     expect(rmCalls).toContain('/workspace/.succinix-c-1');
-    expect(inst.terminal).not.toBe(oldSession);
-    expect(inst.terminal).toBeInstanceOf(SuccinixTerminalSession);
+    expect(typeof inst.executor.exec).toBe('function');
   });
 
-  it('restart 用 statePrefix 覆盖状态根；dispose 后会话与 executor 失效（幂等）', async () => {
-    const { wc, rmCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', output: silentOutput, statePrefix: '/workspace/users/', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+  it('restart 用 statePrefix 覆盖状态根；dispose 后 executor 失效（幂等）', async () => {
+    const { wc, rmCalls, mkdirCalls } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', statePrefix: '/workspace/users/', executor: { hostSrc: 'x', lifoCoreSrc: '' } });
+    expect(mkdirCalls).toContainEqual({ path: '/workspace/users/c-1', options: { recursive: true } });
     await inst.restart();
     expect(rmCalls).toContain('/workspace/users/c-1');
-    const session = inst.terminal;
     await inst.dispose();
     await inst.dispose(); // 幂等
-    // 已释放会话：handleData 不再处理输入（写入被抑制）。
-    session.handleData('a');
     await inst.executor.ping();
   });
 
@@ -253,8 +266,8 @@ describe('createSuccinixInstance 聚合组装（M5）', () => {
     const clientA = new TerminalClient({ fs: (wc as never as { fs: unknown }).fs } as never, { instanceId: 'a' });
     const clientB = new TerminalClient({ fs: (wc as never as { fs: unknown }).fs } as never, { instanceId: 'b' });
     const [a, b] = await Promise.all([
-      createSuccinixInstance({ wc, instanceId: 'a', output: silentOutput, rpc: clientA }),
-      createSuccinixInstance({ wc, instanceId: 'b', output: silentOutput, rpc: clientB }),
+      createSuccinixInstance({ wc, instanceId: 'a', rpc: clientA }),
+      createSuccinixInstance({ wc, instanceId: 'b', rpc: clientB }),
     ]);
     expect(a.instanceId).toBe('a');
     expect(b.instanceId).toBe('b');

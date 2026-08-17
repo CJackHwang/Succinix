@@ -80,19 +80,20 @@ async function s11(h) {
   if (numpyOk) check(checks, 'numpy import (already present)', true, `numpy ${String(np1.stdout).trim()}`);
 
   // 9. TASK27 pip 持久化（尽力而为）：装过的纯 Python 包刷新后 import 仍在（NODEFS 站点包随快照）。
-  //    先 snapshot now 强制落盘，再 reload；pyparsing 应直接可 import（无网络）。若不在 → 如实记录边界。
-  await h.run('snapshot now', 60000);
+  //    先 succinix snapshot now 强制落盘，再 reload；pyparsing 应直接可 import（无网络）。若不在 → 如实记录边界。
+  await h.run('succinix snapshot now', 60000);
   await h.reloadAndWait(120000);
   const pers = await h.run('python -c "import pyparsing; print(pyparsing.__version__)"', 120000);
   check(checks, 'pip package persists across refresh (pyparsing)', pers.ok === true && String(pers.stdout).trim() === '3.3.2', String(pers.stdout).trim() || String(pers.stderr || '').trim().slice(0, 80));
-  // numpy 是编译包（.so 二进制不进文本快照）→ 刷新后需重装（边界，如实记录）。
-  // TASK27 复审项 3：冷启动 import 报错必须保持如实，且提示指向 `pip install numpy` 解决路径。
+  // numpy 是编译包（.so 二进制）。v0.7 起快照为 binary export（IDB chunks），
+  // workspace 内的 .so 随快照保留 → 刷新后可直接 import（能力改进，S11）。
+  // 若极端情况下不可用 → 如实记录，且冷启动报错提示须指向 `pip install numpy` 解决路径。
   const persNp = await h.run('python -c "import numpy; print(numpy.__version__)"', 60000);
   if (persNp.ok) {
-    check(checks, 'compiled package (numpy) boundary after refresh', false, `unexpectedly importable after refresh: ${String(persNp.stdout).trim()}`);
+    check(checks, 'compiled package (numpy) persists after refresh', true, `numpy ${String(persNp.stdout).trim()} (binary snapshot keeps .so)`);
   } else {
     const npErr = String(persNp.stderr || '').trim();
-    check(checks, 'compiled package (numpy) boundary after refresh', npErr.includes('pip install numpy'), `needs pip install after refresh (text snapshot drops .so) — hint: ${npErr.split('\n').slice(-1)[0]?.slice(0, 60)}`);
+    check(checks, 'compiled package (numpy) persists after refresh', npErr.includes('pip install numpy'), `numpy unavailable after refresh — hint: ${npErr.split('\n').slice(-1)[0]?.slice(0, 60)}`);
   }
 
   // 10. TASK27 复审修复项 1+2（浏览器真实路径）：

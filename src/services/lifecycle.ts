@@ -260,3 +260,14 @@ export async function stopService(ctx: ServiceContext, name: string): Promise<Se
     return { ok: false, message: `failed to stop '${name}': ${String(e)}` };
   }
 }
+
+export async function restartService(ctx: ServiceContext, name: string): Promise<ServiceActionResult> {
+  const state = await listServiceStates(ctx);
+  const existing = state.find((entry) => entry.def.name === name);
+  if (!existing) return { ok: false, message: `unknown service: ${name}` };
+  if (existing.state === 'running') {
+    const stopped = await stopService(ctx, name);
+    if (!stopped.ok) return stopped;
+  }
+  return startService(ctx, name);
+}

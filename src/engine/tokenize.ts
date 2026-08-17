@@ -88,6 +88,30 @@ export function hasShellMetaToken(tokens: string[]): boolean {
   });
 }
 
+/** 检测未引用的 here-document 操作符；当前 userland 明确不支持该 shell 特性。 */
+export function hasUnsupportedHereDocument(command: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote) {
+      if (character === '\\' && quote === '"' && index + 1 < command.length) {
+        index += 1;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '\\' && index + 1 < command.length) {
+      index += 1;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '<' && command[index + 1] === '<') {
+      return true;
+    }
+  }
+  return false;
+}
+
 // 分词兜底：未闭合引号等语法错误给出明确报错，不静默截断、不抛到协议层（O3 拆分）。
 export function tryTokenize(command: string): { ok: true; tokens: string[] } | { ok: false; error: string } {
   try {

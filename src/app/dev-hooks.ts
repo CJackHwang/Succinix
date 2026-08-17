@@ -1,8 +1,7 @@
 // 开发钩子（TASK18/TASK19/TASK16）：bench / scenario / 自检结果 window 句柄（O2 拆分）。
 import type { Terminal } from '@xterm/xterm';
-import type { TerminalClient } from '@succinix/engine';
+import type { RpcTerminalClient, SuccinixHostService, TerminalClient, TerminalExecutor } from '@succinix/engine';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
-import type { SuccinixTerminalSession } from '@succinix/engine';
 import type { TestResult } from '../selftest/index.js';
 import { AMBER, RED, RESET } from '../theme.js';
 
@@ -24,47 +23,39 @@ export function benchMarkPrompt(): void {
 }
 
 // ─── 场景测试驱动（TASK19，scripts/scenarios.mjs 用）───
-// 与 execute() 相同分发路径（本地命令经 session.dispatchLocal 捕获，host 命令走 rpcExec），
-// 输出改为结构化捕获（capture shim）。timeoutMs 仅约束 host 命令的 RPC 等待。
+// Scenario commands use the same execution-world batch path as SDK consumers.
+// The `handled` field remains for the external scenario harness shape, but no
+// browser-local command branch exists anymore.
 export async function scenarioRun(
-  session: SuccinixTerminalSession,
+  executor: TerminalExecutor,
   _services: ScenarioServices,
   cmd: string,
   timeoutMs = 60000
 ): Promise<Record<string, unknown>> {
-  const lines: string[] = [];
-  const [word, ...args] = cmd.trim().split(/\s+/);
-  let handled: boolean;
   try {
-    handled = await session.dispatchLocal(word ?? '', args, {
-      write: (d: string) => void lines.push(d),
-      clear: () => {},
-    });
-  } catch (e) {
-    return { handled: true, ok: false, error: String(e), output: lines.join('\n'), lines };
+    const res = await executor.exec(cmd, { timeoutMs });
+    const stdout = String(res.stdout ?? '');
+    const stderr = String(res.stderr ?? '');
+    return {
+      handled: true,
+      ok: res.ok,
+      output: `${stdout}${stderr}${res.error ? String(res.error) : ''}`,
+      lines: `${stdout}${stderr}`.split(/\r?\n/),
+      stdout,
+      stderr,
+      error: res.error,
+      thrown: false,
+      exitCode: res.exitCode,
+      runtime: res.runtime,
+      message: res.message,
+      pid: res.pid,
+      processes: res.processes,
+      killed: res.killed,
+      kind: res.kind,
+    };
+  } catch (error) {
+    return { handled: true, ok: false, error: String(error), output: String(error), thrown: true };
   }
-  if (handled) {
-    return { handled: true, ok: true, output: lines.join('\n'), lines };
-  }
-  const rpc = await session.rpcExec(cmd, timeoutMs);
-  if ('error' in rpc) {
-    return { handled: false, ok: false, error: rpc.error, thrown: true };
-  }
-  const res = rpc.res;
-  return {
-    handled: false,
-    ok: res.ok,
-    exitCode: res.exitCode,
-    stdout: String(res.stdout ?? ''),
-    stderr: String(res.stderr ?? ''),
-    runtime: res.runtime,
-    error: res.error,
-    message: res.message,
-    pid: res.pid,
-    processes: res.processes,
-    killed: res.killed,
-    kind: res.kind,
-  };
 }
 
 // TASK16：自检结果进终端（complete() 之后、motd 横幅之前）。默认路径与 ?instance= demo 共用。
@@ -103,15 +94,28 @@ export function printTestResult(term: Terminal, testResult: TestResult | null, t
 export function installDevHooks(opts: {
   benchMode: boolean;
   scenarioMode: boolean;
+  host: SuccinixHostService;
   client: TerminalClient;
   wc: WebContainer;
   ports: Map<number, string>;
   term: Terminal;
+  interactive: RpcTerminalClient;
   saveSnapshot: ((fs: FileSystemAPI, force?: boolean) => Promise<unknown>) | ((force?: boolean) => Promise<unknown>);
+  restoreSnapshot: () => Promise<unknown>;
   run: (cmd: string, timeoutMs?: number) => Promise<Record<string, unknown>>;
+  respawn: () => Promise<void>;
 }): void {
   if (opts.benchMode) {
-    (window as unknown as { __succinixBench?: unknown }).__succinixBench = { client: opts.client, wc: opts.wc, term: opts.term, saveSnapshot: opts.saveSnapshot };
+    (window as unknown as { __succinixBench?: unknown }).__succinixBench = {
+      client: opts.client,
+      wc: opts.wc,
+      host: opts.host,
+      term: opts.term,
+      interactive: opts.interactive,
+      saveSnapshot: opts.saveSnapshot,
+      restoreSnapshot: opts.restoreSnapshot,
+      respawn: opts.respawn,
+    };
   }
   if (opts.scenarioMode) {
     (window as unknown as { __succinixScenario?: unknown }).__succinixScenario = {
@@ -121,7 +125,9 @@ export function installDevHooks(opts: {
       ports: opts.ports,
       term: opts.term,
       saveSnapshot: opts.saveSnapshot,
+      restoreSnapshot: opts.restoreSnapshot,
       run: opts.run,
+      respawn: opts.respawn,
     };
   }
 }

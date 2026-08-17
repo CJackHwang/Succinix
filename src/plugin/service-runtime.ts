@@ -1,29 +1,21 @@
-// invariant: shared runtime helpers for the internal succinix-host surface.
+// invariant: shared runtime helpers for the internal succinix surface.
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
 import type {
   EngineBootHooks,
   TerminalExecutor,
 } from '../engine/index.js';
 import type { SnapshotMeta } from '../persist/index.js';
-import {
-  SuccinixTerminalSession,
-  type TerminalOutput,
-  type TerminalSessionOptions,
-} from '../terminal/index.js';
 import { assetManifestUrl, fetchAssetText, loadAssetManifest, type AssetManifest } from './assets.js';
 import type { ResolvedSuccinixConfig } from './config.js';
+import { redactCommand } from '../redact.js';
 import type { SuccinixPluginState } from './state.js';
 import type {
   SuccinixCommandEvent,
+  SuccinixCommandStartEvent,
   SuccinixInstance,
   SuccinixWorkspaceEvent,
 } from './types.js';
 import type { WorkspaceBackend } from './workspace.js';
-
-export const noOpOutput: TerminalOutput = {
-  write() {},
-  clear() {},
-};
 
 export function commandRuntime(runtime?: string): SuccinixCommandEvent['runtime'] {
   if (runtime === 'node' || runtime === 'lifo') return runtime;
@@ -47,22 +39,25 @@ export interface TelemetryExecutorOptions {
   instanceId: string;
   nextId(): string;
   publish(payload: SuccinixCommandEvent): void;
+  publishStart?(payload: SuccinixCommandStartEvent): void;
   executor: TerminalExecutor;
 }
 
 export function wrapExecutorWithTelemetry(options: TelemetryExecutorOptions): TerminalExecutor {
-  const { instanceId, nextId, publish, executor } = options;
+  const { instanceId, nextId, publish, publishStart, executor } = options;
+  const safeCommand = (command: string): string => redactCommand(command);
   return {
     boot: (wc, hooks) => executor.boot(wc, hooks),
     exec: async (command, opts = {}) => {
       const startedAt = Date.now();
       const id = nextId();
+      publishStart?.({ id, instanceId, command: safeCommand(command), startedAt });
       try {
         const result = await executor.exec(command, opts);
         publish({
           id,
           instanceId,
-          command,
+          command: safeCommand(command),
           runtime: commandRuntime(result.runtime),
           exitCode: result.exitCode ?? (result.ok ? 0 : 1),
           startedAt,
@@ -76,7 +71,7 @@ export function wrapExecutorWithTelemetry(options: TelemetryExecutorOptions): Te
         publish({
           id,
           instanceId,
-          command,
+          command: safeCommand(command),
           runtime: 'browser',
           exitCode: null,
           startedAt,
@@ -89,12 +84,13 @@ export function wrapExecutorWithTelemetry(options: TelemetryExecutorOptions): Te
     spawn: async (command, opts = {}) => {
       const startedAt = Date.now();
       const id = nextId();
+      publishStart?.({ id, instanceId, command: safeCommand(command), startedAt });
       try {
         const result = await executor.spawn(command, opts);
         publish({
           id,
           instanceId,
-          command,
+          command: safeCommand(command),
           runtime: commandRuntime(result.runtime),
           exitCode: result.exitCode ?? (result.ok ? 0 : 1),
           startedAt,
@@ -107,7 +103,7 @@ export function wrapExecutorWithTelemetry(options: TelemetryExecutorOptions): Te
         publish({
           id,
           instanceId,
-          command,
+          command: safeCommand(command),
           runtime: 'browser',
           exitCode: null,
           startedAt,
@@ -117,14 +113,20 @@ export function wrapExecutorWithTelemetry(options: TelemetryExecutorOptions): Te
         throw error;
       }
     },
-    listProcesses: () => executor.listProcesses(),
-    kill: (pid) => executor.kill(pid),
+    listProcesses: (options) => executor.listProcesses(options),
+    kill: (pid, options) => executor.kill(pid, options),
     ping: () => executor.ping(),
     pingDirect: (timeoutMs) => executor.pingDirect(timeoutMs),
     interruptDirect: (timeoutMs) => executor.interruptDirect(timeoutMs),
     respawn: () => executor.respawn(),
     getHostProc: () => executor.getHostProc(),
     dispose: () => executor.dispose(),
+    shutdown: () => executor.shutdown(),
+    runtimeStatus: () => executor.runtimeStatus(),
+    persistenceStatus: () => executor.persistenceStatus(),
+    degradations: () => executor.degradations(),
+    capabilities: () => executor.capabilities(),
+    ...(executor.interactive ? { interactive: executor.interactive } : {}),
   };
 }
 
@@ -156,29 +158,6 @@ export function createWorkspaceBackend(instanceId: string, deps: WorkspaceBacken
       return [{ instanceId, meta }];
     },
   };
-}
-
-export function createTerminalSession(
-  instance: SuccinixInstance,
-  wc: WebContainerType,
-  terminalConfig: ResolvedSuccinixConfig['terminal'],
-  output: TerminalOutput,
-  opts: TerminalSessionOptions = {}
-): SuccinixTerminalSession {
-  return new SuccinixTerminalSession(
-    {
-      exec: (command, _rpcOpts, timeoutMs) => instance.executor.exec(command, { timeoutMs }),
-      spawn: (command, _rpcOpts, timeoutMs) => instance.executor.spawn(command, { timeoutMs }),
-      listProcesses: () => instance.executor.listProcesses(),
-      kill: (pid) => instance.executor.kill(pid),
-      ping: () => instance.executor.ping(),
-      pingDirect: (timeoutMs) => instance.executor.pingDirect(timeoutMs),
-      interruptDirect: (timeoutMs) => instance.executor.interruptDirect(timeoutMs),
-      readdir: (dir) => wc.fs.readdir(dir, { withFileTypes: true }),
-    },
-    output,
-    { ...terminalConfig, ...opts }
-  );
 }
 
 export async function loadBootAssets(

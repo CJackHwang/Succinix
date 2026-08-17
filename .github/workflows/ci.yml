@@ -27,11 +27,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Dependency report
+        run: npm run report:dependencies
+
       - name: Lint (0 error)
         run: npm run lint
 
       - name: Typecheck (tsc --noEmit, 0 errors)
         run: npm run typecheck
+
+      - name: Legacy typecheck (TypeScript 6 API compatibility)
+        run: npm run typecheck:legacy
 
       - name: Unit tests (vitest + coverage >= 70% core)
         run: npm run test:coverage
@@ -39,11 +45,23 @@ jobs:
       - name: Build (build:host + vite build)
         run: npm run build
 
+      - name: Engine package (exports and dry-run tarball)
+        run: npm run check:engine-package
+
+      - name: Architecture and lifecycle gates
+        run: npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys && npm run check:legacy-store && npm run check:lifecycle
+
+      - name: Bundle budget (raw + gzip + deferred runtime assets)
+        run: npm run check:bundle-budget
+
       - name: e2e deploy gate (vite preview + headless Chrome ?test=1 self-test >= 71)
         run: node scripts/verify-deploy.mjs --skip-build
 
       - name: File size audit + static/docs integrity (O12/O14)
         run: npm run audit:files && npm run check:static && npm run check:docs
+
+      - name: Dependency audit (no high or critical vulnerabilities)
+        run: npm run audit:deps
 
   # 场景套件重（14 场景，含数据库/服务自启/持久化压力/TS 生态/语言防回归），
   # nightly 独立跑（push 门禁由 e2e-full.yml 覆盖，nightly 保留作深度回归）。

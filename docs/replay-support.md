@@ -28,8 +28,8 @@ The following properties are stable by design and can be relied on during replay
   `pid`, `timedOut`, and `error`. These events are the audit trail for replay.
 - **Snapshot restore is explicit.** `host.snapshot.restore()` and
   `host.workspace.restore()` restore the known filesystem state before a
-  replay begins. `host` is the internal `succinix-host` seam
-  (`ctx.get('succinix-host', false)`).
+  replay begins. `host` is the internal `succinix` seam
+  (`ctx.get('succinix', false)`).
 
 ## Non-Deterministic Boundary
 

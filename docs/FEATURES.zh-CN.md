@@ -11,6 +11,8 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 文件系统**。零安装、无后端——Chromium 浏览器标签页启动即进入环境，提供 Unix 工具、Node.js、
 进程管理、端口转发、Postgres 数据库（tinbase）与持久化。
 
+执行世界原则：WebContainer/Lifo 拥有 userland 命令、运行时、包、服务、编辑器、TUI 与第三方扩展；浏览器只是控制/设备平面（boot、xterm、键盘/resize 事件、必要 Web API 与轻薄传输）。当前 host 使用 Lifo headless `commands.run()`；v0.7 将浏览器终端接入 WebContainer 内 Lifo 根入口导出的 `ITerminal` 与公开 `CommandContext.stdin`/`setRawMode` seam，不在浏览器侧实现并行应用。见 [PLAN-v0.7.0.md](PLAN-v0.7.0.md)。
+
 | 项 | 值 | 来源 |
 | ---- | ----- | ------ |
 | 产品 | SuccinixOS（原 WebUnix）—— 统一品牌，零功能改动 | TASK26 |
@@ -23,8 +25,9 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 ## 2. 内置命令族
 
-浏览器侧命令（浏览器内处理，需要时路由到 host）。每个命令族的状态持久于各自的 `/etc/succinix.*`
-状态文件，全部随工作区快照持久。
+以下是 **v0.7 浏览器控制命令**（浏览器内处理，需要时路由到 host）。状态持久于各自的
+`/etc/succinix.*` 文件，全部随工作区快照保存。标准 Unix 命令与交互工具在
+WebContainer/Lifo userland 中运行；纯浏览器管理功能收口到 `succinix ...` 命名空间。
 
 | 命令 | 作用 | 来源 |
 | ------- | ------------ | ------ |
@@ -40,7 +43,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | `workspace` | 隔离工作区（`create`/`switch`/`rm`）；当前记录在 `/ws/.current` | TASK7 |
 | `env` | 持久环境变量（`/etc/succinix.env`，spawn 时合并进真实 Node 子进程） | TASK10 |
 | `settings` | 持久系统设置（`/etc/succinix.settings`：tinbase `preview-port` 3001、`default-workspace`、实时生效 `font-size`） | TASK10 |
-| `service` | 声明式后台服务（`list`/`start`/`stop`/`status`/`enable`/`disable`；`/etc/succinix.services` + boot 自启 `/etc/succinix.autostart`） | TASK11 |
+| `service` | 声明式后台服务（`list`/`start`/`stop`/`status`/`enable`/`disable`；由 Lifo `ServiceManager` 管理 `/etc/systemd/system/*.service` unit，启用标记随快照保存） | TASK11 |
 | `log` | journald 风格系统日志（`/var/log/succinix.log`；`log`、`log -n <count>`、`log boot`、`log clear`） | TASK12 |
 | `pkg` | 统一包管理（`list`/`search`/`install`/`remove`/`info`），lifo + npm 双通道 | TASK13 |
 | `netstat` | 端口注册表的虚拟监听端口表（`netstat -p` 附加关联进程） | TASK14 |
@@ -48,11 +51,24 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | `uname` | 诚实的系统身份（`Succinix <v> js-runtime+webcontainer <api-version> <arch>`；`-a`/`-r`/`-m`） | TASK15 |
 | `motd` | 查看 / 设置 / 重置持久登录横幅（`/etc/succinix.motd`） | TASK15 |
 | `lang` | 列出内置语言运行时与版本 | TASK23 |
+| `vi` / `nano` | Lifo 原生交互编辑器：raw-mode stdin、全屏重绘、保存/退出/搜索——与第三方 TUI 共用同一 `ITerminal` seam | v0.7 |
+| `net` | 诚实网络视图：`net doctor` 能力报告、`net preview` 虚拟端口列表、`net tunnel` fail-closed（`unavailable`） | v0.7 |
+| `succinix status` / `succinix plugins` | 插件状态 / Cordis 插件与 fiber 状态 | C4 |
+| `succinix capabilities` | `succinix-linux-userland/0.7` profile：每个命令的状态/运行时/执行契约 + fail-closed denylist（exit 126） | v0.7 |
+| `succinix doctor` | 自检：host RPC ping、持久化、userland profile、引擎状态（`[  OK  ]` / `[ FAIL ]` / `[SKIP]`） | v0.7 |
+| `succinix net doctor` / `net preview` / `net tunnel` | 网络能力报告 / 虚拟 preview 端口 / 出站隧道（unavailable） | v0.7 |
+| `succinix init` | 从 `package.json`、`pyproject.toml`、`requirements.txt`、Vite 配置、`index.html` 探测项目类型 | v0.7 |
+| `succinix run` | 通过执行世界启动探测到的开发命令（`npm run dev` / `npm start` / `node <main>`） | v0.7 |
+| `succinix serve` | 注册并启动匹配的声明式服务（`vite` / `static-http`）并打印 preview URL | v0.7 |
+| `succinix open [port]` | 打印就绪端口的 preview URL | v0.7 |
 
 持久状态文件（全部随快照跨刷新持久）：`/etc/succinix.env`（TASK10）、`/etc/succinix.settings`
-（TASK10）、`/etc/succinix.services`（TASK11）、`/etc/succinix.autostart`（TASK11）、
+（TASK10）、`/etc/systemd/system/*.service` unit 与 `/workspace/.succinix-service-state/*.enabled`（TASK11）、
 `/etc/succinix.motd`（TASK15）、`/etc/succinix.cwd`（TASK23）、`/etc/succinix.engine.json`
 （结果 TTL 覆盖，TASK21/TASK26）、`/ws/.current`（TASK7）、`/var/log/succinix.log`（TASK12）。
+
+命令日志与 Cordis 命令事件默认脱敏：token、密码、npm auth（`_authToken` / `_auth`）、环境变量
+secret 与 URL query secret 永不落入 `/var/log/succinix.log`、telemetry 事件或会话镜像。
 
 ## 3. 语言运行时
 
@@ -62,16 +78,16 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 | 语言 | 命令 | 运行时 | 版本（实测） | 装包能力 | 状态 | 来源 |
 | -------- | ------- | ------- | ------------------ | --------------- | ------ | ------ |
-| **Python** | `python`、`python3` | 常驻 **Pyodide 314.0.4** daemon（node 子进程，实例复用） | 3.14.2 | `[OK]` **pip** 经 micropip —— 纯 Python wheel 刷新后仍在；编译 wheel 刷新后需重装 | `[OK]` | TASK23, TASK27, `LV·P1–P9`, `S11` |
+| **Python** | `python`、`python3` | 常驻 **Pyodide 314.0.4** daemon（node 子进程，实例复用） | 3.14.2 | `[OK]` **pip** 经 micropip —— 纯 Python 与编译 wheel 刷新后仍在（v0.7 binary 快照） | `[OK]` | TASK23, TASK27, `LV·P1–P9`, `S11` |
 | **pip** | `pip`、`pip3` | 映射到 Pyodide micropip（`python -m pip` 也可用） | micropip 0.11.1 | `[OK]` install / uninstall / list / show | `[OK]` | TASK27, `LV·P6` |
 | **Node.js** | `node` | 真实 Node.js（WebContainer 运行时） | 22.22.3 | `[OK]` npm，本地按项目安装 | `[OK]` | TASK1, TASK24, `LV·N1–N5` |
 | **npm** | `npm` | 真实 npm（随 node 自带） | 10.8.2 | `[OK]` 本地；`[x]` 全局（`/usr/local` 只读 → EACCES + hint） | `[OK]` | TASK24, `LV·N4` |
 | **TypeScript** | `npx tsc`、`tsx`、`vitest` | npm 安装工具链；node 22 `--experimental-strip-types` | npm 最新版 | `[OK]` 经 npm | `[OK]` | TASK25, `LV·N3`, `S13`, `S14` |
-| **Ruby** | （未内置） | `@ruby/wasm-wasi` v2 + `@ruby/head-wasm-wasi`（仅探测） | head ruby.wasm | `[OK]` npm 安装；`[x]` **无 gem** | 探测——可跑、未集成 | TASK25, `LV·R1` |
+| **Ruby** | `ruby` | 懒注入 WASM 运行时（浏览器资产桥 → 真实 Node 子进程内 `@ruby/wasm-wasi` adapter） | head ruby.wasm | `[OK]` npm 安装；`[x]` **无 gem** | `[OK]` 已集成、懒加载（首跑慢） | v0.7, `LV·R1` |
 | **C** | `gcc` | 无 | — | — | `[x]` 确认缺失 | TASK25, `LV·R2` |
 | **Rust** | `rustc`、`cargo` | 无 | — | — | `[x]` 确认缺失 | TASK25, `LV·R2` |
 | **Go** | `go` | 无 | — | — | `[x]` 确认缺失 | TASK25, `LV·R2` |
-| **WASI** | `node:wasi` | Node.js WASI（preview1） | node 22 | — | `[OK]` 可运行预编译 WASI 模块 | TASK25, `LV·R3` |
+| **WASI** | `wasi-run` / `wasi-info` | `node:wasi`（preview1）之上的 Lifo adapter，模块从 `/workspace` 加载 | node 22 | — | `[OK]` 已集成（`wasi-run <file>`，≤ 32 MB） | v0.7, `LV·R3` |
 
 关键实测事实：
 
@@ -83,9 +99,9 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 - **Python** 运行于常驻 Pyodide daemon：11/11 标准库 import 全绿
   （json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib），sqlite3 + json
   实测可用，`python -c` / `python <script.py>` / `python -m <module>` 语义保留，
-  **pip 经 micropip**（install/uninstall/list/show/--version）。边界：无交互式 REPL（请用
-  `python -c`）、`subprocess` 可导入但无法 spawn（`OSError: [Errno 138] ...`）、编译 wheel
-  （如 numpy）刷新后需一次 `pip install`。
+  **pip 经 micropip**（install/uninstall/list/show/--version）。当前 host 无通用 Python
+  子进程 REPL（请用 `python -c`）、`subprocess` 可导入但无法 spawn（`OSError: [Errno 138] ...`）、
+  编译 wheel（如 numpy）随 v0.7 binary 导出保留 `.so`，刷新后无需重装。
 - **TypeScript 生态闭环**：`npm i -D typescript tsx vitest` → `npx tsc` → `node dist/*.js` →
   `npx vitest run`（1 passed）——场景 S13/S14 实测。
 - **Ruby** 仅探测：v2 `@ruby/wasm-wasi` API 在容器内运行 Ruby WASM（`6*7` → 42），但未接入
@@ -94,19 +110,22 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 
 ## 4. 持久化
 
-- **工作区快照 → IndexedDB。** 容器文件系统（文件、`/etc` 状态、工作区）快照到 IndexedDB 数据库
-  `succinix-persist`（约每 2.5 s 自动保存 + `pagehide` 回退），boot 时恢复。刷新永不丢用户文件。
-  `snapshot` 查看状态 / 手动保存 / 重置。 | TASK5, TASK26, README
-- **文本优先快照，诚实边界。** 二进制/不可读文件跳过（在保存日志中计数报告）；超过 ~50 MB 的
-  快照跳过并告警（`skipped (over 50MB limit)`）而非写入。空目录记录并重建。 | TASK16, TASK19
-- **排除项。** `.tinbase` 树（二进制 PGlite store）整体排除——tinbase 数据在会话内跨
-  `db stop`/`db start` 持久，但**不**跨浏览器刷新（已文档化）。`/usr/lib/succinix` 运行时资产
-  （约 13 MB Python）排除并在首用重新注入。日志文件排除在变更检测签名之外（仍随快照）。
-  | TASK19, TASK23, TASK18
-- **pip 持久化（尽力而为，诚实）**。Pyodide 的 site-packages 目录经 NODEFS 挂载到
-  `/.pyodide/site-packages`（快照内）；`/.pyodide/installed.json` 记录 pip 安装。
-  **纯 Python wheel（如 `pyparsing`）刷新后仍可用**；**编译 wheel（如 `numpy`）刷新后需一次
-  `pip install <pkg>`**（其 `.so` 是二进制、快照仅文本）。 | TASK27
+- **工作区快照 → IndexedDB v2。** 容器文件系统（文件、`/etc` 状态、工作区、pip site-packages）
+  以 binary generation 导出到 IndexedDB 数据库 `succinix-persist-v2`（dirty 驱动、5 s 防抖、最长 30 s 强制落盘 +
+  `pagehide` 回退），boot 时恢复。刷新永不丢用户文件。`snapshot` 查看状态 /
+  手动保存 / 重置。 | v0.7（PLAN §7）、TASK5、TASK26、README
+- **二进制快照，精确恢复。** generation 先写 ≤256 KiB chunk，再写 SHA-256 manifest，最后切
+  活动指针（`current`）；撕裂写入不会切换活动 generation（保留 last-known-good）。v0.6
+  旧库 `succinix-persist` 仅检测并报告 `legacy snapshot detected`——不迁移、不删除。默认配额
+  256 MiB；空目录记录并重建。 | v0.7（PLAN §7.1）、TASK16、TASK19
+- **排除项。** `node_modules` / `dist` / `.git` 树默认从二进制导出中排除；将 `defaultInstance.persistence.includeGit` 设为 `true` 才保留 Git 元数据。`.succinix-terminal`
+  mailbox、host/RPC 产物（`host.js`、`lifo-core.js`、`cmd.json`、`result-*.json`）、`.tinbase`
+  树（二进制 PGlite store——会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新）、
+  `/usr/lib/succinix` 运行时资产（约 13 MB Python，首用重新注入）都不会进入恢复后的树。
+  同页多实例另按自身状态根与用户 home 收窄范围。 | TASK19、TASK23、TASK18、M5
+- **pip 持久化。** Pyodide 的 site-packages 目录经 NODEFS 挂载到 `/.pyodide/site-packages`
+  （快照内）；`/.pyodide/installed.json` 记录 pip 安装。**纯 Python wheel（如 `pyparsing`）
+  与编译 wheel（如 `numpy`）刷新后均可用**——二进制导出携带 `.so` 文件（`S11`）。 | TASK27
 - **按 origin 数据分域。** IndexedDB 按 origin 隔离——更换部署域 = 全新系统；同域刷新恢复快照。
   | TASK22
 
@@ -117,14 +136,19 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
   （kill 报不在表中）。 | TASK1, PROTOCOL.md
 - **后台 `spawn`** 支持 node 系长驻进程（Lifo 无后台概念），带 **2 s 启动确认窗口**：2 s 内非零
   退出的 spawn 进程报告为失败（`ok:false`）。 | TASK1, TASK2, TASK19
-- **服务管理**：`service` 定义具名声明式服务（`/etc/succinix.services`，`name|command|port`，
-  `${PORT}` 从 `preview-port` 解析），管理 `start`/`stop`/`status`/`enable`/`disable`，`enable`
-  写入 `/etc/succinix.autostart` 供 boot 声明式重启（非守护进程——无崩溃自愈）。 | TASK11
+- **服务管理**：`service`/`systemctl` 通过同一 Lifo `ServiceManager` 管理 `/etc/systemd/system/*.service`
+  unit（官方模板中的 `${PORT}` 在执行世界解析），提供 `start`/`stop`/`status`/`enable`/`disable`。
+  `enable` 将 marker 写入 `/workspace/.succinix-service-state/*.enabled`，boot 时恢复（非 PID 1
+  守护进程——无崩溃自愈）。 | TASK11
 - **端口注册表**：WebContainer `server-ready` 事件注册预览 URL；`ports` 列出它们，`netstat`
   渲染虚拟 `Proto  Local Address  State` 表（`netstat -p` 匹配关联进程）。 | TASK2, TASK14
 
 ## 6. 网络
 
+- **Git HTTPS**：`git init/status/add/rm/commit/log/diff/branch/checkout/clone/fetch/pull/push`
+  在 WebContainer 执行世界内通过 Isomorphic Git 运行。仅接受 HTTPS remote；SSH 固定返回
+  `git: SSH transport is unsupported`，exit 126。`GIT_HTTP_TOKEN` 只存在于运行时环境，错误信息
+  会脱敏，且绝不进入命令日志或快照。 | v0.7
 - **出站 HTTP** 受 CORS 限制：对无 CORS 头站点的直接 `curl` 失败（`exit 7`）；请用 CORS 友好
   代理，如 `curl https://r.jina.ai/<url>`。Python `urllib` 共享同一边界。 | README, AGENTS.md,
   LANGUAGES.md
@@ -146,6 +170,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
   （`process.env`）；env 从未到达子进程的双根 bug 已修复并自检。 | TASK10, TASK24
 - **Shell 融合**：含 shell 元字符的 node/python 命令经 Lifo shell 执行，每段转发到真实运行时
   —— 真实管道、链、重定向。 | TASK24
+- **Here-document**：`<<` 与 `<<-` 明确不支持（`succinix: here-document: unsupported`，exit 2）；引号或转义中的字面 `<<` 仍可使用。 | v0.7
 
 ## 8. 部署
 
@@ -176,10 +201,11 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
   registry）与 `ctx.sessionPersistence`（event-sourced JSONL）。内部生命周期
   facade（`executor`、`terminal`、`snapshot`、`persist`、`workspace`、
   `ports`、`services`、`capabilities`、`instance`、`boot` / `attach` /
-  `ensureInstance`）位于 `succinix-host` seam 之后。 | C2, cordis-contract.md
+  `ensureInstance`）位于 `succinix` seam 之后。 | C2, cordis-contract.md
 - **类型化事件**：`succinix/state`（带 `reason` / `changed`）、`server-ready`、
-  `server-closed`、`command` telemetry、`instance`、`workspace`、`process`。 | C4,
-  manageability.md
+  `server-closed`、`command` / `command-start` / `command-finish` telemetry、
+  `runtime-ready`、`degradation`、`persistence`、`terminal-open` / `terminal-close` /
+  `terminal-backpressure`、`instance`、`workspace`、`process`。 | C4, manageability.md
 - **能力注册表**：`terminal.exec`、`terminal.spawn`、`terminal.kill`、`terminal.interrupt`、
   `fs.read`、`fs.write`、`workspace.restore`、`workspace.flush`、`workspace.list`；默认放行，
   可用规则覆盖。 | C2
@@ -208,10 +234,9 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | 无真实内核 / `apt` / 原生二进制 | 沙箱内物理不可行；Succinix 是浏览器原生 Linux | README, AGENTS.md |
 | 多用户仅为组织性隔离 | 嵌入模式按实例/用户分割目录·状态·进程视图（`?instance=`/`?user=`）；**非安全边界**；独立应用仍是 `guest` 单用户，不伪造 `chmod` 语义 | AGENTS.md, SDK.md |
 | 无入站网络 | 端口是虚拟 preview；隧道是出站桥接，不是真实入站 | TASK14 |
-| 无交互式 REPL stdin | 文件 RPC 替代 stdin；`log -f` 与 REPL 风格进程不支持 | TASK1, README |
+| 通用子进程交互 stdin | 当前 host 使用文件 RPC 和 headless Lifo，任意 Node/Python REPL 仍不支持；v0.7 为明确声明交互能力的 Lifo userland 命令提供 WebContainer 原生终端传输 | TASK1, README, PLAN-v0.7.0 |
 | 无符号链接 / 硬链接 | Lifo VFS 不支持 | README |
 | Firefox / Safari / 移动端不支持 | WebContainers 要求 Chromium；环境检查错误页说明要求 | TASK4 |
-| C 扩展 pip 包刷新后不持久 | 文本快照不带 `.so`；numpy 等刷新后需重装 | TASK27 |
 | 外部 `curl` 需 CORS 代理 | `https://r.jina.ai/<url>` 风格 | README |
 | `npm i -g` → EACCES | `/usr/local` 对 `guest` 只读；追加可操作 hint | TASK24 |
 | 1 MB 输出上限 | stdout/stderr 超过 1 MB 仅保留尾部（约束容器内存） | TASK18 |
@@ -223,7 +248,7 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 - **`?test=1` 自检** —— 浏览器内跑完整诊断套件：**76 passed, 0 failed, 5 skipped**（5 个 skip
   是已文档化的已知边界，绝非静默失败）。 | TASK1, TASK3, TASK20, TASK25
 - **场景套件** —— `scripts/scenarios.mjs`（headless Chrome + CDP）：14 个真实工作流 S1–S14
-  （npm 开发循环、lifo-pkg-git 的 git、tinbase 生命周期、服务自启、工作区隔离、队列串行化、
+  （npm 开发循环、lifo-pkg-git 的 git、tinbase 生命周期、服务启用、工作区隔离、队列串行化、
   大输出、持久化压力、错误路径、reboot 边界、python 工作流、cd 同步安装、TS 生态、语言防回归）。
   | TASK19, TASK23, TASK25
 - **语言验证** —— `scripts/lang-verify.mjs`：28 项 CDP 驱动检查（`LV·P1–P9`、`N1–N5`、

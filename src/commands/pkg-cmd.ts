@@ -1,5 +1,16 @@
 // pkg 命令域：包管理（lifo + npm 双通道，O1 拆分）。
-import { listPackages, formatPackageList, searchPackages, formatSearchResults, installPackage, removePackage, packageInfo, type PkgContext } from '../pkg/index.js';
+import {
+  listPackages,
+  formatPackageList,
+  searchPackages,
+  formatSearchResults,
+  installPackage,
+  removePackage,
+  packageInfo,
+  readPackageManifest,
+  writePackageManifest,
+  type PkgContext,
+} from '../pkg/index.js';
 import { GRAY, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 包管理（TASK13）：pkg 命令族，统一 lifo + npm 两通道 ───
@@ -12,11 +23,22 @@ const PKG_USAGE_LINES = [
   '  install <name>         install a package (lifo if lifo-pkg-<name> exists, else npm)',
   '  remove <name>          remove an installed package (via its source channel)',
   '  info <name>            show package info (source / version / description)',
+  '  lock                   write the installed package lock manifest',
+  '  doctor                 check manifest entries against the execution world',
+  '  cache                  show npm/lifo cache status',
+  '  restore                report packages eligible for rehydration',
 ];
 
 export async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term } = ctx;
-  const pctx: PkgContext = { wc: ctx.wc, client: ctx.client };
+  const pctx: PkgContext = {
+    wc: ctx.wc,
+    client: ctx.client,
+    manifestFs: ctx.wc.fs as unknown as PkgContext['manifestFs'],
+    manifestPath: ctx.instanceId && ctx.instanceId !== 'default'
+      ? `/workspace/.succinix-${ctx.instanceId}/etc/succinix.packages.json`
+      : '/etc/succinix.packages.json',
+  };
   const sub = args[0] ?? '';
 
   if (sub === '' || sub === '--help' || sub === '-h') {
@@ -98,6 +120,45 @@ export async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void>
     term.writeln(`  source      ${e.source}`);
     term.writeln(`  version     ${e.version}`);
     term.writeln(`  description ${e.description || '--'}`);
+    return;
+  }
+
+  if (sub === 'lock') {
+    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
+    await writePackageManifest(pctx.manifestFs!, manifest, pctx.manifestPath);
+    term.writeln(`Package lock written (${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'})`);
+    return;
+  }
+
+  if (sub === 'doctor') {
+    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
+    const installed = await listPackages(pctx);
+    const available = new Set(installed.map((entry) => `${entry.source}:${entry.name}`));
+    let missing = 0;
+    for (const entry of manifest.packages) {
+      if (available.has(`${entry.source}:${entry.name}`)) term.writeln(`[  OK  ] ${entry.source}:${entry.name}`);
+      else { term.writeln(`[ FAIL ] ${entry.source}:${entry.name} is missing`); missing++; }
+    }
+    if (manifest.packages.length === 0) term.writeln('[SKIP] package manifest is empty');
+    if (missing > 0) term.writeln(`Package doctor: ${missing} package${missing === 1 ? '' : 's'} need restore`);
+    else term.writeln('Package doctor: manifest is consistent');
+    return;
+  }
+
+  if (sub === 'cache') {
+    const r = await pctx.client.terminal('npm cache verify', { timeout: 30000 }, 45000);
+    if (r.stdout) term.writeln(String(r.stdout).trimEnd());
+    if (r.stderr) term.writeln(`${GRAY}${String(r.stderr).trimEnd()}${RESET}`);
+    if (!r.ok) term.writeln(`${RED}package cache verification failed${RESET}`);
+    return;
+  }
+
+  if (sub === 'restore') {
+    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
+    if (manifest.packages.length === 0) { term.writeln('[SKIP] no persistent packages recorded'); return; }
+    term.writeln(`Rehydration manifest contains ${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'}:`);
+    for (const entry of manifest.packages.filter((item) => item.persistent)) term.writeln(`  ${entry.source}:${entry.name}@${entry.version}`);
+    term.writeln('Run pkg install for any package that is missing from the current workspace.');
     return;
   }
 

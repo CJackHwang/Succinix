@@ -14,6 +14,7 @@ const ROOT = join(__dirname, '..');
 
 const STEPS = [
   { name: 'verify-deploy (deploy gate + self-test)', args: ['scripts/verify-deploy.mjs', '--skip-build'] },
+  { name: 'terminal-interactive (xterm to Lifo Shell)', args: ['scripts/terminal-interactive-e2e.mjs', '--skip-build'] },
   { name: 'bench (performance)', args: ['scripts/bench.mjs', '--skip-build'] },
   { name: 'scenarios (14 real-workflow scenarios)', args: ['scripts/scenarios.mjs', '--skip-build'] },
   { name: 'lang-verify (language ecosystem verification)', args: ['scripts/lang-verify.mjs', '--skip-build'] },

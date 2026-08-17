@@ -1,7 +1,7 @@
 {
   "name": "succinix",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -25,25 +25,40 @@
     "check:engine-package": "npm run build:engine-package && cd packages/engine && npm pack --dry-run",
     "check:dsh-shapes": "node scripts/check-dsh-shapes.mjs --types",
     "check:dsh-keys": "node scripts/check-dsh-keys.mjs src tests examples",
+    "check:legacy-store": "node scripts/check-legacy-store.mjs",
+    "check:lifecycle": "vitest run tests/boot-engine-listeners.test.ts tests/boot-retry.test.ts tests/instance-restart.test.ts tests/terminal-service.test.ts tests/plugin-c3.test.ts tests/plugin-c4.test.ts",
+    "check:bundle-budget": "node scripts/check-bundle-budget.mjs",
     "verify:engine-package": "npm run check:engine-package",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node node_modules/typescript-cli/bin/tsc -p tsconfig.json --noEmit",
+    "typecheck:legacy": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node scripts/run-e2e.mjs",
+    "test:bench": "node scripts/bench-gate.mjs",
+    "test:bench:soak": "node scripts/bench-gate.mjs --soak all",
+    "test:bench:soak:10k": "node scripts/bench-gate.mjs --soak 10k",
+    "test:bench:soak:100k": "node scripts/bench-gate.mjs --soak 100k",
+    "test:bench:soak:100-release": "node scripts/bench-gate.mjs --soak 100-release",
     "audit:files": "node scripts/audit-file-size.mjs --fail",
     "check:static": "node scripts/check-static.mjs",
     "check:docs": "node scripts/check-docs.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:engine-package && npm run check:docs && npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys",
+    "audit:deps": "npm audit --audit-level=high",
+    "report:dependencies": "node scripts/dependency-report.mjs",
+    "check": "npm run typecheck && npm run typecheck:legacy && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:engine-package && npm run check:docs && npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys && npm run check:legacy-store && npm run check:lifecycle && npm run check:bundle-budget",
+    "check:release": "npm run check && npm run test:coverage && npm run audit:deps && npm run test:e2e && npm run test:bench && npm run test:bench:soak",
     "check:e2e": "npm run check && npm run test:e2e",
     "setup:hooks": "node scripts/setup-hooks.mjs"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",
-    "@lifo-sh/core": "^0.10.8",
+    "@lifo-sh/core": "0.10.10",
+    "@ruby/head-wasm-wasi": "^2.10.1",
+    "@ruby/wasm-wasi": "^2.10.1",
     "@webcontainer/api": "^1.6.4",
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0"
+    "@xterm/xterm": "^6.0.0",
+    "isomorphic-git": "1.41.4"
   },
   "devDependencies": {
     "@cordisjs/plugin-database-memory": "^4.1.1",
@@ -54,15 +69,19 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@eslint/js": "^10.0.1",
     "@standard-schema/spec": "^1.1.0",
-    "@types/node": "^26.1.2",
+    "@types/node": "26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
     "cordis": "^4.0.0-rc.8",
-    "esbuild": "^0.28.1",
-    "eslint": "^10.8.0",
-    "globals": "^16.5.0",
-    "typescript": "~6.0.3",
-    "typescript-eslint": "^8.66.0",
-    "vite": "^8.2.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.8.1",
+    "globals": "17.11.0",
+    "typescript": "6.0.3",
+    "typescript-cli": "npm:typescript@7.0.2",
+    "typescript-eslint": "8.67.0",
+    "vite": "8.2.1",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "nanoid": "3.3.18"
   }
 }

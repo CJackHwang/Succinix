@@ -10,7 +10,7 @@ import type { SuccinixHostService } from '../../src/plugin/types.js';
 
 /** Internal app bootstrap seam used by plugin tests after the dsh-key migration. */
 export function hostOf(ctx: Context): SuccinixHostService {
-  return ctx.get('succinix-host', false) as SuccinixHostService;
+  return ctx.get('succinix', false) as SuccinixHostService;
 }
 
 // ─── 内存 FileSystemAPI ───

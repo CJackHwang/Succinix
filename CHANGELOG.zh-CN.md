@@ -7,7 +7,86 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 本项目遵循[语义化版本（Semantic Versioning）](https://semver.org/spec/v2.0.0.html)。
 
-## [Unreleased]
+## [0.7.0] — 2026-08-16
+
+### 破坏性变更（Breaking）
+
+- **人类终端迁入 WebContainer。** 浏览器 xterm 仅是设备平面；行编辑、历史、
+  Tab 补全、Ctrl+C、raw mode、job 与提示符全部由
+  `Sandbox.create({ terminal })` 启动的 Lifo Shell 经新的 `RpcTerminal`
+  传输管理；浏览器侧并行 REPL 会话状态已移除。
+- **文件 RPC v2。** 请求携带 `protocolVersion` / `bootNonce` /
+  `instanceId`；请求 ID 不再跨页面刷新重用；host 维护有界 processed-ID
+  集合；结果 temp-write + rename；malformed JSON / 未知版本返回结构化错误；
+  上报 `queueMs` / `hostMs` / `resultPollMs` / `totalMs` 四段时间。
+- **持久化 v2。** 新 IndexedDB 库 `succinix-persist-v2`：binary export +
+  chunk generation + SHA-256 manifest + last-known-good pointer；会话默认改为
+  JSONL segment 存储。v0.6 旧库仅检测并报告 `legacy snapshot detected`，
+  不迁移、不删除。
+- **主 bundle 不再静态携带 xterm。** xterm 懒加载，主入口保持在 400 KiB
+  未压缩 / 120 KiB gzip 以内（`check:bundle-budget` 强制）。
+
+### 新增（Added）
+
+- **每实例 `SandboxContext`**（按实例 id 分键）：独立的
+  Sandbox/Shell/RpcTerminal、cwd/env/history/jobs、进程/服务/包注册表、
+  终端会话与持久化上下文。
+- **统一进程模型：** `ProcessRecord` 覆盖 node/python/lifo/wasi/ruby 与交互
+  会话；`ps` / `kill` / Ctrl+C（AbortSignal，SIGTERM -> SIGKILL 升级）跨运行时
+  生效；service registry、`succinix service`、`systemctl` 与端口视图共用同一
+  数据源；官方模板：node-http、vite、static-http、python-http、tinbase、
+  websocket、worker。
+- **Linux userland profile `succinix-linux-userland/0.7`：** 40+ 常用 Unix
+  命令带退出码契约；fail-closed 拒绝清单（chmod/chown/ln/mount/sudo/su/
+  ssh/gcc/...）；`succinix doctor` 与 `succinix capabilities`。
+- **包 manifest** `/etc/succinix.packages.json` 与
+  `succinix pkg install|remove|update|lock|doctor|cache|restore`，含完整性
+  校验与 rehydration；Lifo 包优先，`npm:` 显式选择 npm。
+- **Git HTTPS 工作流**（init/status/add/commit/log/diff/branch/checkout/
+  clone/fetch/pull/push）基于 Isomorphic Git；SSH 传输明确不支持；`.git`
+  默认排除出快照；token 绝不进日志。
+- **诚实的网络视图：** curl/wget/dig/host/nslookup/netstat/ss/ip 与
+  `succinix net doctor|preview|tunnel`，输出标注
+  virtual|preview|outbound|unavailable。
+- **Ruby WASM**（`ruby -e` / 脚本 / `--version`）与 **WASI**
+  （`wasi-run` / `wasi-info`）作为延迟加载运行时资产。
+- **`vi` / `nano`** 作为 Lifo 原生交互 package，走 `ITerminal` 与
+  `CommandContext.stdin` / `setRawMode`。
+- **第三方 `UserlandRegistry`**（listCommands/registerCommand/
+  registerPackage/registerServiceTemplate/capabilities）；注册的命令运行在
+  WebContainer userland，共享统一注册表与生命周期。
+- **公共 API：** `InteractiveTerminalService`
+  （open/send/resize/onData/signal/close）、executor 的
+  `capabilities()` / `degradations()` / `persistenceStatus()`，以及 Cordis
+  事件 `succinix/command-start|finish`、`succinix/runtime-ready`、
+  `succinix/degradation`、`succinix/persistence`、
+  `succinix/terminal-open|close|backpressure`。
+- **依赖基线：** `@lifo-sh/core@0.10.10`、`browser-metro@1.0.36`、
+  Vite 8.2.1、esbuild 0.28.2、ESLint 10.8.1、typescript-eslint 8.67.0、
+  `@types/node@26.2.0`、TypeScript CLI 7.0.2（与 TypeScript 6 双轨，
+  供 typescript-eslint）、globals 17.11.0、nanoid override >= 3.3.18。
+
+### 变更（Changed）
+
+- 运行时错误统一为 `RuntimeErrorShape`
+  （code/message/runtime/retryable/degraded）；命令日志默认脱敏
+  token/password/npm auth/env secret/URL query secret。
+- 可观测字段：boot phase、RPC queue/host/poll 时间、终端
+  input/frame/ack/backpressure、快照 collect/write/IDB、会话
+  append/flush、watchdog 重启、运行时资产加载与注册表规模。
+- 源码文件行数上限 450 行（`audit:files` 强制）。
+
+### 修复（Fixed）
+
+- **二进制快照恢复不再丢文件。** v2 导出原取容器根路径空间，而 v2 mount
+  目标是 fs 空间根（随机 `home/<id>`，每次 boot 不同），快照后刷新可能把文件
+  落到旧前缀下、表现为丢失。现导出改用容器 `workdir` 作为 fs 空间根；
+  同一二进制导出也让 pip 安装的编译 wheel（`.so`，如 `numpy`）刷新后保留（`S11`）。
+- **交互式 `cd` 对子进程生效。** Lifo 的 `Shell.execute` 在传入 `cwd` 选项时
+  总会在结束前还原运行前 cwd，导致会话 `cd` 每条命令都被抹掉。会话 run 不再
+  传 `cwd`，`cd` 后的 `node` / `npm` / `python` 子进程在会话目录执行（`S12`-`S14`）。
+
+## [0.6.0] — 2026-08-14
 
 ### 破坏性变更（Breaking）
 

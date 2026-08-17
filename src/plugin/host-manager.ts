@@ -45,6 +45,8 @@ export class HostManager {
   private configRevision = 0;
   private serviceApplied = false;
   private lastRawConfig: SuccinixConfig | null = null;
+  private generation = 0;
+  private bootTask: Promise<void> | null = null;
 
   handle(): HostManagerHandle {
     return {
@@ -118,13 +120,8 @@ export class HostManager {
 
   /** Synchronous kill/reset used by restart-required fiber updates. */
   shutdownSync(): void {
-    if (this.hostProc) {
-      try {
-        this.hostProc.kill();
-      } catch {
-        /* stale host handle: ignore */
-      }
-    }
+    this.generation += 1;
+    this.killHost(this.hostProc);
     this.hostProc = null;
     this.wc = null;
     this.mode = null;
@@ -133,6 +130,7 @@ export class HostManager {
   }
 
   resetForTests(): void {
+    this.shutdownSync();
     this.mode = null;
     this.state = 'unattached';
     this.wc = null;
@@ -141,59 +139,92 @@ export class HostManager {
     this.configRevision = 0;
     this.serviceApplied = false;
     this.lastRawConfig = null;
+    this.bootTask = null;
   }
 
   private async ensureHost(wc: WebContainer, opts: HostManagerBootOptions): Promise<void> {
     invariant(wc && typeof wc.spawn === 'function', 'HostManager requires a WebContainer');
-    if (this.state === 'ready' && this.mode === opts.mode && this.hostProc) return;
+    if (this.state === 'ready' && this.mode === opts.mode && this.wc === wc && this.hostProc) return;
     if ((this.state === 'ready' || this.state === 'booting') && this.mode && this.mode !== opts.mode) {
       throw new Error(`ERR_MODE_MISMATCH: cannot switch from ${this.mode} to ${opts.mode} mode`);
     }
+    if (this.state === 'ready' && this.wc !== wc) {
+      throw new Error('ERR_CONTAINER_MISMATCH: page host already owns another WebContainer');
+    }
+    if (this.state === 'booting') {
+      if (this.mode === opts.mode && this.wc === wc && this.bootTask) return this.bootTask;
+      throw new Error('ERR_CONTAINER_MISMATCH: page host is booting another WebContainer');
+    }
 
+    const generation = ++this.generation;
     this.mode = opts.mode;
     this.wc = wc;
     this.state = 'booting';
+    const task = this.bootNewHost(wc, opts, generation);
+    this.bootTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.generation === generation && this.bootTask === task) this.bootTask = null;
+    }
+  }
+
+  private async bootNewHost(wc: WebContainer, opts: HostManagerBootOptions, generation: number): Promise<void> {
     const client = new TerminalClient(wc, { onCommand: opts.onCommand });
     const readyAttempts = Math.max(1, Math.ceil(opts.hostReadyDeadlineMs / 100));
     let lastError: unknown = null;
 
     for (let attempt = 0; attempt < opts.bootRetries; attempt++) {
+      if (!this.isCurrentBoot(wc, generation)) throw new Error('host boot was superseded');
       try {
-        if (this.hostProc) {
-          try {
-            this.hostProc.kill();
-          } catch {
-            /* stale host handle: ignore */
-          }
-          this.hostProc = null;
-        }
-        this.hostProc = await bootEngineHost(wc, client, {
+        this.killHost(this.hostProc);
+        this.hostProc = null;
+        const hostProc = await bootEngineHost(wc, client, {
           resultTtlMs: opts.resultTtlMs,
           hostJsUrl: opts.hostJsUrl,
           lifoCoreUrl: opts.lifoCoreUrl,
           hostSrc: opts.hostSrc,
           lifoCoreSrc: opts.lifoCoreSrc,
         });
+        if (!this.isCurrentBoot(wc, generation)) {
+          this.killHost(hostProc);
+          throw new Error('host boot was superseded');
+        }
+        this.hostProc = hostProc;
         await waitForHostReady(client, readyAttempts);
+        if (!this.isCurrentBoot(wc, generation)) {
+          this.killHost(hostProc);
+          if (this.hostProc === hostProc) this.hostProc = null;
+          throw new Error('host boot was superseded');
+        }
         this.startedAt = Date.now();
         this.state = 'ready';
         return;
       } catch (error) {
         lastError = error;
+        if (!this.isCurrentBoot(wc, generation)) throw error;
         if (this.hostProc) {
-          try {
-            this.hostProc.kill();
-          } catch {
-            /* stale host handle: ignore */
-          }
+          this.killHost(this.hostProc);
           this.hostProc = null;
         }
         if (attempt < opts.bootRetries - 1) await sleep(opts.bootIntervalMs);
       }
     }
 
-    this.state = 'unattached';
+    if (this.isCurrentBoot(wc, generation)) this.state = 'unattached';
     throw lastError ?? new Error('host boot failed');
+  }
+
+  private isCurrentBoot(wc: WebContainer, generation: number): boolean {
+    return this.generation === generation && this.wc === wc && this.state === 'booting';
+  }
+
+  private killHost(hostProc: WebContainerProcess | null): void {
+    try {
+      hostProc?.kill();
+    } catch {
+      /* stale host handle: ignore */
+    }
   }
 }
 

@@ -2,12 +2,11 @@
 import type { Terminal } from '@xterm/xterm';
 import type { WebContainer } from '@webcontainer/api';
 import type {
-  LocalCommandHandler,
   SuccinixInstance,
-  SuccinixTerminalSession,
   TerminalClient,
   TerminalExecutor,
-  TerminalOutput,
+  RpcTerminalClient,
+  RuntimeAssetBridgeController,
 } from '@succinix/engine';
 import type { BootUI } from '../boot-ui.js';
 import type { CommandContext } from '../commands/index.js';
@@ -19,8 +18,10 @@ export interface AppShell {
   client: TerminalClient;
   ports: Map<number, string>;
   executor: TerminalExecutor;
+  /** Thin browser device endpoint for the WebContainer-native Lifo shell. */
+  interactive: RpcTerminalClient;
+  runtimeAssets: RuntimeAssetBridgeController;
   term: Terminal;
-  output: TerminalOutput;
   ui: BootUI;
   instanceId: string;
   userId?: string;
@@ -32,7 +33,6 @@ export interface AppShell {
 
 export interface AppTerminalService {
   getTerm(): Terminal;
-  getOutput(): TerminalOutput;
   fit(): void;
   wire(shell: AppShell): void;
 }
@@ -49,17 +49,18 @@ export interface AppShellService {
 
 export interface AppCommandsService {
   attach(shell: AppShell): CommandContext;
-  makeHandlers(): Record<string, LocalCommandHandler>;
 }
 
 export type { CommandContext };
 
 export interface AppSnapshotService {
   attach(shell: AppShell): void;
+  stop(): void;
 }
 
 export interface AppWatchdogService {
   attach(shell: AppShell): void;
+  stop(): void;
 }
 
 export interface AppSelftestService {
@@ -69,5 +70,3 @@ export interface AppSelftestService {
 export interface AppDevhooksService {
   attach(shell: AppShell): void;
 }
-
-export type { SuccinixTerminalSession };

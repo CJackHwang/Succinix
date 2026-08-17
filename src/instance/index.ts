@@ -18,23 +18,16 @@ import {
   type EngineBootHooks,
   type TerminalExecutor,
 } from '../engine/index.js';
-import {
-  SuccinixTerminalSession,
-  type TerminalSessionOptions,
-  type TerminalOutput,
-  type TerminalRpc,
-  type TerminalBootOptions,
-} from '../terminal/index.js';
+import type { TerminalBootOptions } from '../terminal/index.js';
 import { createPersist, getPersist, type PersistContext, type PersistOptions, type SnapshotMeta } from '../persist/index.js';
 import {
-  listServiceStates,
-  startService,
-  stopService,
-  clearActivePorts,
-  clearDbActivePorts,
-  type ServiceContext,
-} from '../services/index.js';
-import { DEFAULT_INSTANCE_ID, instanceStateRoot, browserPathToSessionCwd } from './paths.js';
+  listExecutionServiceStates,
+  startExecutionService,
+  stopExecutionService,
+} from '../services/world-client.js';
+import type { ServiceContext } from '../services/types.js';
+import { clearActivePorts, clearDbActivePorts } from '../services/registry.js';
+import { DEFAULT_INSTANCE_ID, instanceStateRoot } from './paths.js';
 import { instancePorts } from './ports.js';
 
 // 工厂缺省 boot 步骤文案（引擎级；应用级步骤由宿主负责，见 SDK.md）。
@@ -54,15 +47,10 @@ export interface SuccinixInstanceOptions {
    *  自定义前缀时应保持 instanceId 命名与内置前缀对齐（如 instanceId 'users/alice'）。 */
   statePrefix?: string;
   /** 用户 home（U1，浏览器 wc.fs 视角，如 /workspace/users/alice；宿主可覆盖根）。
-   *  设置后会话初始 cwd 与提示符 home 指向 home 的 Lifo 视图（/workspace + home 路径）；
-   *  目录本身由宿主经 ensureUserHome / runApplicationBootSteps(userHome) 初始化。 */
+   *  目录及执行世界 cwd 由宿主经 ensureUserHome / runApplicationBootSteps(userHome) 初始化。 */
   home?: string;
   /** 快照存储覆盖（缺省 = 每实例键 instance:<id>，同库不同 key；默认实例 = current） */
-  persistence?: { dbName?: string; storeKey?: string };
-  /** 终端输出（宿主渲染层；xterm 适配器约 10 行） */
-  output: TerminalOutput;
-  /** 会话选项透传（cwd / localHandlers / beforeRpc / colors / onCommand ...） */
-  terminal?: TerminalSessionOptions;
+  persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   /** 引擎 boot 钩子透传（资产 URL / 端口回调 / 命令采集 / resultTtlMs ...） */
   executor?: EngineBootHooks;
   /** 同页共享 RPC 通道（per-page）：传入宿主已 boot 的 TerminalClient 时复用其通道与 host，
@@ -76,9 +64,8 @@ export interface SuccinixInstanceOptions {
   bootUI?: BootUI;
   /** boot 步骤文案（缺省 = DEFAULT_INSTANCE_BOOT_STEPS；应用级 bootsteps 归宿主） */
   bootSteps?: TerminalBootOptions['steps'];
-  /** restart 后重跑应用级 bootsteps 的钩子（D3）：工厂只负责引擎级重置
-   *  （停进程/清状态/重建会话），workspace/env/services/motd/autostart 由宿主恢复。
-   *  缺省 = 仅重建会话。ctx.terminal 是已重建的新会话，宿主可自行 boot() 解锁输入。 */
+  /** restart 后重跑应用级 bootsteps 的钩子（D3）：工厂只负责引擎级重置，
+   *  workspace/env/services/motd/autostart 由宿主恢复。 */
   onRestart?: (ctx: SuccinixRestartContext) => Promise<unknown>;
 }
 
@@ -87,16 +74,12 @@ export interface SuccinixRestartContext {
   wc: WebContainer;
   client: TerminalClient;
   ports: Map<number, string>;
-  /** 已重建的新会话（宿主决定何时 terminal.boot() 解锁输入；工厂在钩子后统一 boot） */
-  terminal: SuccinixTerminalSession;
 }
 
 export interface SuccinixInstance {
   instanceId: string;
   /** 本实例的 RPC 客户端（请求带 instanceId，host 按实例路由；同页多实例经共享通道串行） */
   client: TerminalClient;
-  /** 当前会话（restart 后指向新会话；宿主应经实例属性取用，不要缓存旧引用） */
-  terminal: SuccinixTerminalSession;
   /** 命令式通道（包装本实例的 client；rpc 共享路径下与宿主共用 host） */
   executor: TerminalExecutor;
   /** 本实例快照持久化上下文（snapshot 命令 / 宿主直用） */
@@ -109,7 +92,7 @@ export interface SuccinixInstance {
     start(name: string): Promise<unknown>;
     stop(name: string): Promise<unknown>;
   };
-  /** 实例级重置（M4）：清快照 + 清状态根 + 重建会话（不刷新宿主页面，不动共享 host）。
+  /** 实例级重置（M4）：清快照 + 清状态根（不刷新宿主页面，不动共享 host）。
    *  默认实例 = 整页刷新语义（rebootMode 'page'，现状）。 */
   restart(): Promise<void>;
   /** 释放资源：会话 + executor。自建 host 时同时 kill host；rpc 共享路径不动共享 host。幂等 */
@@ -153,7 +136,17 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
   // 快照按实例键（M1）：宿主可自定义 dbName/storeKey；缺省 = 每实例键 instance:<id>。
   // D4：缺省实例 = 整棵 FS 快照（现状全等）；非默认实例 = /workspace scope +
   // 按实例归属排除其他实例的状态根 / 用户 home / tinbase（同页多实例内容隔离）。
-  const persist = opts.persistence ? createPersist(opts.persistence) : getPersist(instanceId, instancePersistScope(instanceId, opts));
+  const scope = instancePersistScope(instanceId, opts);
+  const persist = opts.persistence ? createPersist({ ...scope, ...opts.persistence }) : getPersist(instanceId, scope);
+  // v0.7 binds the persistence context to the execution-world WebContainer.
+  // This switches the instance to binary export/generation storage while
+  // preserving the FileSystemAPI-only compatibility adapter for SDK callers.
+  persist.bindContainer?.(opts.wc);
+  // Node 子进程使用宿主内置实例 cwd；statePrefix 只影响浏览器侧布局，首条 Node
+  // 命令到达宿主前必须确保 /workspace/.succinix-<id> 已存在。
+  if (instanceId !== DEFAULT_INSTANCE_ID) {
+    await opts.wc.fs.mkdir(instanceStateRoot(instanceId, opts.statePrefix), { recursive: true });
+  }
 
   // 端口视图（M4）：server-ready 按实例期望端口归属；工厂维护本实例 port → url 表
   // （services ctx / 宿主预览用），宿主回调透传（如打印 [preview] 行）。
@@ -222,38 +215,12 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       : 'Initialized fresh workspace'
   );
 
-  // 会话：instanceId 经 client 注入 rpc/命令 ctx（M3 路由）；快照/服务绑定 per-instance 视图。
-  // 首提示符由宿主在合适时机调用 instance.terminal.boot()（独立应用在 motd 之后，见 main.ts）。
-  // U1：home（浏览器视角）→ 会话 cwd / 提示符 home（Lifo 视图）。home 选项优先于
-  // opts.terminal.cwd（宿主显式注入的用户语义应主导会话起点）。
-  const sessionOpts: TerminalSessionOptions = opts.home
-    ? { ...opts.terminal, cwd: browserPathToSessionCwd(opts.home), home: browserPathToSessionCwd(opts.home) }
-    : (opts.terminal ?? {});
-  let session: SuccinixTerminalSession;
-  const makeSession = (): SuccinixTerminalSession => {
-    const rpc: TerminalRpc = {
-      exec: (cmd, _rpcOpts, timeoutMs) => executor.exec(cmd, { timeoutMs }),
-      spawn: (cmd, _rpcOpts, timeoutMs) => executor.spawn(cmd, { timeoutMs }),
-      listProcesses: () => executor.listProcesses(),
-      kill: (pid) => executor.kill(pid),
-      ping: () => executor.ping(),
-      pingDirect: (timeoutMs) => executor.pingDirect(timeoutMs),
-      interruptDirect: (timeoutMs) => executor.interruptDirect(timeoutMs),
-      readdir: (dir) => opts.wc.fs.readdir(dir, { withFileTypes: true }),
-    };
-    return new SuccinixTerminalSession(rpc, opts.output, sessionOpts);
-  };
-  session = makeSession();
-
   const svcCtx: ServiceContext = { wc: opts.wc, client, ports, instanceId, statePrefix: opts.statePrefix };
   let disposed = false;
 
   const instance: SuccinixInstance = {
     instanceId,
     client,
-    get terminal() {
-      return session;
-    },
     executor,
     persist,
     ports,
@@ -264,9 +231,9 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       },
     },
     services: {
-      list: () => listServiceStates(svcCtx),
-      start: (name) => startService(svcCtx, name),
-      stop: (name) => stopService(svcCtx, name),
+      list: () => listExecutionServiceStates(svcCtx),
+      start: (name) => startExecutionService(svcCtx, name),
+      stop: (name) => stopExecutionService(svcCtx, name),
     },
     restart: async () => {
       if (instanceId === DEFAULT_INSTANCE_ID) {
@@ -275,7 +242,7 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
         return;
       }
       // 实例级重置（M4 / D3）：停进程 → 清端口期望/活动端口记录 → 清 host 缓存 →
-      // 清快照 + 清状态根 → 重建会话 → 重跑应用级 bootsteps（宿主注入）。不动共享 host
+      // 清快照 + 清状态根 → 重跑应用级 bootsteps（宿主注入）。不动共享 host
       // 进程本体（单 host 不变量），只清该实例的归属进程与缓存。
       // 1. host 侧收口：kill 本实例归属进程 + 清 sessionCwd/currentRun 缓存。
       try {
@@ -294,21 +261,17 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       try {
         await opts.wc.fs.rm(root, { recursive: true });
       } catch {
-        /* 状态根不存在 / 删除失败：忽略，新会话按全新系统走 */
+        /* 状态根不存在 / 删除失败：忽略，下一轮 boot 按全新系统走 */
       }
-      // 4. 重建会话。
-      session.dispose();
-      session = makeSession();
-      // 5. 重跑应用级 bootsteps（宿主注入；缺省仅重建会话）。
-      await opts.onRestart?.({ wc: opts.wc, client, ports, terminal: session });
-      await session.boot();
+      // 4. 重跑应用级 bootsteps（宿主注入；共享 host/Sandbox 不重启）。
+      await opts.onRestart?.({ wc: opts.wc, client, ports });
     },
     dispose: async () => {
       if (disposed) return;
       disposed = true;
       unsubscribePorts?.();
       unsubscribePorts = null;
-      session.dispose();
+      persist.dispose?.();
       // rpc 共享路径：executor 持有 hostProc（respawn 用）但标记 sharedHost，
       // dispose 只清引用不动共享 host；
       // 自建路径：executor.dispose kill 自建 host（单实例页面的 host 由实例拥有）。

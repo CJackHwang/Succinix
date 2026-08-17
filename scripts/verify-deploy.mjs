@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { findChrome, launchChrome, cleanupChrome } from './lib/chrome.mjs';
-import { connectPageCDP } from './lib/cdp.mjs';
+import { connectPageCDP, evalValue } from './lib/cdp.mjs';
 import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
@@ -53,6 +53,12 @@ const INJECT_SCRIPT = `(() => {
   if (window.__succinixResult !== undefined) return;
   window.__succinixResult = null;
   window.__succinixError = null;
+  window.__succinixConsoleErrors = [];
+  const originalError = console.error.bind(console);
+  console.error = (...args) => {
+    window.__succinixConsoleErrors.push(args.map((arg) => String(arg)).join(' ').slice(0, 2000));
+    originalError(...args);
+  };
   const grab = () => {
     if (window.__succinixResult) return;
     const ov = document.getElementById('boot-overlay');
@@ -103,7 +109,10 @@ async function runHeadlessSelfTest() {
       } catch {
         /* 解析失败下一轮再试 */
       }
-      if (state?.result) return state.result;
+      if (state?.result) {
+        state.result.consoleErrors = await evalValue(cdp, 'window.__succinixConsoleErrors ?? []');
+        return state.result;
+      }
       if (state?.error) {
         fail(`page entered error state: ${state.error.head} — ${state.error.list.slice(0, 200)}`);
         return null;
@@ -161,7 +170,9 @@ async function main() {
 
   // 3) vite preview（COOP/COEP 头来自 vite.config.ts preview.headers，与 vercel.json 一致）
   note(`step 3/5: starting 'vite preview' on port ${PORT}...`);
-  const preview = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
+  const preview = spawn(process.execPath, [
+    'node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1',
+  ], { stdio: 'ignore' });
   try {
     await waitForHttp(BASE, 20000);
     ok(`vite preview reachable at ${BASE}`);
@@ -187,6 +198,7 @@ async function main() {
         `(gate: >=${MIN_PASSED} passed, 0 failed)`);
       if (result.failed > 0) {
         for (const f of result.fails) fail(`    ${f}`);
+        for (const line of result.consoleErrors ?? []) fail(`    browser console: ${line}`);
       }
     }
   } finally {

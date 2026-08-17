@@ -8,7 +8,6 @@ import { createSuccinixInstance } from '../src/instance/index.js';
 import { instancePorts } from '../src/instance/ports.js';
 import { DEFAULT_INSTANCE_ID } from '../src/instance/paths.js';
 import type { WebContainer } from '@webcontainer/api';
-import type { TerminalOutput } from '../src/terminal/index.js';
 
 // 假持久化（同 instance-m5.test.ts）：聚焦端口分发组装逻辑。
 const persistMock = vi.hoisted(() => {
@@ -37,11 +36,12 @@ const persistMock = vi.hoisted(() => {
 vi.mock('../src/persist/index.js', () => persistMock);
 
 interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
   instanceId?: string;
+  bootNonce?: string;
 }
 
 function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
@@ -50,8 +50,9 @@ function makeRpcFs(opts: { respond?: (req: CmdReq) => unknown }) {
     writeFile: async (path: string, content: string) => {
       if (path === '/cmd.json') {
         const req = JSON.parse(content) as CmdReq;
+        files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
         const payload = opts.respond?.(req);
-        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ id: req.id, ...(payload as object) }));
+        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
         return;
       }
       files.set(path, content);
@@ -82,8 +83,6 @@ function makeWc(respond?: (req: CmdReq) => unknown) {
 
 const PONG = () => ({ ok: true, kind: 'pong' });
 const RUN_OK = () => ({ ok: true, stdout: 'hi', runtime: 'lifo', exitCode: 0 });
-const silentOutput: TerminalOutput = { write: () => {}, clear: () => {} };
-
 // 从假 wc 取出已注册的 wc.on 处理器（bootEngineHost/pagePorts.bind 注册）。
 function eventHandlers(wc: WebContainer): { serverReady: (port: number, url: string) => void; portClose: (port: number) => void } {
   const on = (wc as unknown as { on: ReturnType<typeof vi.fn> }).on;
@@ -113,7 +112,6 @@ describe('D2 同页端口事件分发', () => {
       wc,
       instanceId: DEFAULT_INSTANCE_ID,
       rpc: hostClient,
-      output: silentOutput,
     });
 
     serverReady(4321, 'https://4321-preview');
@@ -130,7 +128,7 @@ describe('D2 同页端口事件分发', () => {
     await bootEngineHost(wc, hostClient, { hostSrc: '// host.js', onServerReady: hostReady, onServerClosed: hostClosed });
     const { serverReady, portClose } = eventHandlers(wc);
 
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', rpc: hostClient, output: silentOutput });
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-1', rpc: hostClient });
 
     // 本实例期望 8080：事件归属到实例视图（宿主回调也收到）。
     instancePorts.expect('c-1', 8080);
@@ -152,12 +150,27 @@ describe('D2 同页端口事件分发', () => {
     expect(hostClosed).toHaveBeenCalledWith(8080);
   });
 
+  it('为每次 server-ready 保留单调代次，供服务重启拒绝旧就绪记录', async () => {
+    const { wc } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
+    const hostClient = new TerminalClient({ fs: (wc as unknown as { fs: unknown }).fs } as never);
+    await bootEngineHost(wc, hostClient, { hostSrc: '// host.js' });
+    const { serverReady } = eventHandlers(wc);
+
+    const before = pagePorts.currentGeneration();
+    serverReady(3001, 'https://3001-old.preview');
+    const oldGeneration = pagePorts.generationFor(3001);
+    expect(oldGeneration).toBeGreaterThan(before);
+
+    serverReady(3001, 'https://3001-new.preview');
+    expect(pagePorts.generationFor(3001)).toBeGreaterThan(oldGeneration!);
+    expect(pagePorts.readyPorts().get(3001)).toBe('https://3001-new.preview');
+  });
+
   it('自建 host 路径：同页第二个实例经页面级分发收到 server-ready（不再只有首个监听器）', async () => {
     const { wc } = makeWc((req) => (req.cmd === 'ping' ? PONG() : RUN_OK()));
     const inst = await createSuccinixInstance({
       wc,
       instanceId: 'c-2',
-      output: silentOutput,
       executor: { hostSrc: 'x', lifoCoreSrc: '' },
     });
     const { serverReady } = eventHandlers(wc);
@@ -177,7 +190,7 @@ describe('D2 同页端口事件分发', () => {
     await bootEngineHost(wc, hostClient, { hostSrc: '// host.js' });
     const { serverReady } = eventHandlers(wc);
 
-    const inst = await createSuccinixInstance({ wc, instanceId: 'c-3', rpc: hostClient, output: silentOutput });
+    const inst = await createSuccinixInstance({ wc, instanceId: 'c-3', rpc: hostClient });
     instancePorts.expect('c-3', 8080);
     serverReady(8080, 'https://8080-preview');
     expect(inst.ports.get(8080)).toBe('https://8080-preview');

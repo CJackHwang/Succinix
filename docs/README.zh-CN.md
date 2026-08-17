@@ -1,7 +1,7 @@
 # Succinix
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
-[![Version](https://img.shields.io/badge/version-0.6.0-black.svg)](../package.json)
+[![Version](https://img.shields.io/badge/version-0.7.0-black.svg)](../package.json)
 [![CI](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml/badge.svg)](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
@@ -11,32 +11,42 @@
 
 打开一个浏览器标签页，启动进入类 Linux 环境，无需安装任何东西即可使用 Unix 工具、Node.js、进程管理、端口转发和 Postgres 数据库（tinbase）。
 
+### 执行世界架构
+
+WebContainer 是 Succinix 的执行世界，也是 userland 能力的唯一事实源。`node host.js`
+与懒加载的 `lifo-core.js` 在同一个 WebContainer 内运行，Lifo 通过共享的虚拟化
+`node:fs` 挂载与 Node/Python 使用同一棵文件树。浏览器只是控制/设备平面：启动
+WebContainer、渲染 xterm、采集键盘/resize 事件并运输数据。新命令、运行时、包、服务、编辑器、TUI 与第三方扩展应尽量实现在 WebContainer/Lifo userland 中，不在浏览器外并行拼装。
+
+当前 host 使用 Lifo 的 headless `commands.run()` 路径，因而还没有通用子进程交互 stdin。v0.7 将复用 Lifo 根入口导出的 `ITerminal` 与公开 `CommandContext.stdin`/`setRawMode` seam，通过 WebContainer 内的轻薄终端传输连接浏览器 xterm，使内置和第三方交互工具共用同一套 userland、进程、文件、实例和持久化模型。见 [docs/PLAN-v0.7.0.md](PLAN-v0.7.0.md)。
+
 ---
 
 ## 特性
 
 - **全屏终端体验** — 居中的 DOM 启动画面（boot splash）带系统自检与环境不适配优雅退出（显示专业错误页而非降级），随后进入交互式 Shell（`guest@succinix:~$`）。
-- **交互终端按键（REPL）** — **Ctrl+C** 中断当前运行命令并丢弃排队命令（`node`/`npm`/`npx` run 经 `interrupt` 协议被 kill；纯 Lifo 命令与后台服务不受影响）、**上下箭头**浏览命令历史（会话内存）、**Tab** 补全内置命令名与文件路径（多候选列出）、**Ctrl+L** 清屏。提示符随会话 cwd 更新：`cd /workspace/proj` 后 `guest@succinix:~$` 变为 `guest@succinix:~/proj$`（`~` = 工作区根）。
+- **交互终端按键（v0.6 当前应用 Shell）** — **Ctrl+C** 中断当前运行命令并丢弃排队命令（`node`/`npm`/`npx` run 经 `interrupt` 协议被 kill；纯 Lifo 命令与后台服务不受影响）、**上下箭头**浏览命令历史（会话内存）、**Tab** 补全内置命令名与文件路径（多候选列出）、**Ctrl+L** 清屏。提示符随会话 cwd 更新：`cd /workspace/proj` 后 `guest@succinix:~$` 变为 `guest@succinix:~/proj$`（`~` = 工作区根）。v0.7 将人类 Shell 责任迁入 WebContainer 内 Lifo Shell，通过原生终端 seam 驱动；见 [docs/PLAN-v0.7.0.md](PLAN-v0.7.0.md)。
 - **统一命令执行** — 单一终端入口：
   - `node`、`npm`、`npx` 及项目二进制运行在**真实 Node.js 进程**上（WebContainer）。
-  - `python` / `python3` / `pip` / `pip3` 运行在**内置 Pyodide 运行时**（Python 3.14.2，Pyodide 314.0.4）——常驻 daemon 作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；`pip` 映射到 Pyodide 的 **micropip**（纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在）；交互式 REPL 不支持（WebContainer stdin 边界）。
+  - `python` / `python3` / `pip` / `pip3` 运行在**内置 Pyodide 运行时**（Python 3.14.2，Pyodide 314.0.4）——常驻 daemon 作为系统资产打包（零安装、用户 `npm install` 无法装坏），首用懒注入。支持 `python -c "<code>"` 与 `python <script.py>`；`pip` 映射到 Pyodide 的 **micropip**（pip 安装的 wheel 经 `/.pyodide/site-packages` 刷新后仍在，含编译 `.so` 包——v0.7 binary 快照）；当前 headless/文件 RPC host 不支持通用 Python REPL（v0.7 的 Lifo 终端路径也不等于通用子进程 PTY 支持）。
   - 其余一切（`grep`、`sed`、`awk`、`cat`、`tar`、`curl`、管道、重定向……）运行在 **Lifo**——一个 TypeScript 实现的 Unix 用户态。
 - **会话工作目录（融合基石）** — Lifo 里的 `cd` 现在驱动 host 维护的**会话 cwd**（持久化到 `/etc/succinix.cwd`，刷新恢复），并应用到每个真实 Node/Python 子进程（`spawn cwd`）。`pwd` 显示会话 cwd，`node`/`python` 看到同一目录——不再有 `cd /ws/proj && npm install` 装到容器根的问题。`cd /` 回到工作区根（`~`）；`cd` 到不存在目录时会话 cwd 不变。`lang` 列出内置运行时与版本。（TASK24：`/workspace` 是 Lifo 挂载视图，真实容器 FS 没有该路径；node/python 子进程实际 spawn 在映射后的 host 真实目录，子进程里 `process.cwd()` 报真实路径如 `/home/<wc-id>/proj`，`pwd`/`cwd` 仍显示 Lifo 视角 `/workspace/...`。）
 - **共享文件系统** — 浏览器（`wc.fs`）与 Lifo 命令操作的是**同一份文件**。无需桥接代码：WebContainer 为进程虚拟化 `node:fs`，Lifo 通过 `NativeFsProvider` 消费它。
 - **进程管理** — 统一进程表上的 `ps` / `kill`（真实子进程 + 状态跟踪），含后台 `spawn`。每个 `ps` 条目带 `scope` 字段（`system` / `container` / `unknown`，`container` 时附 `containerId`）——**启发式判定**（命令串 + 进程启动 cwd，`cd /workspace/c-<id> && ...` 前缀），仅用于 **UI 展示与查询过滤，不是安全边界**：用户进程只要命令长得像系统进程（如 `node /usr/lib/succinix/fake.js`）就会被标为 `system`。不可作为权限 / 隔离 / kill 拦截的信任依据（见 [docs/PROTOCOL.zh-CN.md](PROTOCOL.zh-CN.md)）。
 - **端口管理** — 通过 WebContainer `server-ready` 事件探测服务，`ports` 列出端口与预览 URL。
 - **数据库** — `db start` 在容器内启动真实 Postgres（tinbase，PGlite/WASM 引擎）；`db status` / `db stop` 管理它。
-- **持久化** — 工作区（文件、配置、env、settings、工作区）快照到 IndexedDB，boot 时恢复；刷新永不丢用户文件。`snapshot` 命令查看状态 / 手动保存 / 重置。快照以文本为主：二进制/不可读文件跳过（在保存日志中计数报告）；收集大小超过 ~50 MB 的快照跳过并告警而非写入（`snapshot now` 报告 `skipped (over 50MB limit)`）。tinbase 数据库存储（`.tinbase`，PGlite/WASM）整体排除——它是二进制的，纯文本的部分恢复会损坏它；因此 tinbase 数据在会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新（刷新重建全新 store）。
+- **持久化（v0.7）** — 工作区（文件、配置、env、settings、工作区、pip site-packages）以 binary generation 导出到 IndexedDB 数据库 `succinix-persist-v2`（≤256 KiB chunk + SHA-256 manifest + last-known-good pointer），boot 时恢复；刷新永不丢用户文件。`snapshot` 命令查看状态 / 手动保存 / 重置。v0.6 旧库仅检测并报告 `legacy snapshot detected`，不迁移、不删除。`node_modules`/`dist`/`.git` 树从导出中排除；tinbase 数据库存储（`.tinbase`，PGlite/WASM）从恢复中排除——tinbase 数据在会话内跨 `db stop`/`db start` 持久，但**不**跨浏览器刷新（刷新重建全新 store）。
 - **多实例内嵌（0.6.0+）** — `?instance=<id>` 以命名实例启动应用：状态文件、快照、服务/端口视图与进程视图按实例（`ps` 过滤、跨实例 `kill` 拒绝）。不同 id 的双 tab 完全隔离（独立 host + IndexedDB 键）。
 - **多用户语义（0.6.0+）** — `?user=<id>`（`?instance=<id>` 的别名）额外种子每用户 home（`/workspace/users/<id>`）：会话在 home 内启动、提示符渲染为 `~`、`whoami` 显示用户，状态/快照/进程视图按用户。**组织性隔离，非安全边界**——无真实内核/权限模型；独立应用仍是 `guest` 单用户（见 AGENTS.zh-CN.md）。
 - **内存管理** — `free` / `top` 提供内存概览（设备 + JS heap；沙箱估算诚实标注），`reboot` 以浏览器重载重启系统（持久化数据存活），`shutdown` 关机，`cache` / `cache clear` 报告与清理可重建缓存（绝不触碰 `/workspace`）。
 - **工作区分拆** — `workspace` 管理多个隔离工作区：每个工作区在独立 `/ws/<name>` 目录，各有文件与状态；`create` / `switch` / `rm` 管理它们，当前工作区记录在 `/ws/.current`（跨刷新持久）。首次 boot 初始化默认 `main` 工作区。
 - **系统配置** — `env` 管理持久环境变量（`/etc/succinix.env`，spawn 时合并进真实 Node 子进程）与 `settings` 管理持久系统设置（`/etc/succinix.settings`）：tinbase 端口（`preview-port`，默认 3001）、初始工作区（`default-workspace`，默认 `main`）、终端字号（`font-size`，实时生效）。两个文件随快照跨刷新持久。
-- **服务管理** — `service` 在 `spawn`/`ps`/`kill` 与端口注册表之上声明式管理具名后台服务：定义在 `/etc/succinix.services`（`name|command|port`，`#` 注释，`${PORT}` 占位符从 `preview-port` 解析），`start`/`stop`/`status`/`enable`/`disable`。`enable` 记录服务到 `/etc/succinix.autostart`，boot 时声明式拉起——是声明式重启，不是守护进程（无崩溃自愈）。
+- **服务管理** — `service`/`systemctl` 通过同一 Lifo `ServiceManager`、进程表和端口注册表声明式管理具名后台服务：unit 定义在 `/etc/systemd/system/*.service`，`start`/`stop`/`status`/`enable`/`disable` 直接作用于执行世界。`enable` 将 `/workspace/.succinix-service-state/*.enabled` marker 随快照保存，boot 时恢复——是声明式重启，不是 PID 1 守护进程（无崩溃自愈）。
 - **系统日志（journald 风格）** — 持久日志写入容器 FS 的 `/var/log/succinix.log`（随快照跨刷新持久），格式 `2026-08-05T04:00:00Z [level] message`。采集 boot 事件（`BOOT`）、命令执行（`INFO` 含 `cmd`/`exit`/`runtime`）、服务事件（`INFO`/`WARN`）、快照事件（`INFO`）与错误（`ERROR`）。`log` 读取（`log` 最近 20 行、`log -n <count>` 最近 N 行、`log boot` 仅 BOOT、`log clear` 清空）；文件超 ~200 KB 自动截断保留尾部。交互式 `log -f`（tail -f）有意不实现（POC）。
 - **包管理** — `pkg` 用 apt 风格接口统一两条真实包通道：**lifo**（`lifo list` / `lifo install` / `lifo remove` / `lifo search`——Lifo 扩展包如 `lifo-pkg-git`、`lifo-pkg-ffmpeg`）与 **npm**（真实 Node npm，全生态）。来源自动判定：`lifo-pkg-<name>` 在 npm 存在的包走 lifo 安装，否则走 npm；同名冲突 lifo 优先（工具包）。`pkg list` 合并两通道并带 `SOURCE` 列，`pkg search` 合并两个搜索，`pkg install`/`remove` 回显真实命令输出且绝不吞错。npm 已装列表只读 `node_modules` **顶层目录**（"顶层直装"简化——容器预装运行时依赖也会出现，不解析依赖树）。
+- **Git HTTPS 工作流** — `git init/status/add/rm/commit/log/diff/branch/checkout/clone/fetch/pull/push` 在 WebContainer host 内经 Isomorphic Git 运行。remote 仅支持 HTTPS；SSH fail-closed，exit 126。认证 remote 可在运行中的 shell 设置 `GIT_HTTP_TOKEN`；它绝不写入快照或命令日志。
 - **虚拟网络视图** — `netstat` 把端口注册表渲染为虚拟监听端口表（`Proto  Local Address  State`，`tcp 127.0.0.1:<port> LISTEN`；`netstat -p` 附加关联进程，按进程命令中的端口号匹配，无匹配显示 `-`），`ip addr` 显示浏览器虚拟网络身份（`lo: virtual loopback`、`eth0: <preview-domain> (virtual)`）。一切诚实标注 `virtual`——不编造接口、IP 或连接。
-- **系统信息与登录横幅** — `uname` 报告诚实的浏览器原生系统身份（`Succinix 0.6.0 js-runtime+webcontainer <api-version> <arch>`；内核标识 `js-runtime+webcontainer`，绝不冒充 Linux 内核；`-a` 追加主机名/OS，`-r` 是 `@webcontainer/api` 运行时版本，`-m` 是从 UA 提取的架构），`motd` 显示/编辑 `/etc/succinix.motd` 登录横幅（随快照持久；默认欢迎行每次 boot 打印，`motd reset` 恢复）。
+- **系统信息与登录横幅** — `uname` 报告诚实的浏览器原生系统身份（`Succinix 0.7.0 js-runtime+webcontainer <api-version> <arch>`；内核标识 `js-runtime+webcontainer`，绝不冒充 Linux 内核；`-a` 追加主机名/OS，`-r` 是 `@webcontainer/api` 运行时版本，`-m` 是从 UA 提取的架构），`motd` 显示/编辑 `/etc/succinix.motd` 登录横幅（随快照持久；默认欢迎行每次 boot 打印，`motd reset` 恢复）。
 - **自检模式** — `?test=1` 在浏览器中运行系统诊断自检。
 
 ## 架构
@@ -186,7 +196,7 @@ node scripts/verify-deploy.mjs
 | `workspace` | 列出工作区；`create` / `switch` / `rm` 管理隔离工作区 |
 | `env` | 列出 / 设置（`env KEY=value`）/ 删除（`env -u KEY`）环境变量，持久于 `/etc/succinix.env` |
 | `settings` | 查看 / 设置 / 重置（`settings reset KEY`）系统设置，持久于 `/etc/succinix.settings` |
-| `service` | 列出服务（状态 + 端口）；`start` / `stop` / `status` / `enable` / `disable <name>` 管理。定义在 `/etc/succinix.services`，boot 自启在 `/etc/succinix.autostart`（声明式重启，非守护进程） |
+| `service` | 列出服务（状态 + 端口）；`start` / `stop` / `status` / `enable` / `disable <name>` 使用 Lifo `ServiceManager` 与 `/etc/systemd/system/*.service` unit；启用标记随快照保存（声明式重启，非守护进程） |
 | `log` | 显示 `/var/log/succinix.log` 最近系统日志（20 行）；`log -n <count>` 最近 N 行、`log boot` 仅 BOOT、`log clear` 清空 |
 | `pkg` | 包管理：`pkg list`（lifo + npm 合并带 `SOURCE`）、`pkg search <term>`（双通道）、`pkg install <name>`（`lifo-pkg-<name>` 存在走 lifo，否则 npm）、`pkg remove <name>`（按安装来源）、`pkg info <name>` |
 | `netstat` | 列出虚拟监听端口（端口注册表为 `tcp 127.0.0.1:<port> LISTEN`）；`netstat -p` 附加关联进程（按进程命令中的端口号匹配，无匹配 `-`） |
@@ -216,7 +226,7 @@ node scripts/verify-deploy.mjs
 - 数据库：tinbase（PGlite/WASM）启动并服务。
 - 内存：浏览器报告的设备内存 / JS heap 统计（`free` 可渲染）。
 - 配置：`env` 设置/获取/删除生命周期与 `settings` 写/重置持久到 `/etc/succinix.*`。
-- 服务：`service` 列出内置 tinbase 定义；临时 echo server 可启动、观察 `running`（进程表 + 端口注册表）、停止、零残留删除；`service enable`/`disable` 写入与移除 `/etc/succinix.autostart` 文件（去重）。
+- 服务：`service` 列出内置 tinbase unit；临时 echo server 可启动、观察 `running`（共享进程表 + 端口注册表）、停止、零残留删除；`service enable`/`disable` 更新快照中的 unit enablement marker。
 - 日志：命令执行记录含 `exit`/`runtime`，boot 事件记录为 `BOOT` 条目，`log clear` 清空日志文件（自检断言）。
 - 包：`pkg list` 渲染双通道表（NAME / SOURCE / VERSION）；`pkg search git` 命中 `lifo-pkg-git`（依赖网络——失败按已知边界约定跳过）。
 - 网络视图：`netstat` 把端口注册表渲染为虚拟监听端口表，`netstat -p` 关联 spawn 的 echo server（端口 3456）与进程；`kill` 后端口从表消失。`ip addr` 打印虚拟回环与预览域，诚实标注 `(virtual)`。
@@ -234,7 +244,7 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 | 语言 | 命令 | 状态 | 关键实测事实 |
 | ---- | ---- | ---- | ----------- |
-| **Python** | `python` / `python3` / `pip` / `pip3` | ✅ 内置 | 3.14.2 Pyodide 314.0.4；11/11 标准库 import；sqlite3/json 真实可用；**pip 经 micropip**（纯 Python wheel 刷新后仍在；编译 wheel 刷新后需重装）、无 REPL、subprocess 可导入但无法 spawn |
+| **Python** | `python` / `python3` / `pip` / `pip3` | ✅ 内置 | 3.14.2 Pyodide 314.0.4；11/11 标准库 import；sqlite3/json 真实可用；**pip 经 micropip**（pip 安装的 wheel 刷新后仍在，含编译 wheel —— v0.7 binary 快照）、无 REPL、subprocess 可导入但无法 spawn |
 | **Node.js** | `node` | ✅ 内置 | 22.22.3；真实二进制；`node -e` 引号保真；完整 TS 工具链（typescript/tsx/vitest） |
 | **npm** | `npm` | ✅ 内置 | 10.8.2；本地装进会话 cwd；全局 → EACCES + hint |
 | **TypeScript** | `npx tsc` / `tsx` | ✅ 经 npm | tsc → node → vitest 全闭环（S13/S14） |
@@ -249,17 +259,17 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 - **CORS**：对无 CORS 头的网站 `curl` 失败（`exit 7`）。用 CORS 友好代理，如 `curl https://r.jina.ai/<url>`。
 - **Symlink**：Lifo VFS 不支持（`ln` 报告限制）。
 - **无包管理器 / 原生二进制**：没有 `apt`；原生可执行文件无法运行。Succinix 是浏览器原生 Linux。
-- **交互进程的 stdin**：WebContainer 环境不可靠；设计改用基于文件的 RPC。
+- **通用子进程 stdin**：当前尚不可用。现有 host 使用文件 RPC 和 headless Lifo 执行，因而任意 Node/Python REPL 仍不支持。这不是在浏览器外创建替代应用的理由；v0.7 将为声明为交互应用的 Lifo userland 命令接入 WebContainer 原生终端传输。
 - **跨运行时流式管道**：跨运行时管道是缓冲的（对 agent 式"跑完再读"工作流足够）。
 - **`/workspace` 是 Lifo VFS 视图；真实 node/python 子进程看到真实路径**：浏览器文件系统根（`wc.fs` `/`）与 Lifo 的 `/workspace` 都映射到 host 进程 cwd（`/home/<wc-id>`），而容器根 `/` 是只读系统视图。`pwd`/`cwd` 报 Lifo 视角（`/workspace/...`），node/python 子进程里的 `process.cwd()` 报真实映射路径（`/home/<wc-id>/...`）——指向同一目录。
 - **`npm i -g` 到只读 `/usr/local` 会追加可操作提示**：`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`（权限语义不变）。
-- **Python REPL 未实现**：内置 python 运行时面向命令（`python -c "<code>"`、`python <script.py>`、`python -m pip <cmd>`）。交互式 `>>>` REPL 需要持久 stdin，WebContainer 不可靠 —— 请用 `python -c`。`pip` **可用**（Pyodide 的 **micropip**；纯 Python wheel 经 `/.pyodide/site-packages` 刷新后仍在；编译 wheel 如 `numpy` 刷新后需再 `pip install <pkg>`——文本快照不带二进制 `.so`）。`python -m <module>` 经 `runpy.run_module` 执行（仅 `-m pip` 特殊映射）；`subprocess` 可导入但无法 spawn——Pyodide 抛 `OSError: [Errno 138] emscripten does not support processes`（见 [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)）。
+- **Python REPL 未实现**：内置 python 运行时面向命令（`python -c "<code>"`、`python <script.py>`、`python -m pip <cmd>`）。当前 host 没有通用子进程终端传输，v0.7 的 Lifo 原生终端 seam 也不会自动让任意 Python REPL 可用。请用 `python -c`。`pip` **可用**（Pyodide 的 **micropip**；pip 安装的 wheel 经 `/.pyodide/site-packages` 刷新后仍在，v0.7 binary 快照连编译 wheel（如 `numpy`）的 `.so` 一并保留，无需重装）。`python -m <module>` 经 `runpy.run_module` 执行（仅 `-m pip` 特殊映射）；`subprocess` 可导入但无法 spawn——Pyodide 抛 `OSError: [Errno 138] emscripten does not support processes`（见 [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)）。
 - **首次 `python` 命令慢**：Pyodide 运行时（~13 MB JS + wasm + stdlib）首用懒注入容器，且常驻 daemon 首次 `loadPyodide` 需一次性初始化，首个 `python` 命令需数秒；后续命令复用实例、快。它是系统资产、不依赖用户 `npm install`，不会被用户操作装坏。
 - **看门狗探针可能被排队命令吞掉**：host 存活看门狗向单槽 `/cmd.json` 通道写直接 `ping` 探针；若用户命令在 ~120 ms host 轮询窗口内入队会覆盖探针，该探针超时、看门狗跳过该轮（中性，不算失败）。这只是在罕见重叠时把存活检测推迟一个 30s 周期；不会误杀健康 host。
 - **单命令输出上限 1 MB**：为约束容器内存与结果文件大小，每条命令 `stdout`/`stderr` 最多保留最后 ~1 MB（大输出截断到尾部）。正常使用（`seq 1 5000`、中等文件 `cat`、`npm install` 日志）远低于上限。
-- **快照去重对等长内容编辑盲（有界窗口）**：自动快照按目录结构 + 总字节去重，因此「内容变但大小不变」的编辑（如 `sed -i 's/foo/bar/'` 且 `foo`/`bar` 等长、或 `vi` 原地覆盖）不被结构门控察觉。浏览器侧写入（`env`/`settings`/`motd`/`workspace switch`/服务文件）会立即强制保存，安全。经 shell（Lifo/node）的编辑由自动快照的 **30s 最大年龄强制**兜底：即使签名不变，每隔 ~30s 也会强制全量保存一次，等长编辑只要发生在崩溃前 30s 以上就能保留。残余丢失窗口：等长 shell 编辑发生在最近 ~30s 内且 tab 恰好崩溃且无 `pagehide`/`beforeunload`（OOM 杀、OS 回收）。
-- **声明式自启（非守护进程）**：`service enable` 只记录服务供 boot 重启。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。
-- **`log -f`（tail -f）未实现**：交互式流式输出延后（POC；WebContainer 中交互 stdin 不可靠）。用 `log` / `log -n <count>`。`log clear` 清空 `/var/log/succinix.log` 因此自身不记录进日志。
+- **快照去重对等长内容编辑盲（有界窗口）**：自动快照按目录结构 + 总字节去重，因此「内容变但大小不变」的编辑（如 `sed -i 's/foo/bar/'` 且 `foo`/`bar` 等长、或 `vi` 原地覆盖）不被结构门控察觉。浏览器侧写入（`env`/`settings`/`motd`/`workspace switch`/服务 enablement marker）会立即强制保存，安全。经 shell（Lifo/node）的编辑由自动快照的 **30s 最大年龄强制**兜底：即使签名不变，每隔 ~30s 也会强制全量保存一次，等长编辑只要发生在崩溃前 30s 以上就能保留。残余丢失窗口：等长 shell 编辑发生在最近 ~30s 内且 tab 恰好崩溃且无 `pagehide`/`beforeunload`（OOM 杀、OS 回收）。
+- **声明式服务启用（非守护进程）**：`service enable` 更新快照中的 unit enablement marker，boot 时恢复到 Lifo `ServiceManager`。无崩溃检测或自愈——服务 boot 后退出请手动重启（`service start <name>`）。
+- **`log -f`（tail -f）未实现**：当前 host 的通用交互流式输出延后（POC；当前使用 headless 文件 RPC）。用 `log` / `log -n <count>`。`log clear` 清空 `/var/log/succinix.log` 因此自身不记录进日志。
 - **日志追加是读改写（backlog）**：WebContainer `FileSystemAPI` 无 `appendFile`，每次 `log` 写入 = 读整个 `/var/log/succinix.log` + 拼一行 + 写回——每条 O(文件大小)。在 ~200 KB 自动截断上限内 POC 可接受；backlog 项（P4-14）是上游提供 appendFile 时切真追加、或改分片文件。这是日志系统在高命令量时最先扛不住的部位。
 - **外部入站网络**：服务经虚拟预览 URL 可达，公网不可达。
 - **服务按命令串认领进程**：`service stop`（与 `db stop`）按渲染命令匹配进程表定位服务，而非 PID 血缘。手动启动的同命令进程可能被匹配并终止。`service start` 同理，找到同命令进程即报 "already running"。
@@ -275,15 +285,15 @@ Succinix 内置两个**语言运行时**（系统资产、零用户安装），�
 
 ```
 src/
-  main.ts            # 入口：Cordis host 装配（xterm、REPL、boot 编排）
+  main.ts            # 入口：Cordis host 装配（xterm 设备、boot 编排、v0.6 Shell 兼容层）
   boot-steps.ts      # 启动序列、系统信息检测、环境预检
   boot-ui.ts         # 居中 DOM 启动覆盖层渲染器（splash/日志/环境失败页）
   app/               # xterm 装配、输出、本地命令、日志、自动快照、看门狗、dev hooks
   host/              # app 级 Cordis 插件（terminal/commands/snapshot/watchdog/selftest/container）
-  commands/          # 浏览器侧命令（help/ports/db/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip/...）
+  commands/          # v0.6 浏览器控制命令；v0.7 将标准命令迁入 Lifo/host adapter
   config.ts          # 系统配置：/etc/succinix.env + /etc/succinix.settings 读写与默认值
   motd.ts            # 登录横幅：/etc/succinix.motd 读写与默认
-  services/          # 服务管理：/etc/succinix.services + /etc/succinix.autostart 读写、状态/启动/停止
+  services/          # 执行世界服务客户端/类型；unit 与生命周期由 Lifo ServiceManager 持有
   log.ts             # journald 风格系统日志：/var/log/succinix.log 追加/读取/清空/BOOT 过滤
   pkg/               # 包管理：pkg list/search/install/remove/info（lifo + npm 双通道）
   persist/           # 快照持久化：排除规则/收集/签名/IndexedDB
@@ -337,7 +347,7 @@ public/
 ## 生态
 
 Succinix 的命令执行引擎**与 Succinix 应用本身解耦**，并以
-**`@succinix/engine@0.6.0`** 作为面向 `@deepseek-ai/cordis@4.0.1` 的单个
+**`@succinix/engine@0.7.0`** 作为面向 `@deepseek-ai/cordis@4.0.1` 的单个
 Cordis 插件发布。没有独立 SDK API 线：消费方应用插件，然后使用 dsh 服务
 `ctx.fs`、`ctx.sandbox`、`ctx.terminals` 与 `ctx.sessionPersistence`。
 使用方页面启动 WebContainer，即得共享文件系统的 Shell——带真实 Node 运行时
@@ -355,13 +365,13 @@ const fiber = ctx.plugin(engine, {
 });
 await fiber;
 
-const host = ctx.get('succinix-host', false)!;
+const host = ctx.get('succinix', false)!;
 await host.boot();
 await host.ensureInstance('default', { executor: {} });
 
 // ctx.fs、ctx.sandbox、ctx.terminals、ctx.sessionPersistence 全部可用；
 // host.executor、host.terminal、host.snapshot、host.ports、host.services
-// 位于内部 succinix-host seam 之后。
+// 位于内部 succinix seam 之后。
 ```
 
 ### dsh 插件 API
@@ -372,7 +382,7 @@ await host.ensureInstance('default', { executor: {} });
 | `ctx.sandbox` | dsh sandbox provider：同步 `confine`、node fail-closed |
 | `ctx.terminals` | dsh owner 隔离 PTY registry（精确 `Agent` owner） |
 | `ctx.sessionPersistence` | dsh event-sourced JSONL session log |
-| `host`（`succinix-host`） | 内部生命周期 seam：`boot` / `attach` / `ensureInstance`、`executor`、`terminal`、`snapshot`、`persist`、`workspace`、`ports`、`services`、`capabilities`、`dispose` / `shutdown` |
+| `host`（`succinix`） | 内部生命周期 seam：`boot` / `attach` / `ensureInstance`、`executor`、`terminal`、`snapshot`、`persist`、`workspace`、`ports`、`services`、`capabilities`、`dispose` / `shutdown` |
 
 消费方声明 `inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']`，
 或用 `ctx.get('fs', false)` 探测。发布物 `.d.ts` 会增强
@@ -382,7 +392,7 @@ await host.ensureInstance('default', { executor: {} });
 ### 协议与集成文档
 
 - **[docs/PROTOCOL.md](PROTOCOL.md)** — 权威文件 RPC 线上契约：请求/响应形态、命令路由、进程模型、端口事件、超时。
-- **[docs/SDK.zh-CN.md](SDK.zh-CN.md)** — 0.6.0 dsh Cordis 插件集成参考：安装、配置、dsh 服务、host seam、能力、生命周期、热重载、容器模式。
+- **[docs/SDK.zh-CN.md](SDK.zh-CN.md)** — 0.7.0 dsh Cordis 插件集成参考：安装、配置、dsh 服务、host seam、能力、生命周期、热重载、容器模式。
 - **[docs/PLUGIN.md](PLUGIN.md)** — 第三方 Cordis 插件如何消费/扩展 Succinix。
 - **[docs/cordis-contract.md](cordis-contract.md)** — 权威契约快照与浏览器验证。
 - **[docs/MIGRATION.md](MIGRATION.md)** — 0.4.0 独立 SDK 与 0.5.0 单键形态迁移指南。
@@ -423,7 +433,7 @@ WebContainer 的 Chromium 前端，都能通过应用 `@succinix/engine` 添加�
 - [x] 内存管理：`free`/`top` 类命令、缓存清理、reboot 回收内存
 - [x] 工作区分拆：多虚拟目录隔离状态（类似 Sunam 工作区）
 - [x] 虚拟网络视图：`netstat` 虚拟监听端口表 + `ip addr` 诚实虚拟身份
-- [x] dsh 单轨引擎：`@succinix/engine@0.6.0` + `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`
+- [x] dsh 单轨引擎：`@succinix/engine@0.7.0` + `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`
 - [ ] SunamAI 集成：`shell_run` 引擎换 TerminalExecutor——**暂缓**（计划为 TASK8；未排期）
 - [ ] 可选：外部访问 WebSocket 隧道
 

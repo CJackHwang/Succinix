@@ -14,6 +14,7 @@ export interface SuccinixConfig {
   hostJsUrl?: string;
   lifoCoreUrl?: string;
   pythonAssetsUrl?: string;
+  rubyAssetsUrl?: string;
   resultTtlMs?: number;
   container?: {
     mode?: 'internal' | 'external';
@@ -25,7 +26,7 @@ export interface SuccinixConfig {
     instanceId?: string;
     statePrefix?: string;
     home?: string;
-    persistence?: { dbName?: string; storeKey?: string };
+    persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
   terminal?: {
     cwd?: string;
@@ -53,6 +54,7 @@ export interface ResolvedSuccinixConfig {
   hostJsUrl: string;
   lifoCoreUrl: string;
   pythonAssetsUrl: string;
+  rubyAssetsUrl: string;
   resultTtlMs: number;
   container: {
     mode: 'internal' | 'external';
@@ -64,7 +66,7 @@ export interface ResolvedSuccinixConfig {
     instanceId: string;
     statePrefix?: string;
     home?: string;
-    persistence?: { dbName?: string; storeKey?: string };
+    persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
   terminal: {
     cwd: string;
@@ -121,6 +123,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
   hostJsUrl: optional((v) => isString(v, 'hostJsUrl')),
   lifoCoreUrl: optional((v) => isString(v, 'lifoCoreUrl')),
   pythonAssetsUrl: optional((v) => isString(v, 'pythonAssetsUrl')),
+  rubyAssetsUrl: optional((v) => isString(v, 'rubyAssetsUrl')),
   resultTtlMs: optional((v) => isIntegerRange(v, 'resultTtlMs', 1, 86_400_000)),
   container: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'container must be an object';
@@ -162,7 +165,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
       if (d.persistence === null || typeof d.persistence !== 'object' || Array.isArray(d.persistence)) {
         return 'defaultInstance.persistence must be an object';
       }
-      const p = d.persistence as { dbName?: unknown; storeKey?: unknown };
+      const p = d.persistence as { dbName?: unknown; storeKey?: unknown; includeGit?: unknown };
       if (p.dbName !== undefined) {
         const error = isString(p.dbName, 'defaultInstance.persistence.dbName');
         if (error) return error;
@@ -171,7 +174,11 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
         const error = isString(p.storeKey, 'defaultInstance.persistence.storeKey');
         if (error) return error;
       }
-      const error = rejectUnknownKeys(p as Record<string, unknown>, ['dbName', 'storeKey'], 'defaultInstance.persistence');
+      if (p.includeGit !== undefined) {
+        const error = isBoolean(p.includeGit, 'defaultInstance.persistence.includeGit');
+        if (error) return error;
+      }
+      const error = rejectUnknownKeys(p as Record<string, unknown>, ['dbName', 'storeKey', 'includeGit'], 'defaultInstance.persistence');
       if (error) return error;
     }
     return rejectUnknownKeys(d as Record<string, unknown>, ['instanceId', 'statePrefix', 'home', 'persistence'], 'defaultInstance');
@@ -245,6 +252,7 @@ export function resolveConfig(config: SuccinixConfig): ResolvedSuccinixConfig {
     hostJsUrl: config.hostJsUrl ?? '/host.js',
     lifoCoreUrl: config.lifoCoreUrl ?? '/lifo-core.js',
     pythonAssetsUrl: config.pythonAssetsUrl ?? '/pyodide/',
+    rubyAssetsUrl: config.rubyAssetsUrl ?? '/ruby/',
     resultTtlMs: config.resultTtlMs ?? 120_000,
     container: {
       mode: config.container?.mode ?? 'internal',
@@ -286,6 +294,7 @@ export function requiresRestart(previous: SuccinixConfig, next: SuccinixConfig):
     (next.hostJsUrl ?? '/host.js') !== (previous.hostJsUrl ?? '/host.js') ||
     (next.lifoCoreUrl ?? '/lifo-core.js') !== (previous.lifoCoreUrl ?? '/lifo-core.js') ||
     (next.pythonAssetsUrl ?? '/pyodide/') !== (previous.pythonAssetsUrl ?? '/pyodide/') ||
+    (next.rubyAssetsUrl ?? '/ruby/') !== (previous.rubyAssetsUrl ?? '/ruby/') ||
     (next.container?.mode ?? 'internal') !== (previous.container?.mode ?? 'internal')
   );
 }

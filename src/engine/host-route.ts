@@ -6,6 +6,25 @@
 
 export const WORKSPACE_MOUNT = '/workspace';
 
+/** Normalize an absolute execution-world path.  The returned value never has
+ * duplicate separators, trailing separators, `.` segments, or unresolved
+ * `..` segments. */
+export function canonicalizeVirtualPath(raw: string): string {
+  if (!raw || raw.includes('\0') || !raw.startsWith('/')) {
+    throw new Error('path must be an absolute string');
+  }
+  const parts: string[] = [];
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
 // 路径是否落在 /workspace 挂载下（Lifo 侧可同步会话 cwd 的判定）。
 export function isUnderWorkspace(p: string): boolean {
   return p === WORKSPACE_MOUNT || p.startsWith(WORKSPACE_MOUNT + '/');
@@ -47,6 +66,7 @@ export function classifyRoute(command: string, hasShellMeta: boolean): RouteKind
 // VFS 路径 → host 真实路径：/workspace → root，/workspace/foo → root/foo。
 // 非 /workspace 路径（真实路径 / 其他 VFS 私有路径）原样返回。
 export function vfsToReal(p: string, root: string): string {
+  p = canonicalizeVirtualPath(p);
   if (p === WORKSPACE_MOUNT) return root;
   if (p.startsWith(WORKSPACE_MOUNT + '/')) return root + p.slice(WORKSPACE_MOUNT.length);
   return p;
@@ -66,6 +86,7 @@ export function spawnCwdFor(sessionCwd: string, root: string): string {
 // 浏览器侧计算出的路径（statePath/tinbaseDataDir 等）不经本函数，见 mapDataDirArgs。
 export function resolveBrowserPath(p: string, root: string): string {
   if (!p.startsWith('/')) return p;
+  p = canonicalizeVirtualPath(p);
   const rel = p === WORKSPACE_MOUNT ? '/' : p.startsWith(WORKSPACE_MOUNT + '/') ? p.slice(WORKSPACE_MOUNT.length) : p;
   return root + rel;
 }
@@ -122,6 +143,14 @@ export function sessionCwdToBrowserPath(cwd: string): string {
   return '/';
 }
 
+/** 浏览器 wc.fs 的绝对路径转换为同一文件在 Lifo 挂载中的 cwd。浏览器根是
+ * `process.cwd()`，Lifo 的 `/workspace` 也挂载到该根，因此浏览器 `/workspace/x`
+ * 在 Lifo 中必须写成 `/workspace/workspace/x`。 */
+export function browserPathToLifoCwd(path: string): string {
+  const normalized = canonicalizeVirtualPath(path.startsWith('/') ? path : `/${path}`);
+  return `${WORKSPACE_MOUNT}${normalized}`;
+}
+
 // 提示符目录标签（cd 后提示符随目录更新）：home 参数（缺省 /workspace = guest 现状）优先
 // —— cwd === home → `~`，home 下 → `~/...`。其余沿用工作区根语义：/workspace → `~`，
 // /workspace/proj → `~/proj`；其他路径（如初始的 host 真实路径 /home/<wc-id>）回落 `~`。
@@ -152,7 +181,11 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 // 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
 export function capOutput(s: string, maxBytes: number = MAX_OUTPUT_BYTES): string {
-  return s.length > maxBytes ? s.slice(-maxBytes) : s;
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.byteLength <= maxBytes) return s;
+  let start = bytes.byteLength - maxBytes;
+  while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start++;
+  return new TextDecoder().decode(bytes.slice(start));
 }
 
 // TASK24 坑 3：npm i -g 在 /usr/local 只读时的可操作提示。只在 stderr 含 EACCES + /usr/local
@@ -226,10 +259,10 @@ export function instanceStateFile(instanceId: string, root: string, name: string
  *   - containerId === `c-<id>`（CISOL 兼容命名空间，DM-12 共存）→ 同 id 归该实例；
  *   - 其余（unknown / 其他实例）→ 排除。
  */
-export function filterProcessesForInstance(
-  procs: Array<{ scope: string; containerId?: string }>,
+export function filterProcessesForInstance<T extends { scope: string; containerId?: string }>(
+  procs: T[],
   instanceId: string
-): Array<{ scope: string; containerId?: string }> {
+): T[] {
   if (instanceId === DEFAULT_INSTANCE_ID) return procs;
   return procs.filter((p) => {
     if (p.scope === 'system') return true;

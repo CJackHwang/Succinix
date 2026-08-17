@@ -1,6 +1,6 @@
 # Cordis App Contract Demo
 
-Standalone external consumer for `@succinix/engine@0.6.0`. It depends only on
+Standalone external consumer for `@succinix/engine@0.7.0`. It depends only on
 the packed engine package (via `file:../../packages/engine`),
 `@deepseek-ai/cordis`, and `@webcontainer/api`. It does not import Succinix
 repo source.
@@ -9,7 +9,7 @@ The demo verifies the published artifact contract in a real browser:
 
 - Cordis plugin loading with `inject: ['fs', 'sandbox', 'terminals',
   'sessionPersistence']`
-- the internal `succinix-host` seam for boot/attach/ensureInstance and
+- the internal `succinix` seam for boot/attach/ensureInstance and
   observability facades
 - node, lifo, and python execution
 - `ctx.fs` write/read/edit and structured error codes

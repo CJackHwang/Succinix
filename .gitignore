@@ -31,6 +31,7 @@ public/lifo-core.js
 public/sha256.json
 public/python/
 public/pyodide/
+public/ruby/
 
 # @succinix/engine npm 包构建产物（TASK-S2：本地发布准备，产物不入库，发布前由 build:engine-package 生成）
 packages/engine/dist/

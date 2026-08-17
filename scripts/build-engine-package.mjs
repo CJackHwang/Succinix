@@ -1,4 +1,4 @@
-// 构建 @succinix/engine@0.6.0 包目录（packages/engine/）。不 publish。
+// 构建 @succinix/engine@0.7.0 包目录（packages/engine/）。不 publish。
 // 产物：
 //   dist/index.js        插件入口 ESM bundle（@deepseek-ai/cordis/@webcontainer/api external）
 //   dist/plugin/**/*.d.ts  tsc declaration 产物（rootDir=src）
@@ -69,7 +69,7 @@ const manifest = {
 };
 writeFileSync(join(assetsDir, 'sha256.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 
-// 4) 导出面快照校验（0.6.0 只保留五个键）。
+// 4) 导出面快照校验（0.6.0 只保留五个键，0.7.0 同构）。
 const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
 const expectedExports = new Set(['.', './host.js', './lifo-core.js', './assets/*', './package.json']);
 const actualExports = new Set(Object.keys(pkg.exports ?? {}));
@@ -77,4 +77,4 @@ if (actualExports.size !== expectedExports.size || [...expectedExports].some((ke
   throw new Error(`package exports mismatch: expected [${[...expectedExports].join(', ')}], got [${[...actualExports].join(', ')}]`);
 }
 
-console.log('@succinix/engine 0.6.0 package built → packages/engine/ (dist/ + assets/)');
+console.log('@succinix/engine 0.7.0 package built → packages/engine/ (dist/ + assets/)');

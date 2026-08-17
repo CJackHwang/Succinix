@@ -23,16 +23,16 @@ bundled Node or the pinned Pyodide asset changes.
 
 | Language | Command | Runtime | Version (measured) | Package install | Measured status | Source |
 | -------- | ------- | ------- | ------------------ | --------------- | --------------- | ------ |
-| **Python** | `python`, `python3` | built-in resident **Pyodide 314.0.4** daemon (spawned as a node child, instance reused across commands) | 3.14.2 | ✅ **pip** — micropip; pure-Python wheels persist across refresh, compiled wheels re-install after refresh (`LV·P6`) | ✅ | `LV·P1–P9`, `S11`, `ST` |
+| **Python** | `python`, `python3` | built-in resident **Pyodide 314.0.4** daemon (spawned as a node child, instance reused across commands) | 3.14.2 | ✅ **pip** — micropip; pip-installed wheels persist across refresh (pure-Python and compiled `.so`, `LV·P6`, `S11`) | ✅ | `LV·P1–P9`, `S11`, `ST` |
 | **pip** | `pip`, `pip3` | maps to Pyodide micropip (`python -m pip` also works) | micropip 0.11.1 | ✅ install / uninstall / list / show | ✅ | `LV·P6`, `S11`, `ST` |
 | **Node.js** | `node` | real Node.js (WebContainer runtime) | 22.22.3 | ✅ npm, local per-project installs | ✅ | `LV·N1–N5`, `S13`, `S14`, `ST` |
 | **npm** | `npm` | real npm (ships with node) | 10.8.2 | ✅ local; ❌ global (`/usr/local` read-only → EACCES + hint) | ✅ | `LV·N1`, `LV·N4`, `S14`, `ST` |
 | **TypeScript** | `npx tsc`, `tsx`, `vitest` | npm-installed toolchain; node 22 `--experimental-strip-types` | latest via npm | ✅ via npm | ✅ | `LV·N3`, `S13`, `S14` |
-| **Ruby** | (none built-in) | `@ruby/wasm-wasi` v2 + `@ruby/head-wasm-wasi` (probe only) | head ruby.wasm | ✅ npm install; ❌ **no gem** | ⚠️ probe — runs, not integrated | `LV·R1` |
+| **Ruby** | `ruby` | Lazily injected WASM runtime: browser asset bridge → `@ruby/wasm-wasi` adapter in a real Node child | head ruby.wasm | ✅ npm install; ❌ **no gem** | ✅ integrated, lazy (first run slow) | v0.7, `LV·R1` |
 | **C** | `gcc` | none | — | — | ❌ confirmed absent | `LV·R2` |
 | **Rust** | `rustc`, `cargo` | none | — | — | ❌ confirmed absent | `LV·R2` |
 | **Go** | `go` | none | — | — | ❌ confirmed absent | `LV·R2` |
-| **WASI** | `node:wasi` | Node.js WASI (preview1) | node 22 | — | ✅ can run precompiled WASI modules | `LV·R3` |
+| **WASI** | `wasi-run` / `wasi-info` | Lifo adapter over `node:wasi` (preview1), modules loaded from `/workspace` | node 22 | — | ✅ integrated (`wasi-run <file>`, ≤ 32 MB) | v0.7, `LV·R3` |
 
 ### Python standard-library matrix
 
@@ -61,13 +61,13 @@ Replacement degree for real development scenarios, measured end-to-end.
 
 | Scenario | Language | Replacement degree | Evidence |
 | -------- | -------- | ------------------ | -------- |
-| Std-lib scripting / data processing (JSON/CSV/regex/math/files/sqlite3) | Python | **~85%+** | 11/11 stdlib imports green (`LV·P5`), sqlite3 + json verified live (`LV·P7`), **pip works** (micropip: `pip install pyparsing` → import, `LV·P6`, `S11`) and pure-Python wheels **persist across refresh** (`S11`). Remaining gaps: no REPL, no subprocess, compiled wheels need re-install after refresh. |
-| Scientific computing (numpy) | Python | **~80%+** | `pip install numpy` → `import numpy` → `numpy.dot([[1,2],[3,4]],...)` → `[[7, 10], [15, 22]]` (`LV·P9`, `S11`). Compiled `.so` files are not carried by the text snapshot → after refresh numpy needs one `pip install numpy` again (boundary, `S11`). |
+| Std-lib scripting / data processing (JSON/CSV/regex/math/files/sqlite3) | Python | **~85%+** | 11/11 stdlib imports green (`LV·P5`), sqlite3 + json verified live (`LV·P7`), **pip works** (micropip: `pip install pyparsing` → import, `LV·P6`, `S11`) and pip-installed wheels (pure-Python and compiled `.so`) **persist across refresh** (`S11`). Remaining gaps: no REPL, no subprocess. |
+| Scientific computing (numpy) | Python | **~80%+** | `pip install numpy` → `import numpy` → `numpy.dot([[1,2],[3,4]],...)` → `[[7, 10], [15, 22]]` (`LV·P9`, `S11`). Compiled `.so` files ride the v0.7 binary snapshot → after refresh `import numpy` works without re-installing (`S11`). |
 | Full TypeScript development loop (install → compile → test → run) | Node/TS | **~80%+** | `npm i -D typescript tsx vitest` → `tsc` → `node dist/*.js` → `vitest run 1 passed` (`LV·N3`, `S13`); `node -e` nested-quote writes survive tokenization and tsc (`LV·N2`, `S14`); npm installs into the session cwd (`LV·N5`, `S14`). |
 | Frontend/service runtime (http servers, package scripts) | Node | **~85%+** | Real node spawn + preview URL registration + `ps`/`kill` lifecycle (`S1`, `ST`); `node --version && npm --version` chain works (`LV·N1`, `S14`). |
 | Global CLI tools (`npm i -g`) | npm | **❌** | `/usr/local` is read-only; EACCES with an actionable hint (`LV·N4`, `S14`). Install locally instead. |
-| Ruby scripting | Ruby | **probe — feasible, not integrated** | `@ruby/wasm-wasi` v2 runs Ruby WASM in-container (`6*7` → `42`, `LV·R1`). Not wired into `lang`/routing (retention); usable today only via a manual node script. |
-| Native builds (C/Rust/Go) | C/Rust/Go | **❌** | No compilers (`LV·R2`). Precompiled **WASI** binaries do run via `node:wasi` (`LV·R3`), but there is no in-sandbox toolchain to build them. |
+| Ruby scripting | Ruby | **~60%+** | `ruby` is a registered Lifo command; the browser asset bridge lazily injects the WASM runtime and runs it in a real Node child (`6*7` → `42`). No gem installer; first run is slow (`v0.7`, `LV·R1`). |
+| Native builds (C/Rust/Go) | C/Rust/Go | **❌** | No compilers (`LV·R2`). Precompiled **WASI** binaries run through the `wasi-run` / `wasi-info` Lifo adapters (`v0.7`, `LV·R3`); there is still no in-sandbox toolchain to build them. |
 
 ---
 
@@ -75,17 +75,18 @@ Replacement degree for real development scenarios, measured end-to-end.
 
 Measured, environment-level constraints — not bugs.
 
-- **pip persistence is best-effort**: pure-Python wheels (e.g. `pyparsing`) persist across a
-  refresh — the site-packages directory is mounted (NODEFS) to `/.pyodide/site-packages`, which
-  the text snapshot carries. **Compiled wheels (e.g. `numpy`) need one `pip install <pkg>` after a
-  refresh**: their `.so` files are binary, the snapshot is text-only, so the incomplete package is
-  dropped at daemon start to avoid a broken `import` (documented boundary, `S11`).
+- **pip persistence**: pip-installed wheels persist across a refresh — the site-packages
+  directory is mounted (NODEFS) to `/.pyodide/site-packages`, which the v0.7 binary snapshot
+  carries. **Compiled wheels (e.g. `numpy`) persist across refresh too**: the binary export keeps
+  their `.so` files, so `import numpy` works without a re-install (`S11`).
 - **`python -m <module>`**: only `python -m pip ...` is special-cased to micropip. Other modules
   run via `runpy.run_module` (`LV·P6`).
 - **`subprocess`**: imports but cannot spawn — Pyodide raises
   `OSError: [Errno 138] emscripten does not support processes` (`LV·P8`).
-- **Python REPL**: not implemented; interactive stdin is unreliable in WebContainer. Use
-  `python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>` (AGENTS.md boundary).
+- **Python REPL**: not implemented; the current host exposes no generic child-process terminal
+  transport. Use `python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>`. The v0.7
+  Lifo `ITerminal` plus `CommandContext.stdin`/`setRawMode` transport is for WC-native interactive userland commands and
+  does not automatically enable arbitrary Pyodide/Node child-process REPLs.
 - **First `python` command is slow**: the ~13 MB Pyodide runtime (wasm + stdlib zip) is lazily
   injected on first use, and the resident daemon does a one-time `loadPyodide`; subsequent
   commands reuse the instance (`LV·P1` first-run timing, `ST`).

@@ -13,6 +13,13 @@ WebContainer + Lifo, with a **real Node.js runtime** (`node|npm|npx`) and a **Li
 boots into the environment and offers Unix tools, Node.js, process management, port forwarding, a
 Postgres database (tinbase), and persistence.
 
+The execution-world rule is normative: WebContainer/Lifo owns userland commands, runtimes,
+packages, services, editors, TUIs, and third-party extensions. The browser is only the control/device
+plane (boot, xterm, keyboard/resize events, unavoidable Web APIs, and thin transport). The current
+host uses Lifo headless `commands.run()`; v0.7 will connect the browser terminal to Lifo's exported
+`ITerminal` and public `CommandContext.stdin`/`setRawMode` seam inside WebContainer instead of implementing parallel browser-side
+applications. See [PLAN-v0.7.0.md](PLAN-v0.7.0.md).
+
 | Item | Value | Source |
 | ---- | ----- | ------ |
 | Product | SuccinixOS (formerly WebUnix) — unified brand, zero functional change | TASK26 |
@@ -25,8 +32,10 @@ Postgres database (tinbase), and persistence.
 
 ## 2. Built-in command families
 
-Browser-side commands (handled in the browser, routed to the host where needed). Each family's
-state persists in its `/etc/succinix.*` state file, all of which ride the workspace snapshot.
+The following are **v0.7 browser control commands** (handled in the browser, routed to the host
+where needed). Their state persists in `/etc/succinix.*` files that ride the workspace snapshot.
+Standard Unix commands and interactive tools run in WebContainer/Lifo userland; browser-only
+management stays under the `succinix ...` namespace.
 
 | Command | What it does | Source |
 | ------- | ------------ | ------ |
@@ -42,7 +51,7 @@ state persists in its `/etc/succinix.*` state file, all of which ride the worksp
 | `workspace` | Isolated workspaces (`create`/`switch`/`rm`); current recorded in `/ws/.current` | TASK7 |
 | `env` | Persistent environment variables (`/etc/succinix.env`, merged into real Node children at spawn) | TASK10 |
 | `settings` | Persistent system settings (`/etc/succinix.settings`: tinbase `preview-port` 3001, `default-workspace`, live `font-size`) | TASK10 |
-| `service` | Declarative background services (`list`/`start`/`stop`/`status`/`enable`/`disable`; `/etc/succinix.services` + boot autostart `/etc/succinix.autostart`) | TASK11 |
+| `service` | Declarative background services (`list`/`start`/`stop`/`status`/`enable`/`disable`) backed by Lifo `ServiceManager` and `/etc/systemd/system/*.service`; enablement markers are snapshot-backed | TASK11 |
 | `log` | journald-style system log (`/var/log/succinix.log`; `log`, `log -n <count>`, `log boot`, `log clear`) | TASK12 |
 | `pkg` | Unified package manager (`list`/`search`/`install`/`remove`/`info`) across lifo + npm channels | TASK13 |
 | `netstat` | Virtual listening-port table from the port registry (`netstat -p` attaches the process) | TASK14 |
@@ -50,11 +59,25 @@ state persists in its `/etc/succinix.*` state file, all of which ride the worksp
 | `uname` | Honest system identity (`Succinix <v> js-runtime+webcontainer <api-version> <arch>`; `-a`/`-r`/`-m`) | TASK15 |
 | `motd` | View / set / reset the persistent login banner (`/etc/succinix.motd`) | TASK15 |
 | `lang` | List built-in language runtimes and versions | TASK23 |
+| `vi` / `nano` | Lifo-native interactive editors: raw-mode stdin, full-screen redraw, save/quit/search — the same `ITerminal` seam as third-party TUIs | v0.7 |
+| `net` | Honest network view: `net doctor` capability report, `net preview` virtual port list, `net tunnel` fail-closed (`unavailable`) | v0.7 |
+| `succinix status` / `succinix plugins` | Plugin state / Cordis plugin + fiber states | C4 |
+| `succinix capabilities` | `succinix-linux-userland/0.7` profile: every command with status/runtime/execution contract + fail-closed denylist (exit 126) | v0.7 |
+| `succinix doctor` | Self-check: host RPC ping, persistence, userland profile, engine state (`[  OK  ]` / `[ FAIL ]` / `[SKIP]`) | v0.7 |
+| `succinix net doctor` / `net preview` / `net tunnel` | Network capability report / virtual preview ports / outbound tunnel (unavailable) | v0.7 |
+| `succinix init` | Detect project type from `package.json`, `pyproject.toml`, `requirements.txt`, Vite config, `index.html` | v0.7 |
+| `succinix run` | Spawn the detected dev command (`npm run dev` / `npm start` / `node <main>`) through the execution world | v0.7 |
+| `succinix serve` | Register + start the matching declarative service (`vite` / `static-http`) and print the preview URL | v0.7 |
+| `succinix open [port]` | Print the preview URL for a ready port | v0.7 |
 
 Persistent state files (all ride the snapshot, survive refresh): `/etc/succinix.env` (TASK10),
-`/etc/succinix.settings` (TASK10), `/etc/succinix.services` (TASK11), `/etc/succinix.autostart`
-(TASK11), `/etc/succinix.motd` (TASK15), `/etc/succinix.cwd` (TASK23), `/etc/succinix.engine.json`
+`/etc/succinix.settings` (TASK10), `/etc/systemd/system/*.service` units and
+`/workspace/.succinix-service-state/*.enabled` enablement markers (TASK11), `/etc/succinix.motd` (TASK15), `/etc/succinix.cwd` (TASK23), `/etc/succinix.engine.json`
 (result TTL override, TASK21/TASK26), `/ws/.current` (TASK7), `/var/log/succinix.log` (TASK12).
+
+Command logs and Cordis command events redact secrets by default: tokens, passwords, npm auth
+(`_authToken` / `_auth`), env secrets, and URL query secrets never reach
+`/var/log/succinix.log`, telemetry events, or session mirrors.
 
 ## 3. Language runtimes
 
@@ -64,16 +87,16 @@ legend: `[OK]` measured working · `[x]` confirmed absent · text = partial/prob
 
 | Language | Command | Runtime | Version (measured) | Package install | Status | Source |
 | -------- | ------- | ------- | ------------------ | --------------- | ------ | ------ |
-| **Python** | `python`, `python3` | resident **Pyodide 314.0.4** daemon (node child, instance reused) | 3.14.2 | `[OK]` **pip** via micropip — pure-Python wheels persist across refresh; compiled wheels re-install after refresh | `[OK]` | TASK23, TASK27, `LV·P1–P9`, `S11` |
+| **Python** | `python`, `python3` | resident **Pyodide 314.0.4** daemon (node child, instance reused) | 3.14.2 | `[OK]` **pip** via micropip — pure-Python and compiled wheels persist across refresh (v0.7 binary snapshot) | `[OK]` | TASK23, TASK27, `LV·P1–P9`, `S11` |
 | **pip** | `pip`, `pip3` | maps to Pyodide micropip (`python -m pip` too) | micropip 0.11.1 | `[OK]` install / uninstall / list / show | `[OK]` | TASK27, `LV·P6` |
 | **Node.js** | `node` | real Node.js (WebContainer runtime) | 22.22.3 | `[OK]` npm, local per-project installs | `[OK]` | TASK1, TASK24, `LV·N1–N5` |
 | **npm** | `npm` | real npm (ships with node) | 10.8.2 | `[OK]` local; `[x]` global (`/usr/local` read-only → EACCES + hint) | `[OK]` | TASK24, `LV·N4` |
 | **TypeScript** | `npx tsc`, `tsx`, `vitest` | npm-installed toolchain; node 22 `--experimental-strip-types` | latest via npm | `[OK]` via npm | `[OK]` | TASK25, `LV·N3`, `S13`, `S14` |
-| **Ruby** | (none built-in) | `@ruby/wasm-wasi` v2 + `@ruby/head-wasm-wasi` (probe only) | head ruby.wasm | `[OK]` npm install; `[x]` **no gem** | probe — runs, not integrated | TASK25, `LV·R1` |
+| **Ruby** | `ruby` | Lazily injected WASM runtime (browser asset bridge → `@ruby/wasm-wasi` adapter in a real Node child) | head ruby.wasm | `[OK]` npm install; `[x]` **no gem** | `[OK]` — integrated, lazy (first run slow) | v0.7, `LV·R1` |
 | **C** | `gcc` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
 | **Rust** | `rustc`, `cargo` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
 | **Go** | `go` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
-| **WASI** | `node:wasi` | Node.js WASI (preview1) | node 22 | — | `[OK]` runs precompiled WASI modules | TASK25, `LV·R3` |
+| **WASI** | `wasi-run` / `wasi-info` | Lifo adapter over `node:wasi` (preview1), modules loaded from `/workspace` | node 22 | — | `[OK]` integrated (`wasi-run <file>`, ≤ 32 MB) | v0.7, `LV·R3` |
 
 Key measured facts:
 
@@ -86,9 +109,9 @@ Key measured facts:
 - **Python** runs on a resident Pyodide daemon: 11/11 stdlib imports green
   (json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib), sqlite3 + json
   verified live, `python -c` / `python <script.py>` / `python -m <module>` semantics preserved,
-  **pip via micropip** (install/uninstall/list/show/--version). Boundaries: no interactive REPL
-  (use `python -c`), `subprocess` imports but cannot spawn (`OSError: [Errno 138] ...`),
-  compiled wheels (e.g. numpy) need one `pip install` after a refresh.
+  **pip via micropip** (install/uninstall/list/show/--version). The current host has no generic
+  Python child-process REPL (use `python -c`), `subprocess` imports but cannot spawn (`OSError: [Errno 138] ...`),
+  compiled wheels (e.g. numpy) persist across refresh — the v0.7 binary export keeps their `.so` files.
 - **TypeScript ecosystem** closed loop: `npm i -D typescript tsx vitest` → `npx tsc` →
   `node dist/*.js` → `npx vitest run` (1 passed) — measured in scenarios S13/S14.
 - **Ruby** is probe-only: the v2 `@ruby/wasm-wasi` API runs Ruby WASM in-container (`6*7` → 42)
@@ -97,23 +120,27 @@ Key measured facts:
 
 ## 4. Persistence
 
-- **Workspace snapshot → IndexedDB.** The container filesystem (files, `/etc` state, workspace) is
-  snapshotted to the IndexedDB database `succinix-persist` (auto-save ~every 2.5 s + `pagehide`
-  fallback) and restored on boot. Refreshes never lose user files. `snapshot` shows status / saves
-  manually / resets. | TASK5, TASK26, README
-- **Text-first snapshot, honest boundaries.** Binary/unreadable files are skipped (counted in the
-  save log); snapshots over ~50 MB are skipped with a warning (`skipped (over 50MB limit)`) rather
-  than written. Empty directories are recorded and recreated. | TASK16, TASK19
-- **Exclusions.** The `.tinbase` tree (binary PGlite store) is excluded — tinbase data persists
-  across `db stop`/`db start` in-session but not across a browser refresh (documented). The
-  `/usr/lib/succinix` runtime assets (~13 MB Python) are excluded and re-injected on first use.
-  The log file is excluded from the change-detection signature (still rides snapshots). | TASK19,
-  TASK23, TASK18
-- **pip persistence (best-effort, honest).** The Pyodide site-packages directory is NODEFS-mounted
-  to `/.pyodide/site-packages` (inside the snapshot); `/.pyodide/installed.json` records pip
-  installs. **Pure-Python wheels (e.g. `pyparsing`) persist across a refresh**; **compiled wheels
-  (e.g. `numpy`) need one `pip install <pkg>` after a refresh** (their `.so` files are binary and
-  the snapshot is text-only). | TASK27
+- **Workspace snapshot → IndexedDB v2.** The container filesystem (files, `/etc` state,
+  workspace, pip site-packages) is exported as a binary generation to the IndexedDB database
+  `succinix-persist-v2` (dirty-driven auto-save after a 5 s debounce, forced no later than 30 s + `pagehide` fallback) and
+  restored on boot. Refreshes never lose user files. `snapshot` shows status / saves manually /
+  resets. | v0.7 (PLAN §7), TASK5, TASK26, README
+- **Binary snapshot, exact restore.** Generations are written as ≤256 KiB chunks, then a
+  SHA-256 manifest, then the active pointer (`current`); a torn write never switches the active
+  generation (last-known-good retained). The v0.6 `succinix-persist` store is only detected and
+  reported as `legacy snapshot detected` — never migrated or deleted. Default quota 256 MiB;
+  empty directories are recorded and recreated. | v0.7 (PLAN §7.1), TASK16, TASK19
+- **Exclusions.** `node_modules` / `dist` / `.git` trees are excluded from the binary export by default; set `defaultInstance.persistence.includeGit: true` to retain Git metadata.
+  The `.succinix-terminal` mailbox, host/RPC artifacts (`host.js`, `lifo-core.js`, `cmd.json`,
+  `result-*.json`), the `.tinbase` tree (binary PGlite store — persists across
+  `db stop`/`db start` in-session but not across a browser refresh), and the `/usr/lib/succinix`
+  runtime assets (~13 MB Python, re-injected on first use) never make it into the restored tree.
+  Same-page instances additionally scope to their own state root and user home. | TASK19,
+  TASK23, TASK18, M5
+- **pip persistence.** The Pyodide site-packages directory is NODEFS-mounted to
+  `/.pyodide/site-packages` (inside the snapshot); `/.pyodide/installed.json` records pip
+  installs. **Pure-Python wheels (e.g. `pyparsing`) and compiled wheels (e.g. `numpy`) both
+  persist across a refresh** — the binary export carries their `.so` files (`S11`). | TASK27
 - **Per-origin data scoping.** IndexedDB is isolated per origin — changing the deployment domain
   starts a fresh system; same-origin refresh restores the snapshot. | TASK22
 
@@ -126,16 +153,21 @@ Key measured facts:
 - **Background `spawn`** for long-running node-family processes (no Lifo background concept),
   with a **2 s startup-confirmation window**: a spawned process that exits non-zero within 2 s is
   reported as a failure (`ok:false`). | TASK1, TASK2, TASK19
-- **Service management**: `service` defines named declarative services
-  (`/etc/succinix.services`, `name|command|port`, `${PORT}` from `preview-port`), manages
-  `start`/`stop`/`status`/`enable`/`disable`, and `enable` writes `/etc/succinix.autostart` for
-  declarative restart at boot (not a daemon — no crash self-healing). | TASK11
+- **Service management**: `service`/`systemctl` manage named declarative units
+  (`/etc/systemd/system/*.service`) through the shared Lifo `ServiceManager`, process table,
+  and port registry. Enablement is mirrored to snapshot-backed markers for boot restore
+  (not a PID 1 daemon — no crash self-healing). | TASK11
 - **Port registry**: WebContainer `server-ready` events register a preview URL; `ports` lists them,
   `netstat` renders a virtual `Proto  Local Address  State` table (`netstat -p` matches the owning
   process). | TASK2, TASK14
 
 ## 6. Networking
 
+- **Git over HTTPS**: `git init/status/add/rm/commit/log/diff/branch/checkout/clone/fetch/pull/push`
+  run through Isomorphic Git inside the WebContainer execution world. Only HTTPS remotes are
+  accepted; SSH returns `git: SSH transport is unsupported` with exit 126. `GIT_HTTP_TOKEN`
+  stays in the live environment, is redacted from errors, and never enters a command log or
+  snapshot. | v0.7
 - **Outbound HTTP** is subject to CORS: direct `curl` to CORS-less sites fails (`exit 7`); use a
   CORS-friendly proxy such as `curl https://r.jina.ai/<url>`. Python `urllib` shares the same
   boundary. | README, AGENTS.md, LANGUAGES.md
@@ -159,6 +191,7 @@ Key measured facts:
   children was fixed and is self-tested. | TASK10, TASK24
 - **Shell fusion**: node/python commands containing shell metacharacters run through the Lifo
   shell, each segment forwarded to the real runtime — real pipes, chains, redirects. | TASK24
+- **Here-documents**: `<<` and `<<-` are explicitly unsupported (`succinix: here-document: unsupported`, exit 2); quoted and escaped literal `<<` text remains valid. | v0.7
 
 ## 8. Deployment
 
@@ -192,11 +225,12 @@ Key measured facts:
   (owner-scoped PTY registry), and `ctx.sessionPersistence` (event-sourced
   JSONL). Internal lifecycle facades (`executor`, `terminal`, `snapshot`,
   `persist`, `workspace`, `ports`, `services`, `capabilities`, `instance`,
-  `boot` / `attach` / `ensureInstance`) live behind the `succinix-host` seam.
+  `boot` / `attach` / `ensureInstance`) live behind the `succinix` seam.
   | C2, cordis-contract.md
 - **Typed events**: `succinix/state` (with `reason` / `changed`), `server-ready`,
-  `server-closed`, `command` telemetry, `instance`, `workspace`, `process`. | C4,
-  manageability.md
+  `server-closed`, `command` / `command-start` / `command-finish` telemetry,
+  `runtime-ready`, `degradation`, `persistence`, `terminal-open` / `terminal-close` /
+  `terminal-backpressure`, `instance`, `workspace`, `process`. | C4, manageability.md
 - **Capability registry**: `terminal.exec`, `terminal.spawn`, `terminal.kill`,
   `terminal.interrupt`, `fs.read`, `fs.write`, `workspace.restore`, `workspace.flush`,
   `workspace.list`; default-allow with configurable rules. | C2
@@ -227,10 +261,9 @@ Accepted environment constraints — not bugs, and never simulated:
 | No real kernel / `apt` / native binaries | Physically impossible in the sandbox; Succinix is a browser-native Linux | README, AGENTS.md |
 | Multi-user is organizational isolation only | Embed mode partitions directories/state/process views per instance/user (`?instance=`/`?user=`); **not a security boundary**; the standalone app stays `guest`-only and `chmod` semantics are not faked | AGENTS.md, SDK.md |
 | No inbound network | Ports are virtual previews; tunnels are outbound bridges, not real inbound | TASK14 |
-| No interactive REPL stdin | File-based RPC replaces stdin; `log -f` and REPL-style processes unsupported | TASK1, README |
+| Generic child-process interactive stdin | Current host uses file-based RPC and headless Lifo execution; arbitrary Node/Python REPLs remain unsupported. v0.7 adds a WebContainer-native Lifo terminal transport for explicitly interactive userland commands | TASK1, README, PLAN-v0.7.0 |
 | No symlinks / hard links | Lifo VFS does not support them | README |
 | Firefox / Safari / mobile unsupported | WebContainers requires Chromium; the environment-check error page explains | TASK4 |
-| C-extension pip packages don't persist across refresh | Text snapshot carries no `.so`; reinstall `numpy` etc. after refresh | TASK27 |
 | External `curl` needs a CORS proxy | `https://r.jina.ai/<url>` style | README |
 | `npm i -g` → EACCES | `/usr/local` is read-only for `guest`; an actionable hint is appended | TASK24 |
 | 1 MB output cap | stdout/stderr keep only the tail past 1 MB (bounds container memory) | TASK18 |
@@ -243,7 +276,7 @@ Accepted environment constraints — not bugs, and never simulated:
   5 skipped** (the 5 skips are documented known boundaries, not silent failures). | TASK1, TASK3,
   TASK20, TASK25
 - **Scenario suite** — `scripts/scenarios.mjs` (headless Chrome + CDP): 14 real workflows S1–S14
-  (npm dev loop, git via lifo-pkg-git, tinbase lifecycle, service autostart, workspace isolation,
+  (npm dev loop, git via lifo-pkg-git, tinbase lifecycle, service enablement, workspace isolation,
   queue serialization, big output, persistence stress, error paths, reboot boundary, python
   workflow, cd-synced install, TS ecosystem, language regression). | TASK19, TASK23, TASK25
 - **Language verification** — `scripts/lang-verify.mjs`: 28 CDP-driven checks

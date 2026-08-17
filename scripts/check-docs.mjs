@@ -25,6 +25,8 @@ const ALLOW_NON_REPO = new Set([
   './host.js',
   'lifo-core.js',
   './lifo-core.js',
+  // File-RPC channel artifacts inside the container, documented but not repo files.
+  'cmd.json',
   'public/host.js',
   'public/lifo-core.js',
   'packages/engine/assets/sha256.json',
@@ -37,9 +39,20 @@ const ALLOW_NON_REPO = new Set([
   'succinix/server-ready',
   'succinix/server-closed',
   'succinix/command',
+  'succinix/command-start',
+  'succinix/command-finish',
+  'succinix/runtime-ready',
+  'succinix/degradation',
+  'succinix/persistence',
+  'succinix/terminal-open',
+  'succinix/terminal-close',
+  'succinix/terminal-backpressure',
   'succinix/instance',
   'succinix/workspace',
   'succinix/process',
+  // Runtime identifiers and file-type mentions, not local references.
+  'succinix-linux-userland/0.7',
+  'requirements.txt',
 ]);
 
 function collectMds(dir, out = []) {

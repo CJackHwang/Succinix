@@ -7,6 +7,7 @@ export interface PydRequest {
   id: number;
   args: string[];
   cwd?: string;
+  env?: Record<string, string | undefined>;
 }
 
 // ─── 文件 RPC 请求链（host 侧单槽串行，防御式排队保证按序处理）───

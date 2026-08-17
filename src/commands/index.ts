@@ -9,6 +9,6 @@ export * from './db.js';
 export * from './log-cmd.js';
 export * from './pkg-cmd.js';
 export * from './network.js';
+export * from './project.js';
 export * from './identity.js';
-export * from './registry.js';
 export * from './manage.js';

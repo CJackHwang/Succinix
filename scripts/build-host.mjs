@@ -13,7 +13,7 @@
 // Function.name 出现运行时错误，改回 keepNames:true（体积略增）或记录原因回退。
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // host 入口在 src/engine/host/ 下，源码里对 lifo-core 的相对导入是 '../lifo-core.js'；
@@ -32,6 +32,10 @@ const lifoCoreExternalPlugin = {
   },
 };
 
+// @lifo-sh/core 内部仍有对 Node 内建模块的动态 require。lifo-core 保持 ESM
+// 才能由 host.js 懒加载，因此显式提供 ESM 可用的 require，而不把内核退回主 bundle。
+const lifoCoreEsmBanner = "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);";
+
 await build({
   entryPoints: ['src/engine/host/main.ts'],
   bundle: true,
@@ -47,6 +51,23 @@ await build({
   logLevel: 'info',
 });
 
+// Ruby WASM is a deferred runtime asset.  The small Node adapter is bundled,
+// while the 17 MiB reactor module stays separate and is fetched/injected only
+// when Ruby is requested.  It is never referenced by the initial HTML.
+mkdirSync('public/ruby', { recursive: true });
+await build({
+  entryPoints: ['src/engine/ruby-runtime/main.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  minify: true,
+  outfile: 'public/ruby/ruby-runtime.js',
+  logLevel: 'info',
+});
+copyFileSync('node_modules/@ruby/head-wasm-wasi/dist/ruby.wasm', 'public/ruby/ruby.wasm');
+writeFileSync('public/ruby/RUBY_VERSION', 'head-wasm-wasi 2.10.1\n');
+
 await build({
   entryPoints: ['src/engine/lifo-core.ts'],
   bundle: true,
@@ -54,6 +75,7 @@ await build({
   format: 'esm',
   target: 'node18',
   minify: true,
+  banner: { js: lifoCoreEsmBanner },
   external: ['@lifo-sh/ui'],
   outfile: 'public/lifo-core.js',
   logLevel: 'info',

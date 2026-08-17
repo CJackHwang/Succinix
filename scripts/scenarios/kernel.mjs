@@ -73,10 +73,10 @@ async function s10(h) {
   const checks = [];
   // 写标记文件 + 强制落盘
   await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s10-marker.txt','s10-survives')`);
-  await h.run('snapshot now', 60000);
+  await h.run('succinix snapshot now', 60000);
 
   // reboot → 页面真实 reload
-  const rb = await h.run('reboot', 10000);
+  const rb = await h.run('succinix reboot', 10000);
   check(checks, 'reboot triggered', rb.handled === true && rb.output.includes('Rebooting'), rb.output ? rb.output.trim() : '');
 
   // TASK25 防回归：reboot 是 setTimeout(300) 调 location.reload()。waitForScenario 可能在旧页面

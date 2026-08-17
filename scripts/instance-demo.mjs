@@ -126,14 +126,14 @@ async function main() {
     check(checks, 'snapshot isolation after refresh (c-2 restores only own marker)', bHasC1 === false && bHasC2 === true);
 
     // C5：service start 只影响自己实例。
-    await A.run('service start tinbase', 120000);
-    const bSvc = await B.run('service status tinbase');
+    await A.run('succinix service start tinbase', 120000);
+    const bSvc = await B.run('succinix service status tinbase');
     // tinbase WASM 引擎首启较慢（~30-60s），端口可能晚于命令内部 30s 等待就绪 ——
     // 轮询 status 直到 running（上限 90s），把"进程已起、端口稍后就绪"如实判为成功。
     let aRunning = false;
     let aStatusOut = '';
     for (let i = 0; i < 45 && !aRunning; i++) {
-      const st = await A.run('service status tinbase', 30000);
+      const st = await A.run('succinix service status tinbase', 30000);
       aStatusOut = String(st.output ?? '');
       if (aStatusOut.includes('running')) {
         aRunning = true;
@@ -144,29 +144,28 @@ async function main() {
     const aPorts = await A.eval('window.__succinixScenario.ports.has(3001)');
     const bPorts = await B.eval('window.__succinixScenario.ports.has(3001)');
     const bSvcOut = String(bSvc.output ?? '');
-    check(checks, 'service start in c-1 leaves tinbase running (own instance)', aRunning, aStatusOut.slice(0, 80));
-    check(checks, 'service status in c-2 stays stopped', bSvcOut.includes('stopped'), bSvcOut.slice(0, 80));
+    check(checks, 'succinix service start in c-1 leaves tinbase running (own instance)', aRunning, aStatusOut.slice(0, 80));
+    check(checks, 'succinix service status in c-2 stays stopped', bSvcOut.includes('Active: inactive'), bSvcOut.slice(0, 80));
     check(checks, 'port 3001 registered in c-1 view only', aPorts === true && bPorts === false);
 
-    // C5b：db start 实例模式 —— 停掉 service 后走 db 命令的 --data-dir 路径（M4 数据隔离 +
-    // M5 mapDataDirArgs 浏览器视角映射），数据目录必须落在实例状态根下。
-    const aStop = await A.run('service stop tinbase', 30000);
-    const aDb = await A.run('db start', 120000);
+    // C5b：停止再启动同一执行世界服务；模板的相对 .tinbase 数据目录必须归属实例状态根。
+    const aStop = await A.run('succinix service stop tinbase', 30000);
+    const aDb = await A.run('succinix service start tinbase', 120000);
     const aDbOut = String(aDb.output ?? '');
     const aStopOut = String(aStop.output ?? '');
-    check(checks, 'service stop tinbase (instance mode)', aStop.handled === true && aStopOut.includes('stopped'), aStopOut.trim().slice(0, 120));
+    check(checks, 'succinix service stop tinbase (instance mode)', aStop.handled === true && aStopOut.toLowerCase().includes('stopped'), aStopOut.trim().slice(0, 120));
     let aDbPort = false;
     for (let i = 0; i < 45 && !aDbPort; i++) {
       aDbPort = (await A.eval('window.__succinixScenario.ports.has(3001)')) === true;
       if (aDbPort) break;
       await sleep(2000);
     }
-    const aDbDir = await A.eval(`window.__succinixScenario.wc.fs.readdir('/workspace/.succinix-c-1/tinbase').then((x) => x.length > 0).catch(() => false)`);
-    check(checks, 'db start in c-1 (instance mode) brings port up', aDbPort, aDbOut.slice(0, 100));
-    check(checks, 'db data dir created under instance state root', aDbDir === true);
+    const aDbDir = await A.eval(`window.__succinixScenario.wc.fs.readdir('/workspace/.succinix-c-1/.tinbase').then((x) => x.length > 0).catch(() => false)`);
+    check(checks, 'succinix service restart in c-1 brings port up', aDbPort, aDbOut.slice(0, 100));
+    check(checks, 'tinbase data dir created under instance state root', aDbDir === true);
 
     // C6/C7：reboot 只重置自己 —— A reboot 后会话重建（状态根清空），B 全程不受影响。
-    await A.run('reboot');
+    await A.run('succinix reboot');
     await sleep(3000);
     const aAlive = await A.eval('!!window.__succinixScenario && window.__succinixScenario.booted === true');
     const bEcho = await B.run('echo b-alive');
@@ -175,7 +174,7 @@ async function main() {
     check(checks, 'reboot in c-1 rebuilds instance in place (page not reloaded)', aAlive === true);
     check(checks, 'c-2 unaffected by c-1 reboot (still responsive)', bEcho.ok === true && String(bEcho.output).includes('b-alive'));
     check(checks, 'c-1 state root cleared by reboot (env reset)', !String(aEnvAfter.output).includes('C1_MARK'));
-    check(checks, 'c-2 env untouched by c-1 reboot', String(bEnvAfter.output).includes('C2_MARK') && !String(bEnvAfter.output).includes('C1_MARK'));
+    check(checks, 'c-2 env untouched by c-1 reboot', String(bEnvAfter.output).includes('C2_MARK') && !String(bEnvAfter.output).includes('C1_MARK'), String(bEnvAfter.output ?? '').trim().slice(0, 120));
 
     // ─── U1：双用户 demo（?user=a / ?user=b）───
     // 与实例 demo 同一机制（userId == instanceId）；差异点：每用户 home

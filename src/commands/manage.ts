@@ -1,6 +1,14 @@
-// Manageability commands: succinix status / succinix plugins (C4).
+// Manageability commands: succinix status / succinix plugins / succinix
+// capabilities / succinix doctor (C4 + v0.7 userland profile).
 import type { SuccinixPluginState } from '@succinix/engine';
+import {
+  USERLAND_DENY_EXIT_CODE,
+  USERLAND_DENYLIST,
+  USERLAND_PROFILE,
+  defaultUserlandCapabilities,
+} from '@succinix/engine';
 import { AMBER, GRAY, RED, RESET } from '../theme.js';
+import { projectCmd } from './project.js';
 import type { CommandContext, SuccinixPluginSummary } from './types.js';
 
 function stateColor(state: string): string {
@@ -54,6 +62,59 @@ export function formatSuccinixPlugins(plugins: SuccinixPluginSummary[]): string[
   return lines;
 }
 
+// v0.7 userland profile: every supported command with its status/runtime/
+// execution contract plus the fail-closed denylist visible in one view.
+export function formatCapabilities(): string[] {
+  const commands = defaultUserlandCapabilities();
+  const nameW = Math.max(...commands.map((c) => c.name.length)) + 2;
+  const statusW = Math.max(...commands.map((c) => c.status.length)) + 2;
+  const lines = [
+    `Linux Userland Compatibility Profile: ${USERLAND_PROFILE}`,
+    `Commands (${commands.length})`,
+    `  ${'NAME'.padEnd(nameW)}${'STATUS'.padEnd(statusW)}RUNTIME  EXECUTION`,
+  ];
+  for (const command of commands) {
+    lines.push(`  ${command.name.padEnd(nameW)}${command.status.padEnd(statusW)}${command.runtime.padEnd(8)}${command.execution}`);
+  }
+  lines.push(`Denylisted (${USERLAND_DENYLIST.length}) - fail-closed exit code ${USERLAND_DENY_EXIT_CODE}`);
+  lines.push(`  ${USERLAND_DENYLIST.join(' ')}`);
+  return lines;
+}
+
+// v0.7 doctor: honest capability checks with ASCII status markers.
+export async function succinixDoctor(ctx: CommandContext): Promise<void> {
+  const { term } = ctx;
+  term.writeln('Succinix doctor');
+
+  let ping = false;
+  try {
+    const r = await ctx.client.exec('ping', undefined, 5000);
+    ping = r.kind === 'pong';
+  } catch {
+    ping = false;
+  }
+  term.writeln(`${ping ? '[  OK  ]' : '[ FAIL ]'} host RPC ping`);
+
+  let persistLine = 'no snapshot yet';
+  try {
+    const meta = ctx.persist ? await ctx.persist.meta() : null;
+    if (meta) persistLine = `format v${meta.version} ${meta.fileCount} files ${meta.totalBytes} bytes (saved ${new Date(meta.savedAt).toISOString()})`;
+  } catch (error) {
+    persistLine = String(error);
+  }
+  term.writeln(`${ctx.persist ? '[  OK  ]' : '[SKIP]'} persistence: ${persistLine}`);
+
+  const commands = defaultUserlandCapabilities();
+  term.writeln(`[  OK  ] userland profile: ${commands.length} commands, ${USERLAND_DENYLIST.length} denylisted (${USERLAND_PROFILE})`);
+
+  const state = ctx.engineState;
+  if (state) {
+    term.writeln(`[  OK  ] engine state: ${state.containerState} (${state.instances.length} instance${state.instances.length === 1 ? '' : 's'})`);
+  } else {
+    term.writeln('[SKIP] engine state: not connected');
+  }
+}
+
 export async function succinixCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term } = ctx;
   const sub = args[0] ?? '';
@@ -74,5 +135,17 @@ export async function succinixCmd(ctx: CommandContext, args: string[]): Promise<
     for (const line of formatSuccinixPlugins(ctx.pluginSummaries)) term.writeln(line);
     return;
   }
-  term.writeln('usage: succinix status | succinix plugins');
+  if (sub === 'capabilities') {
+    for (const line of formatCapabilities()) term.writeln(line);
+    return;
+  }
+  if (sub === 'doctor') {
+    await succinixDoctor(ctx);
+    return;
+  }
+  if (sub === 'init' || sub === 'run' || sub === 'serve' || sub === 'open') {
+    await projectCmd(ctx, args);
+    return;
+  }
+  term.writeln('usage: succinix status | succinix plugins | succinix capabilities | succinix doctor | succinix init | succinix run | succinix serve | succinix open [port]');
 }

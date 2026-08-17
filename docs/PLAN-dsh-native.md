@@ -1,5 +1,11 @@
 # PLAN: Succinix 全面对齐 dsh 命名空间与生态
 
+> **v0.7 架构提示：** 本文中“无交互 stdin/REPL”是 v0.6 当前 host 使用文件 RPC +
+> headless Lifo 的现状，不是永久禁止扩展 WebContainer userland。v0.7 的规范方向是
+> 复用 Lifo 根入口导出的 `ITerminal` 与公开 `CommandContext.stdin`/`setRawMode` seam，以轻薄终端传输把浏览器 xterm 接入
+> WebContainer 内的 Lifo userland；不在浏览器外并行实现编辑器/TUI。见
+> [PLAN-v0.7.0.md](PLAN-v0.7.0.md)。
+
 > **Status**: S0 已完成；S1.2/S1.3 已完成；S1.1（SunamAI）、S2（dsh 官方
 > 工具互测）、S3.2（发布）为宿主/发布方外部动作（2026-08-14 实测复核）。
 > **执行者**：AI agent（用户派 CC）+ 技术团队。审阅者：Hermes（沈知夏）。

@@ -2,9 +2,11 @@
 import { spawn } from 'node:child_process';
 import { registerProcess, appendProcessOutput, markProcessExited } from '../host-procs.js';
 import { NODE_PREFIX_RE, mapDataDirArgs, capOutput, withEaccesHint, MAX_OUTPUT_BYTES, CurrentRunRegistry } from '../host-route.js';
-import { mergedEnv, currentInstanceId, spawnCwd } from './config.js';
+import { mergedEnvFor, resolveRequestCwd } from './config.js';
 import { tryTokenize } from '../tokenize.js';
 import { writeResult, instanceOf, type CommandRequest } from './rpc.js';
+import type { RpcRequestId } from '../rpc-v2.js';
+import type { ProcessRuntime, RegisterProcessOptions } from '../host-procs.js';
 
 // node 子进程默认超时兜底（runNode / spawnChild）。
 const NODE_TIMEOUT_MS = 30000;
@@ -53,12 +55,17 @@ export function attachOutputCollector(
 function spawnTracked(
   prog: string,
   args: string[],
-  opts: { cwd: string; mode: OutputMode }
+  opts: { cwd: string; mode: OutputMode; instanceId: string; env?: NodeJS.ProcessEnv; runtime?: ProcessRuntime; interactive?: boolean; terminalSessionId?: string }
 ): { pid: number; child: ReturnType<typeof spawn>; out: ReturnType<typeof attachOutputCollector> } {
-  const child = spawn(prog, args, { cwd: opts.cwd, env: mergedEnv(currentInstanceId()) });
+  const child = spawn(prog, args, { cwd: opts.cwd, env: opts.env ?? mergedEnvFor(opts.instanceId, undefined) });
   // M5：登记时带请求实例 id —— 实例会话 cwd 是容器 home（无状态根段），显式归属保证
   // 实例 ps 视图 / service 状态能看到自己的进程（默认实例不标，行为全等）。
-  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd, currentInstanceId());
+  const registration: RegisterProcessOptions = {
+    ...(opts.runtime ? { runtime: opts.runtime } : {}),
+    ...(opts.interactive !== undefined ? { interactive: opts.interactive } : {}),
+    ...(opts.terminalSessionId ? { terminalSessionId: opts.terminalSessionId } : {}),
+  };
+  const pid = registerProcess(prog + (args.length ? ' ' + args.join(' ') : ''), child, opts.cwd, opts.instanceId, registration);
   const out = attachOutputCollector(child, pid, opts.mode);
   return { pid, child, out };
 }
@@ -70,12 +77,22 @@ export function spawnChild(
   prog: string,
   args: string[],
   opts: Record<string, unknown> | undefined,
-  reqId: number,
+  reqId: RpcRequestId,
   label: string,
   instanceId: string
 ): void {
-  const realCwd = spawnCwd(currentInstanceId());
-  const { pid, child, out } = spawnTracked(prog, args, { cwd: realCwd, mode: 'accumulate' });
+  const cwd = resolveRequestCwd(instanceId, opts?.cwd);
+  if ('error' in cwd) {
+    writeResult(reqId, { ok: false, exitCode: 1, stdout: '', stderr: cwd.error, runtime: 'node' }, instanceId);
+    return;
+  }
+  const realCwd = cwd.cwd;
+  const { pid, child, out } = spawnTracked(prog, args, {
+    cwd: realCwd,
+    mode: 'accumulate',
+    instanceId,
+    env: mergedEnvFor(instanceId, opts?.env),
+  });
   // P5-15 / M3：按实例登记为当前前台 run（Ctrl+C 中断目标，只中断该实例的 run）；settle 时清除。
   currentRunByInstance.register(instanceId, pid);
 
@@ -143,9 +160,21 @@ export function dispatchSpawn(req: CommandRequest): void {
     return;
   }
   const [prog, ...args] = mapDataDirArgs(t.tokens, process.cwd());
-  const realCwd = spawnCwd(currentInstanceId());
+  const cwd = resolveRequestCwd(inst, req.opts?.cwd);
+  if ('error' in cwd) {
+    writeResult(req.id, { ok: false, error: cwd.error, runtime: 'node' }, inst);
+    return;
+  }
+  const realCwd = cwd.cwd;
   // 后台进程输出只追加进程表 outputTail（不截断累积）；TASK-CISOL 登记 cwd 供归属判定。
-  const { pid, child } = spawnTracked(prog, args, { cwd: realCwd, mode: 'append' });
+  const rawInteractive = req.opts?.interactive;
+  const { pid, child } = spawnTracked(prog, args, {
+    cwd: realCwd,
+    mode: 'append',
+    instanceId: inst,
+    env: mergedEnvFor(inst, req.opts?.env),
+    interactive: rawInteractive === true,
+  });
   let settled = false;
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   const settle = (payload: Record<string, unknown>) => {

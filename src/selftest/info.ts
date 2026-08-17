@@ -1,38 +1,11 @@
-// 自检域：内存统计 + 系统信息（uname / motd / 分发路径）（O5 拆分）。
-// captureTerm / makeDispatchBase 是"捕获型假终端"共享工具：Info 与 Languages 域都用。
-import type { Terminal } from '@xterm/xterm';
-import type { WebContainer } from '@webcontainer/api';
-import type { TerminalClient } from '@succinix/engine';
+// 自检域：内存统计 + 系统信息（uname / motd / 执行世界路径）（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { buildUnameLine, detectUnameArch, unameRuntimeVersion, tryHandleLocalCommand } from '../commands/index.js';
+import { buildUnameLine, detectUnameArch } from '../commands/index.js';
 import { readMotd, writeMotd, resetMotd, DEFAULT_MOTD } from '../motd.js';
 
-// R2（TASK17）：经命令分发路径断言 uname flag 解析 —— 不直接调 buildUname*()，
-// 而是走 tryHandleLocalCommand → unameCmd 的真实链路（捕获型假终端收集输出）。
-// uname -r 应输出运行时版本、uname -m 应输出 UA 架构，验证 flag 解析不再短路。
-export function captureTerm(): { term: Terminal; lines: string[] } {
-  const lines: string[] = [];
-  const termShim = {
-    writeln: (l: string) => void lines.push(String(l)),
-    write: (d: string) => void lines.push(String(d)),
-    clear: () => {},
-  } as unknown as Terminal;
-  return { term: termShim, lines };
-}
-
-// 命令分发基座（缺 term，由调用方补 { ...dispatchBase, term }）。
-export function makeDispatchBase(ctx: TestContext): {
-  wc: WebContainer;
-  client: TerminalClient;
-  ports: Map<number, string>;
-  fit: () => void;
-} {
-  return { wc: ctx.wc, client: ctx.client, ports: ctx.ports, fit: () => {} };
-}
-
 export async function runInfo(ctx: TestContext): Promise<void> {
-  const { wc, term } = ctx;
+  const { wc, client, term } = ctx;
   // ─── 内存（Memory）：浏览器报告设备内存或 JS heap 统计（任一存在即可）───
   const devMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
   const perfMem = (performance as unknown as { memory?: unknown }).memory;
@@ -64,24 +37,25 @@ export async function runInfo(ctx: TestContext): Promise<void> {
     `set=${motdSetOk} reset=${motdAfter === DEFAULT_MOTD}`
   );
 
-  const dispatchBase = makeDispatchBase(ctx);
-  const capR = captureTerm();
-  const handledR = await tryHandleLocalCommand({ ...dispatchBase, term: capR.term }, 'uname -r');
+  // R2（TASK17）：通过 TerminalClient 进入真实 WebContainer/Lifo 命令路径，
+  // 不在浏览器侧解析或实现 uname。
+  const unameR = await client.terminal('uname -r');
+  const unameROut = String(unameR.stdout ?? '').trim();
   verdict(
     term,
     'Info',
-    'uname -r via dispatch',
-    handledR && capR.lines.join('') === unameRuntimeVersion(),
-    `handled=${handledR} out=${capR.lines.join('') || '(empty)'}`
+    'uname -r via execution world',
+    unameR.ok && unameR.runtime === 'lifo' && /^\d+\.\d+\.\d+$/.test(unameROut),
+    `runtime=${unameR.runtime} out=${unameROut || '(empty)'}`
   );
 
-  const capM = captureTerm();
-  const handledM = await tryHandleLocalCommand({ ...dispatchBase, term: capM.term }, 'uname -m');
+  const unameM = await client.terminal('uname -m');
+  const unameMOut = String(unameM.stdout ?? '').trim();
   verdict(
     term,
     'Info',
-    'uname -m via dispatch',
-    handledM && capM.lines.join('') === detectUnameArch(),
-    `handled=${handledM} out=${capM.lines.join('') || '(empty)'}`
+    'uname -m via execution world',
+    unameM.ok && unameM.runtime === 'lifo' && unameMOut === 'wasm',
+    `runtime=${unameM.runtime} out=${unameMOut || '(empty)'}`
   );
 }

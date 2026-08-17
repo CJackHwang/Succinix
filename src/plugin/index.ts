@@ -14,7 +14,7 @@ export const Config = SuccinixConfigSchema;
 export function apply(ctx: Context, config: SuccinixConfig): void {
   const resolved = resolveConfig(config);
   const service = createSuccinixHostService(ctx, resolved, config);
-  ctx.provide('succinix-host', service);
+  ctx.provide('succinix', service);
   ctx.provide('fs', service.fs);
   ctx.provide('sandbox', service.sandbox);
   ctx.provide('terminals', service.terminals);
@@ -49,6 +49,22 @@ export {
   CAPABILITY_PATTERNS,
 } from './config.js';
 export { ensurePythonRuntime } from '../engine/index.js';
+export { ensureRubyRuntime, RUBY_RUNTIME_DIR, RUBY_RUNTIME_VERSION } from '../engine/index.js';
+export {
+  startRuntimeAssetBridge,
+  RUNTIME_REQUEST_ROOT,
+  type RuntimeAssetBridgeController,
+  type RuntimeAssetBridgeOptions,
+  startBrowserControlBridge,
+  CONTROL_REQUEST_ROOT,
+  type BrowserControlBridgeController,
+  type BrowserControlBridgeHandlers,
+  type BrowserControlBridgeOptions,
+  type BrowserControlAction,
+  type BrowserControlRequest,
+  type BrowserControlResponse,
+  TERMINAL_MAX_BUFFER_BYTES,
+} from '../engine/index.js';
 export { tokenize } from '../engine/tokenize.js';
 export {
   checkEnvironment,
@@ -101,21 +117,57 @@ export {
   addServiceDef,
   startService,
   stopService,
+  restartService,
   waitForProcessExit,
+  SERVICE_TEMPLATES,
+  serviceTemplate,
   type ServiceContext,
 } from '../services/index.js';
+export {
+  PACKAGE_MANIFEST_PATH,
+  PACKAGE_MANIFEST_VERSION,
+  readPackageManifest,
+  writePackageManifest,
+  recordPackageInstall,
+  recordPackageRemove,
+  packageManifestJson,
+} from '../pkg/index.js';
+export type { InstalledPackage, PackageManifest, PackageManifestFs } from '../pkg/index.js';
 export { DEFAULT_INSTANCE_BOOT_STEPS } from '../instance/index.js';
-export type {
-  LocalCommandCtx,
-  LocalCommandHandler,
-  TerminalOutput,
-  TerminalRpc,
-  TerminalSessionOptions,
-  SuccinixTerminalSession,
-} from '../terminal/index.js';
+export type { TerminalOutput } from '../terminal/output.js';
 export type { BootUI, LogKind } from '../terminal/ui.js';
 export type {
   ResolvedSuccinixConfig,
   SuccinixCapabilityPattern,
 } from './config.js';
 export * from './types.js';
+export {
+  TerminalClient,
+  createTerminalIdentity,
+  RpcTerminalClient,
+} from '../engine/index.js';
+export type {
+  BrowserRpcTerminalOptions,
+  TerminalTransportFs,
+} from '../engine/index.js';
+export {
+  USERLAND_PROFILE,
+  USERLAND_DENY_EXIT_CODE,
+  USERLAND_DENYLIST,
+  defaultUserlandCapabilities,
+  deniedCommandCapability,
+  denylistedCommandResult,
+  isDenylistedCommand,
+  createUserlandRegistry,
+} from '../userland/index.js';
+export type {
+  UserlandCommandStatus,
+  UserlandRuntime,
+  UserlandExecution,
+  UserlandCommandCapability,
+  UserlandCapabilitySnapshot,
+  UserlandRegistry,
+  UserlandCommandDefinition,
+  UserlandPackageSource,
+  UserlandServiceTemplate,
+} from '../userland/index.js';

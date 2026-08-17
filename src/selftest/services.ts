@@ -2,24 +2,24 @@
 import { verdict } from './runner.js';
 import type { TestContext } from './runner.js';
 import {
-  addServiceDef,
-  disableAutostart,
-  enableAutostart,
-  getServiceState,
-  readAutostart,
-  readServices,
-  removeServiceDef,
-  startService,
-  stopService,
-} from '@succinix/engine';
+  addExecutionService,
+  disableExecutionService,
+  enableExecutionService,
+  executionAutostart,
+  executionServiceState,
+  readExecutionServices,
+  removeExecutionService,
+  startExecutionService,
+  stopExecutionService,
+} from '../services/world-client.js';
 import { readLog, readBootLog, clearLog, flushLogs } from '../log.js';
 import { sleep } from '../util.js';
 
 export async function runServices(ctx: TestContext): Promise<void> {
   const { wc, client, ports, term } = ctx;
-  // ─── 服务管理（Services，TASK11）：声明式 service 命令族 ───
+  // 服务定义、enablement 和状态都从执行世界读取。
   const svcCtx = { wc, client, ports };
-  const svcDefs = await readServices(wc.fs);
+  const svcDefs = await readExecutionServices(svcCtx);
   const tinbaseDef = svcDefs.find((d) => d.name === 'tinbase');
   verdict(
     term,
@@ -33,19 +33,19 @@ export async function runServices(ctx: TestContext): Promise<void> {
   const SVC_TEST = 'selftest-svc';
   const SVC_PORT = 3457;
   const SVC_CMD = `node -e "http.createServer((q,s)=>s.end('hello-svc')).listen(${SVC_PORT})"`;
-  await addServiceDef(wc.fs, SVC_TEST, SVC_CMD, SVC_PORT);
-  const svcDefs1 = await readServices(wc.fs);
+  await addExecutionService(svcCtx, SVC_TEST, SVC_CMD, SVC_PORT);
+  const svcDefs1 = await readExecutionServices(svcCtx);
   const svcDef = svcDefs1.find((d) => d.name === SVC_TEST);
   verdict(term, 'Services', 'temporary def registered', !!svcDef, svcDef ? `name=${svcDef.name}` : 'def missing');
   if (svcDef) {
-    const started = await startService(svcCtx, SVC_TEST);
+    const started = await startExecutionService(svcCtx, SVC_TEST);
     verdict(term, 'Services', 'start returns pid', started.ok && Number(started.pid) > 0, started.message);
 
     // 等端口就绪 → running（进程表 + 端口注册表联合判定）。
     let running = false;
     const runDeadline = Date.now() + 15000;
     while (Date.now() < runDeadline) {
-      const st = await getServiceState(svcCtx, svcDef);
+      const st = await executionServiceState(svcCtx, svcDef.name);
       if (st.state === 'running') {
         running = true;
         break;
@@ -54,13 +54,24 @@ export async function runServices(ctx: TestContext): Promise<void> {
     }
     verdict(term, 'Services', 'start -> running', running, `port=${SVC_PORT} ready=${ports.has(SVC_PORT)}`);
 
-    const stopped = await stopService(svcCtx, SVC_TEST);
+    const stopped = await stopExecutionService(svcCtx, SVC_TEST);
     await sleep(500);
-    const stAfter = await getServiceState(svcCtx, svcDef);
+    const stAfter = await executionServiceState(svcCtx, svcDef.name);
     verdict(term, 'Services', 'stop -> stopped', stopped.ok && stAfter.state === 'stopped', stopped.message);
   }
-  const removed = await removeServiceDef(wc.fs, SVC_TEST);
-  const svcDefs2 = await readServices(wc.fs);
+
+  // 自启必须绑定仍然存在的 unit；重复启用由 ServiceManager 返回幂等状态。
+  const enabled = await enableExecutionService(svcCtx, SVC_TEST);
+  const enabledAgain = await enableExecutionService(svcCtx, SVC_TEST);
+  const autoList1 = await executionAutostart(svcCtx);
+  const autoCount = autoList1.filter((n) => n === SVC_TEST).length;
+  verdict(term, 'Services', 'autostart enable writes (dedup)', enabled && !enabledAgain && autoCount === 1, `count=${autoCount}`);
+  const dis = await disableExecutionService(svcCtx, SVC_TEST);
+  const autoList2 = await executionAutostart(svcCtx);
+  verdict(term, 'Services', 'autostart disable removes', dis && !autoList2.includes(SVC_TEST), `removed=${dis}`);
+
+  const removed = await removeExecutionService(svcCtx, SVC_TEST);
+  const svcDefs2 = await readExecutionServices(svcCtx);
   verdict(
     term,
     'Services',
@@ -68,16 +79,6 @@ export async function runServices(ctx: TestContext): Promise<void> {
     removed === true && !svcDefs2.some((d) => d.name === SVC_TEST),
     `removed=${removed}`
   );
-
-  // 自启：enable 写入（去重）→ disable 移除（文件断言，结束后零残留）。
-  await enableAutostart(wc.fs, SVC_TEST);
-  await enableAutostart(wc.fs, SVC_TEST);
-  const autoList1 = await readAutostart(wc.fs);
-  const autoCount = autoList1.filter((n) => n === SVC_TEST).length;
-  verdict(term, 'Services', 'autostart enable writes (dedup)', autoCount === 1, `count=${autoCount}`);
-  const dis = await disableAutostart(wc.fs, SVC_TEST);
-  const autoList2 = await readAutostart(wc.fs);
-  verdict(term, 'Services', 'autostart disable removes', dis === true && !autoList2.includes(SVC_TEST), `removed=${dis}`);
 
   // ─── 日志（Logs，TASK12）：journald 风格落盘 /var/log/succinix.log ───
   // 命令执行记录：跑一条真实命令 → log 出现该命令记录（exit=0）。

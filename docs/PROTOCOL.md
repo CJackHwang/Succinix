@@ -1,371 +1,294 @@
-# Succinix TerminalExecutor — File RPC Protocol (authoritative)
+# Succinix RPC and Interactive Terminal Protocols
 
-> This is the **contract** for the Succinix command-execution engine (`src/engine/`).
-> Ecosystem consumers should be able to build an alternative client or host against this
-> document alone, without reading the implementation. The in-repo implementation is the
-> reference: `src/engine/client.ts` (browser side) and `src/engine/host/` (in-container
-> daemon). Protocol version: **1**.
+> Authoritative contract for `@succinix/engine@0.7.0`. The batch RPC protocol
+> version is **2**. The independent interactive-terminal mailbox currently has
+> protocol version **1**. The reference implementations are
+> `src/engine/client.ts`, `src/engine/host/`, and `src/terminal/`.
 
-## 1. Overview
+## 1. Execution boundary
 
-Succinix runs a persistent **host daemon** (`node host.js`) inside a WebContainer.
-The browser holds a **TerminalClient** that sends commands and receives results through
-the container's shared filesystem. There is no socket, no stdin pipe, and no shared
-result file — every request gets its own file. This is what makes commands reliable in an
-environment where interactive stdin is known to be unreliable.
+The browser is the control/device plane. The WebContainer host and its
+per-instance Lifo Sandbox are the execution world. Browser code may transport
+requests and terminal frames, but it does not parse shell lines, keep shell
+history, implement standard commands, or own editor/TUI state.
 
+Two filesystem transports cross that boundary:
+
+- **Batch RPC v2**: `/cmd.json` -> `/ack-<id>.json` ->
+  `/result-<id>.json`.
+- **Interactive terminal v1**: session-scoped frames under
+  `/.succinix-terminal/<instance>/<session>/`.
+
+They serve different purposes. Batch RPC returns one bounded result object.
+The terminal mailbox streams device input, output, resize, control, and
+lifecycle frames into the same Lifo Shell.
+
+## 2. Batch RPC v2
+
+### 2.1 Delivery sequence
+
+```text
+Browser TerminalClient                    WebContainer host
+        | write /cmd.json                         |
+        |---------------------------------------->|
+        | poll /ack-<id>.json                     | validate + accept
+        |<----------------------------------------|
+        | poll /result-<id>.json                  | execute in instance
+        |<----------------------------------------|
+        | read and delete ack/result files        |
 ```
-Browser (TerminalClient)                Container (node host.js)
-        │  write /cmd.json                    │
-        │  ──────────────────────────────────►│  poll every 50ms
-        │                                     │  dispatch command
-        │  poll /result-<id>.json             │
-        │  ◄──────────────────────────────────│  write /result-<id>.json
-        │  read + delete                       │
-```
 
-**Single-slot channel.** `/cmd.json` is a single-file mailbox: at most one request can be
-in flight. The browser client serializes all requests through a mutex queue, and the host
-processes one request at a time. This is deliberate — it makes failures deterministic.
+`/cmd.json` remains a single-slot mailbox. All `TerminalClient` instances that
+share one WebContainer also share one FIFO delivery queue, request prefix,
+sequence, and boot nonce. Each accepted request has independent acknowledgement
+and result files, so a late asynchronous result cannot overwrite another
+request.
 
-## 2. Request format (`/cmd.json`)
+### 2.2 Request envelope
 
-The browser writes a JSON object to `/cmd.json`:
-
-```jsonc
-{
-  "protocol": 1,        // protocol version (added in v1; a missing field is treated as 1)
-  "id": 42,             // unique request id, strictly increasing per client
-  "cmd": "run",         // one of: run | spawn | ps | kill | interrupt | cwd | setCwd | ping | exit
-  "instanceId": "c-1",  // instance context (optional, additive; missing = default instance)
-  "opts": {             // command-specific options (optional)
-    "command": "...",   // full command string (run / spawn)
-    "pid": 1234,        // target process id (kill)
-    "forceAfterMs": 5000, // optional SIGKILL fallback grace for kill (service/db stop)
-    "cwd": "/workspace/proj", // target session cwd (setCwd; optional)
-    "timeout": 30000    // host-side timeout in ms (run / spawn; optional)
-  }
+```ts
+interface RpcV2Envelope {
+  protocolVersion: 2;
+  id: string | number;
+  cmd: string;
+  bootNonce: string;
+  instanceId?: string;              // missing means "default"
+  runtimeHint?: 'node' | 'python' | 'lifo' | 'protocol';
+  opts?: Record<string, unknown>;
+  queuedAt?: number;
 }
 ```
 
-| `cmd`       | Purpose                                        | `opts`               |
-|-------------|------------------------------------------------|----------------------|
-| `run`       | Execute one command (unified routing)          | `command`, `timeout` |
-| `spawn`     | Start a background long-running process (node) | `command`, `timeout` |
-| `ps`        | List the process table                         | —                    |
-| `kill`      | Terminate a real child process                 | `pid`, optional `forceAfterMs` |
-| `interrupt` | Kill the current foreground `run` child (Ctrl+C) | —                  |
-| `cwd`       | Return the session working directory           | —                    |
-| `setCwd`    | Explicitly set the session working directory   | `cwd`                |
-| `ping`      | Liveness probe                                 | —                    |
-| `exit`      | Graceful shutdown handshake                    | —                    |
+String ids must match `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Numeric ids must be
+non-negative safe integers. The id is embedded in the ack/result filename, so
+invalid ids fail before any path is constructed.
 
-The host polls `/cmd.json` every **50 ms**. It tracks the last processed `id` and ignores
-a request whose `id` is not a number or equals the previous one (dedup). Unknown `cmd`
-values are answered with `{ "ok": false, "error": "unknown command: <cmd>" }`.
+The host requires `protocolVersion === 2`, a valid `id`, a non-empty
+`bootNonce`, and a string `cmd`. Protocol v1 and missing version fields are
+rejected with `UNSUPPORTED_PROTOCOL`; there is no silent compatibility mode.
+Malformed requests use one of these structured error codes:
 
-After processing a request the host **deletes `/cmd.json`** (P0-2). `processedId` is an
-in-process dedup that starts at `-1` in a freshly spawned host, so a stale `/cmd.json`
-surviving a watchdog kill + respawn would otherwise be executed once by the new host; the
-delete closes that window (the browser simply rewrites the file on its next request).
+```text
+MALFORMED_JSON
+INVALID_REQUEST
+INVALID_REQUEST_ID
+UNSUPPORTED_PROTOCOL
+STALE_BOOT_NONCE
+```
 
-## 3. Response format (`/result-<id>.json`)
+When a valid id is available, the error is returned through that request's
+result file. Otherwise the host writes `/rpc-error.json`.
 
-The host writes exactly one result file per request, named after the request id.
-The browser polls the file, reads it, and **deletes it** (read-then-delete). A result
-file is never shared between requests, so an asynchronous `close` write can never
-overwrite a newer result.
+### 2.3 Strict acknowledgement
 
-Common fields:
+Acceptance creates `/ack-<id>.json` atomically:
 
-```jsonc
-{
-  "id": 42,            // echoes the request id
-  "ok": true,          // overall success
-  "exitCode": 0,       // process exit code (run/spawn); -1 when no process ran
-  "stdout": "...",     // captured output (run)
-  "stderr": "...",     // captured error output (run)
-  "runtime": "node",   // "node" | "lifo" — which route executed the command
-  "kind": "pong"       // protocol-command discriminator (ps/cwd/ping/exit)
+```ts
+interface RpcDeliveryAck {
+  protocolVersion: 2;
+  id: string | number;
+  bootNonce: string;
+  instanceId: string;
+  acceptedAt: number;
 }
 ```
 
-Per-command response fields:
+The browser does not begin result polling until it sees an acknowledgement
+whose `(protocolVersion, id, bootNonce, instanceId)` exactly matches the
+request. The default instance is normalized to the literal `default`. A stale,
+cross-instance, or wrong-nonce acknowledgement is ignored. Delivery times out
+after the smaller of the command timeout and 5 seconds.
 
-| `cmd`    | Success shape                                                    |
-|----------|------------------------------------------------------------------|
-| `run`    | `{ ok, exitCode, stdout, stderr, runtime }` (+ optional `cwd` on a successful `cd`, TASK23) |
-| `spawn`  | `{ ok: true, pid, runtime: "node" }` (immediate); on confirm-window failure `{ ok: false, exitCode, error, runtime }` |
-| `ps`     | `{ ok, kind: "ps", processes: [{ pid, cmd, status, startTime, scope, containerId?, exitCode?, outputTail? }] }` — filtered to the requesting instance + `system` when `instanceId` is present |
-| `kill`   | `{ ok, killed, message }`                                        |
-| `interrupt` | `{ ok, kind: "interrupted", pid, killed, message }` — `pid` is a number when a current foreground `run` child was targeted (SIGTERM sent), `null` when no interruptible run is in flight |
-| `cwd`    | `{ ok, kind: "cwd", cwd }`                                       |
-| `setCwd` | `{ ok, kind: "cwd", cwd }` (the new session cwd)                 |
-| `ping`   | `{ ok, kind: "pong" }`                                           |
-| `exit`   | `{ ok, kind: "bye" }`                                            |
+The host keeps a bounded set of 4,096 processed ids. A duplicate delivery gets
+another acknowledgement but is never executed twice; its original independent
+result remains readable.
 
-### Interrupt (`interrupt`)
+### 2.4 Result envelope
 
-`interrupt` implements browser **Ctrl+C** (P5-15). The host tracks the pid of the most
-recent foreground `run` child (a real Node subprocess); `interrupt` sends it SIGTERM.
-Scope: it only targets that foreground `run` — **background `spawn` services are never
-interrupted**, and pure Lifo commands (which run inside the sandbox, not as a table child)
-are not interruptible (the sandbox has no abort API). With `instanceId` present the target
-is the requesting instance's current `run` (per-instance keying, additive). After the kill, the child's `close`
-event settles the original `run` request (its result file appears) and clears the tracked
-pid, so the browser's in-flight wait unblocks. The client sends it via `interruptDirect()`
-— a direct `/cmd.json` write that bypasses the serialized queue (a queued `interrupt` would
-only run *after* the very command it is meant to stop).
+Every result repeats the same strict identity:
 
-### Session cwd (`cwd` / `setCwd`)
+```ts
+interface RpcV2Result {
+  protocolVersion: 2;
+  id: string | number;
+  bootNonce: string;
+  instanceId: string;
+  ok: boolean;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  runtime?: 'node' | 'python' | 'lifo' | 'ruby' | 'wasi';
+  error?: string;
+  timing?: {
+    queueMs?: number;
+    hostMs?: number;
+    resultPollMs?: number;
+    totalMs?: number;
+  };
+  [key: string]: unknown;
+}
+```
 
-The host maintains a **session cwd** (initial value `process.cwd()`, persisted to
-`/etc/succinix.cwd` and restored on host start). Every real Node/Python child process is
-spawned with `cwd = session cwd`. When a `run` command that starts with `cd` succeeds in
-the Lifo sandbox **and** the new cwd is under the `/workspace` mount, the host syncs the
-session cwd to it and includes the new value as a `cwd` field on the `run` result.
-`cd` to a missing directory keeps the session cwd unchanged. `setCwd` sets it explicitly
-(absolute path, must be an existing directory) — it is the explicit protocol form of the
-same sync and is optional for clients (interactive `cd` already syncs automatically).
+The browser accepts a result only when the full identity tuple matches. Stale
+results from another page epoch or instance are ignored. After a valid read it
+deletes the result. Host writes use a temporary file plus rename so readers
+never observe a partial JSON document.
 
-### TTL / prune
+The host polls `/cmd.json` every 50 ms. The client polls results with an
+exponential delay from 25 ms to 150 ms. `ping`, `ps`, and `cwd` are read-only
+and may be delivered once more after a transport failure; `run`, `spawn`,
+`kill`, `interrupt`, `reset-instance`, and `exit` are never automatically
+retried.
 
-The host prunes stale `result-*.json` files (requests the browser abandoned by timing
-out) every **60 s**, deleting any file older than the result TTL (**120 s** by default).
-The TTL can be overridden by writing `{ "resultTtlMs": <ms> }` to `/etc/succinix.engine.json`
-before the host starts (the engine's `boot` writes it only when `resultTtlMs` is passed).
+### 2.5 Commands
 
-### Instance context (`instanceId`)
+| `cmd` | Purpose | Relevant `opts` |
+| --- | --- | --- |
+| `run` | Execute a command through unified routing | `command`, `cwd`, `env`, `timeout` |
+| `spawn` | Start a background real child process | `command`, `cwd`, `env`, `interactive` |
+| `ps` | Return the unified real-child and Lifo process view | `runtime`, `scope`, `instanceId` |
+| `kill` | Signal a real-child or projected Lifo PID | `pid`, `signal`, `forceAfterMs`, `instanceId` |
+| `interrupt` | Abort the foreground command for one instance | none |
+| `cwd` | Return the instance session cwd and host root | none |
+| `setCwd` | Set an existing absolute cwd under `/workspace` | `cwd` |
+| `reset-instance` | Kill instance-owned work and reset its Sandbox/cwd state | none |
+| `ping` | Liveness probe | none |
+| `exit` | Graceful protocol handshake | none |
 
-`instanceId` is an **additive** optional request field (M3). A request without it — the
-behavior of every existing client — targets the **default instance** and is byte-for-byte
-compatible with the single-instance protocol. Each result file echoes the normalized
-`instanceId` (`"default"` when absent) so the client can verify routing.
+`ping` and `interrupt` use a priority queue while an ordinary request is busy.
+The host only consumes these two commands on the priority path. When removing
+`/cmd.json`, it first verifies that the file still contains the processed id;
+this prevents deletion of a priority request that replaced the mailbox.
 
-Per-instance semantics on the shared host (one page = one RPC channel + one host):
+### 2.6 Unified routing
 
-| Surface    | Behavior |
-|------------|----------|
-| State files | Session cwd (`/etc/succinix.cwd`), env (`/etc/succinix.env`), settings / services / autostart / motd / `succinix.engine.json` resolve under the instance state root `<stateRoot>/etc/...` (`stateRoot = /workspace/.succinix-<id>`, default = `/etc`). |
-| `ps`       | With `instanceId`, the response lists only that instance's processes **plus** `system` processes. Without it, all processes (unchanged). Ownership is heuristic (spawn cwd), not a security boundary. |
-| `kill`     | With `instanceId` (non-default), only processes owned by that instance may be killed; `system` processes and foreign/unattributed processes are rejected with `permission denied: process <pid> is not owned by instance '<id>'`. Default instance: unchanged (any table entry). Organizational only — same heuristic caveat as `ps`. |
-| `interrupt` | Only interrupts the requesting instance's current foreground `run` child (`Map<instanceId, pid>`; default key = previous single-value behavior). Interrupting A never kills B's run. |
-| Shared queue | `/cmd.json` remains a single serialized mailbox; `instanceId` only distinguishes ownership. |
-| Shared runtime | The Lifo sandbox is page-level (one per host): interactive Lifo cwd is **not** per-instance. Per-instance cwd is a browser-side logical value; node/python spawns use explicit absolute cwd. See SDK.md "Multi-instance" for the full boundary. |
+- A plain `node`, `npm`, or `npx` command starts the real WebContainer binary.
+- A plain `python`, `python3`, `pip`, or `pip3` command uses the resident
+  Pyodide daemon.
+- Everything else runs in the instance's Lifo Sandbox.
+- A Node/Python command containing shell syntax runs through Lifo so pipes,
+  chains, and redirects share one shell context; runtime adapters forward the
+  relevant segment to the real runtime.
+- `ruby`, `wasi-run`, and `wasi-info` are Lifo command adapters backed by their
+  execution-world runtimes.
 
-**Multi-user (U1):** `userId` and `instanceId` are the same field — the demo URL
-`?user=<id>` maps to `instanceId=<id>` plus a per-user home
-(`/workspace/users/<id>`; the session cwd is seeded to the home's Lifo view, so the
-prompt renders `~` and node/python spawns start there). `ps` / `kill` above apply to
-users exactly as to instances; the standalone app (`guest`) keeps the default-instance
-behavior.
+Each instance owns one `SandboxContext`: Sandbox, cwd/env, shell jobs, terminal
+hub, command registry, package registry, and service registry. `/workspace`
+mounts the same `node:fs` tree used by real Node and Python children. Private
+Lifo paths such as `/tmp` are not valid cwd values for real child processes.
 
-Validation note: two browser tabs are independent containers (separate hosts), so they never
-exercise the shared-host `instanceId` routing — that path is covered by protocol-level unit
-tests (`Map` keying, `ps` filtering, per-instance interrupt), not by the dual-tab e2e demo.
+Single-command stdout/stderr is capped at approximately 1 MiB and retains the
+tail. This limit applies to the batch result, not to terminal streaming.
 
-## 4. Command routing
+## 3. Interactive terminal mailbox
 
-The host applies a single, fixed routing rule to `run` commands:
+The public app seam is `InteractiveTerminalService.open()`:
 
-- **`node|npm|npx`** (followed by whitespace or end of command) → a **real Node.js child
-  process** via `child_process.spawn`. Result `runtime: "node"`. Exception (TASK24): if the
-  tokenized argv contains a **shell metacharacter** token (`&&`, `||`, `|`, `>`, `>>`, `<`,
-  `2>`, `2>&1`, `;`, `&`, `$(`, or a glued redirect like `>file`, `1>out`, `&>all`) the
-  **whole command** runs through the Lifo shell instead (pipes/chains/redirects parsed there),
-  result `runtime: "lifo"`; each `node`/`npm`/`npx` segment in the chain is forwarded to the
-  **real binary** by the host (the Lifo shell's in-browser JS-interpreter shims are overridden).
-  A pure node command with no metachars is unchanged (direct spawn).
-- **`python|python3|pip|pip3`** (followed by whitespace or end of command) → a **real Node.js
-  child process** running the resident Pyodide daemon (`python-daemon.js`, Pyodide 314.0.4 /
-  Python 3.14.2). Result `runtime: "node"` (it *is* a node child process; the routing field stays
-  stable). Exception (TASK24 复审): if the tokenized argv contains a shell metacharacter token the
-  **whole command** runs through the Lifo shell (result `runtime: "lifo"`), and each
-  `python`/`python3`/`pip`/`pip3` segment in the chain is forwarded to the **same resident daemon**
-  — `python -c "print(1)" | grep 2` → empty, `python -c "print(42)" | grep 42` → `42`. The runtime
-  is a system asset injected lazily on first use — `python -c "<code>"` executes a code string,
-  `python <script.py>` executes a script (absolute paths are resolved against the browser
-  filesystem root = host process cwd), `python -m pip install <pkg>` maps to Pyodide's micropip.
-  Interactive REPL is not supported (AGENTS.md boundary); `pip` is available via micropip.
-- **everything else** → the **Lifo sandbox** (`sandbox.commands.run`). Result `runtime: "lifo"`.
+```ts
+interface InteractiveTerminalService {
+  open(options: {
+    instanceId: string;
+    cols: number;
+    rows: number;
+  }): Promise<InteractiveTerminalSession>;
+}
 
-The command string is split with a shlex-style tokenizer (`src/engine/tokenize.ts`): single/double
-quotes group whitespace, a backslash escapes the next character (`\"` inside quotes → literal `"`,
-`\\` → `\`, `\'` in single quotes → `'`), and an **unterminated quote throws**
-`unterminated quote in command` (reported as `{ ok: false, exitCode: -1, stderr: "unterminated quote in command", runtime: "node" }`)
-instead of silently truncating. No variable expansion. Empty commands are answered with
-`{ ok: false, exitCode: -1, stderr: "empty command", runtime: "lifo" }`.
+interface InteractiveTerminalSession {
+  readonly id: string;
+  send(data: string): Promise<void>;
+  resize(cols: number, rows: number): Promise<void>;
+  onData(listener: (data: string) => void): () => void;
+  signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL'): Promise<void>;
+  close(): Promise<void>;
+}
+```
 
-### Error semantics
+`host.terminal.open()` delegates to the default executor's interactive service.
+`SuccinixTerminalSession`, `terminal.create()`, `TerminalOutput`, and browser
+local-command handlers do not exist in v0.7.
 
-| Condition                       | Response                                                            |
-|---------------------------------|---------------------------------------------------------------------|
-| Unknown protocol `cmd`          | `{ ok: false, error: "unknown command: <cmd>" }`                    |
-| Node subprocess not found       | `{ ok: false, exitCode: -1, stderr: String(e), runtime: "node" }`   |
-| Node subprocess times out       | child killed; `{ ok: false, exitCode: -1, stderr: "node subprocess timed out after <ms>ms, killed", runtime: "node" }` |
-| Node/npm stderr contains `EACCES` + `/usr/local` | original stderr, then a newline + `hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)` (TASK24) |
-| Python assets not injected      | `{ ok: false, exitCode: -1, stderr: "python runtime failed to load: assets not injected yet ...", runtime: "node" }` |
-| Lifo command throws             | `{ ok: false, exitCode: -1, stderr: <first 200 chars>, runtime: "lifo" }` |
-| `spawn` with a non-node command | `{ ok: false, error: "spawn only supports node/npm/npx background processes ...", runtime: "lifo" }` |
-| `kill` of a non-table pid       | `{ ok: false, killed: false, message: "process <pid> not in process table; Lifo-side processes are list-only (kill not supported)" }` |
-| `setCwd` with a bad path        | `{ ok: false, error: "setCwd: cwd must be an absolute path ..." / "setCwd: not a directory: ..." }` |
+### 3.1 Identity and paths
 
-**Output cap.** Each command's `stdout` and `stderr` are independently capped at ~1 MB
-(tail kept). The host trims incrementally at 2× the cap and applies the final cut when
-settling the result, so result files are bounded even for huge dumps.
+Every terminal frame carries:
 
-## 5. Process model
+```ts
+interface TerminalIdentity {
+  protocolVersion: 1;
+  sessionId: string;
+  instanceId: string;
+  bootNonce: string;
+}
+```
 
-- **`spawn`** starts a background long-running process (node family only; Lifo has no
-  background concept). The host returns immediately with the pid, and the process's
-  output streams into its process-table entry (`outputTail`, last ~500 chars).
-- **Startup-confirmation window (2 s).** A spawned process that exits non-zero within
-  2 seconds is reported as a **failure** (`ok: false`) — e.g. an `npx` package that does
-  not exist, or a node script with a syntax error. Healthy services (tinbase, http
-  servers) survive the window with no caller-visible change.
-- **Process table** (`host-procs`): every real child is registered with `{ pid, cmd,
-  status: running|exited, startTime, exitCode?, outputTail? }`. The table caps at 100
-  entries, pruning the oldest exited entries.
-- **Process ownership** (TASK-CISOL): each `ps` entry additionally carries `scope`
-  (`system` | `container` | `unknown`) and, for `scope=container`, `containerId`
-  (e.g. `c-1`). Classification is heuristic: commands matching Succinix system assets
-  (`node host.js`, `node python-daemon.js`, any `/usr/lib/succinix/` path) → `system`;
-  otherwise a child spawned with its cwd inside a container root (`.../c-<id>`, as happens
-  when the caller runs `cd /workspace/c-<id> && <cmd>`) → `container` + `containerId`;
-  otherwise `unknown`. These are new fields — the existing `pid/cmd/status/...` contract
-  is unchanged.
-  - ⚠️ **Not a security boundary.** `scope` is derived from the command string + launch
-    cwd and can be spoofed (any user process whose command looks like a system asset is
-    classified `system`). It is for **UI display, query filtering and organizational
-    kill authorization only** — do not use it as a trust basis for real permission /
-    security isolation. For hard semantics, switch to explicit declaration (the
-    spawner passes `scope` at spawn time).
-- **`kill`** sends SIGTERM to a table entry; the entry flips to `exited` on the child's
-  `close` event. When `opts.forceAfterMs` is set, the host escalates to SIGKILL after
-  that grace period if the entry is still running, so lifecycle stop paths can guarantee
-  termination. A failed spawn (e.g. ENOENT) is marked `exited` explicitly because
-  `close` never fires in that case.
-- **Lifo-side processes are list-only** — they are not in the table and `kill` reports
-  the "not in process table" message rather than pretending to terminate them.
+The mailbox root is `/.succinix-terminal`. Instance/session path components
+are validated and URL-encoded. A session contains:
 
-## 6. Port events
+- `open.json`: identity, initial `cols`/`rows`, and last acknowledged output;
+- `in-<seq>.json`: input, resize, focus, clear, or dispose frames;
+- `out-<seq>.json`: output or control frames;
+- `ack.json`: highest contiguous output sequence consumed;
+- `error.json`: `STALE_NONCE`, `INVALID_FRAME`, or `BACKPRESSURE`.
 
-The engine does not tunnel ports itself; it relays WebContainer's port lifecycle to the
-host application:
+Input and output sequences are monotonic. The browser consumes only the next
+contiguous output frame, acknowledges it, and waits when a gap exists so the
+host can replay the missing frame. Reconnect preserves the last output ack.
+Host respawn rotates the terminal boot nonce, drops input queued for the dead
+host, and rejects old-nonce frames.
 
-- `server-ready (port, url)` → `onServerReady(port, url)` (the host application records
-  the preview URL).
-- `port (port, "close")` → `onServerClosed(port)` (the host application removes the URL).
+Frames are flushed every 16 ms and data is split at 32 KiB. Pending device
+input has a 1 MiB backpressure watermark. Resize frames update live `cols` and
+`rows`; Ctrl+C is transported as `SIGINT`/ETX to the same Lifo foreground
+command. Dispose closes the terminal transport and detaches it from the
+instance Sandbox.
 
-These callbacks are registered by the engine's `bootEngineHost` (`src/engine/index.ts`)
-when it spawns the host. They are app-level notifications, not part of the file-RPC wire
-protocol.
+The entire mailbox tree is runtime state and is excluded from snapshots.
 
-## 7. Timeout / retry
+## 4. Process and service views
 
-### Browser-side (client) waits
+`ps` merges real host children with every relevant Lifo
+`ProcessRegistry`. Lifo-local PIDs are projected into stable host-local public
+PIDs starting at `1_000_000_000`, avoiding collisions between per-instance
+Sandboxes and real children. Entries include runtime, instance, cwd, state,
+scope, start time, and optional interactive terminal identity.
 
-| Call                         | Default wait |
-|------------------------------|--------------|
-| `exec` / `terminal`          | 30 s         |
-| `spawn`                      | 5 s          |
-| `pingDirect` (watchdog)      | 30 s         |
+`kill` resolves either kind of PID. Real children use Node signals with an
+optional force-after grace period; projected Lifo PIDs are signalled through
+the owning `ProcessRegistry`. Non-default instances can only act on their own
+organizational process view. This partition is not a security boundary.
 
-A wait is the **RPC polling budget** — how long the browser waits for the result file.
-The host may keep working after the browser gives up; the stale result is pruned by TTL.
+Service templates are installed into each Sandbox's Lifo service manager.
+`systemctl` therefore observes the same per-instance process and service world.
+The host facade `host.services` exposes declarative `list`, `status`, `start`,
+`stop`, `restart`, `enable`, `disable`, `add`, `remove`, and `autostart`
+operations. Templates include Node HTTP, Vite, static HTTP, Python HTTP,
+tinbase (`--engine wasm`), WebSocket, and worker services.
 
-### Host-side command timeouts
+## 5. Lifecycle and cleanup
 
-| Route      | Default timeout | Override                     |
-|------------|-----------------|------------------------------|
-| Lifo       | 25 s            | `opts.timeout` on `run`      |
-| Node child | 30 s            | `opts.timeout` on `run`      |
+- Abandoned `result-*.json` files are pruned after 120 seconds by default;
+  `resultTtlMs` can override the host-wide cleanup interval.
+- `cmd.json`, `ack-*.json`, `result-*.json`, `rpc-error.json`, and the terminal
+  mailbox are excluded from snapshot data.
+- Reset/dispose aborts foreground work, background jobs, services, terminal
+  transport, and the per-instance Sandbox.
+- Page-level host respawn does not create a browser shell or restore stale
+  terminal input. Batch and terminal identity checks fail closed.
 
-On timeout the host kills the node child and settles the result; the browser sees a
-non-zero exit with a `timed out` stderr message.
+## 6. Deliberate limits
 
-### Retry
+- File RPC is the reliable batch channel; it is not a generic PTY.
+- The interactive mailbox terminates at Lifo's public `ITerminal` and
+  `CommandContext.stdin`/`setRawMode` seam. It does not provide stdin for
+  arbitrary real Node/Python child-process REPLs.
+- Ports are WebContainer preview URLs, not inbound sockets.
+- Permission bits, symlinks, hard links, native compilers, and a real kernel
+  are not simulated.
 
-Only **idempotent, read-only** protocol commands — `ping`, `ps`, `cwd` — are retried once
-on RPC failure (re-sending them is safe). `run`, `spawn`, `kill`, `exit` are never
-retried by the client.
+## 7. Public entry points
 
-### `pingDirect` watchdog
-
-The host-liveness watchdog probes the host with a direct `ping` that **bypasses the mutex
-queue**, so a long command holding the queue cannot delay liveness detection. The probe is
-skipped (neutral) when the channel is busy: if there are queued-but-unstarted requests, or
-the last `/cmd.json` write is within the **250 ms** host-poll margin (the host may not have
-read it yet). `true` = pong, `false` = timeout (host unreachable), `null` = skipped.
-
-## 8. Client behavior
-
-- **Serialization.** All requests go through one FIFO queue; a request that times out
-  does not break the chain.
-- **Adaptive polling.** The browser polls the result file starting at 25 ms and backs off
-  exponentially to a 150 ms ceiling, so fast commands return quickly and long commands do
-  not hammer the filesystem.
-- **Read-then-delete.** The result file is removed immediately after a successful read.
-- **Protocol version.** Every request carries `protocol: 1`. A missing field is treated
-  as version 1. The host does **not** strictly reject mismatched versions — unknown
-  fields are ignored, so the version is advisory rather than a hard gate. Future changes
-  should stay backward compatible; a breaking change would bump the version in this
-  document and clients would adapt to the new response shape, not be refused outright.
-
-## 9. Engine public API (summary)
-
-In 0.6.0 the engine is a Cordis plugin for `@deepseek-ai/cordis@4.0.1`:
-`@succinix/engine` exports `{ name: 'succinix', apply, Config }`, provides the
-dsh service keys `ctx.fs` / `ctx.sandbox` / `ctx.terminals` /
-`ctx.sessionPersistence`, and exposes app lifecycle through the internal
-`succinix-host` seam. The pre-0.6.0 standalone SDK exports
-(`createTerminalExecutor`, `createSuccinixInstance`, `./terminal`,
-`./instance`) and the single-key service are removed; see
-[MIGRATION.md](./MIGRATION.md).
-
-The package still wires the same low-level pieces inside `src/engine/`:
-
-- `TerminalClient` — the file-RPC client (rich: `terminal`, `exec`, `spawn`,
-  `pingDirect`); used by the Succinix frontend and the plugin runtime.
-- `bootEngineHost(wc, client, hooks)` / `waitForHostReady(client)` — low-level boot
-  helpers shared by the plugin and the Succinix boot sequence.
-
-The `succinix-host` seam keeps the command-style facade semantics:
-`host.executor.exec(command, opts)`, `spawn(command, opts)`,
-`listProcesses()`, `kill(pid)`, `ping()`, and `dispose()`.
-`TerminalExecutor.exec` returns `{ ok: false, timedOut: true }` instead of throwing
-when the RPC wait expires (the raw `TerminalClient.exec` still throws). `spawn` returns
-the full `ExecResult` (a superset of `{ pid }`) so callers can read `ok`/`runtime`/`error`.
-
-The dsh surface maps the same runtime:
-
-- `ctx.fs` exposes file primitives over the shared WebContainer filesystem.
-- `ctx.sandbox.confine(argv, policy)` wraps Lifo argv synchronously and fails
-  closed for `node|npm|npx`.
-- `ctx.terminals` is the owner-scoped PTY registry.
-- `ctx.sessionPersistence` is the event-sourced JSONL log.
-
-See [SDK.md](./SDK.md) for the plugin packaging/embedding design,
-[PLUGIN.md](./PLUGIN.md) for third-party consumption, and `src/engine/` for the
-reference implementation.
-
-## 10. Known boundaries
-
-These are intentional constraints of the environment/protocol:
-
-- **Interactive stdin** is unreliable in WebContainer — file RPC replaces it. `log -f`
-  and REPL-style processes are not supported. This is why `python` has no interactive
-  REPL (use `python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>`). `pip`
-  is available via Pyodide's micropip (pure-Python wheels persist across refresh via the
-  NODEFS site-packages; compiled wheels such as numpy need a `pip install` after refresh —
-  the text snapshot does not carry `.so` files, see `docs/LANGUAGES.md`).
-- **Session cwd sync covers the `/workspace` mount only**: a Lifo `cd` into a VFS-private
-  path (e.g. `/tmp`, `/home/user`) succeeds in Lifo but has no host-filesystem equivalent,
-  so the session cwd is left unchanged (Node/Python children keep the last synced cwd).
-- **CORS** — `curl` to sites without CORS headers fails; use `https://r.jina.ai/<url>`.
-- **Symlinks / hard links** are not supported by the Lifo VFS.
-- **1 MB output cap** — stdout/stderr keep only the tail past 1 MB.
-- **Lifo kernel lazy load** — `host.js` stays lightweight; the ~1 MB `lifo-core.js`
-  bundle is loaded dynamically on the first Lifo command (with a 150 ms background
-  prewarm). The first Lifo command can be slower than later ones.
-- **Single-slot channel** — no true concurrency; parallel commands serialize.
+Most consumers use `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, and
+`ctx.sessionPersistence`. Trusted app integrations may use the internal
+`succinix` seam for `executor`, `terminal.open`, snapshots, ports,
+services, process views, lifecycle, and typed `succinix/*` events. The removed
+pre-0.6 standalone exports and browser-side shell APIs are not compatibility
+surfaces.

@@ -1,179 +1,312 @@
 // host run 域（O3 拆分）：统一路由（node|npm|npx → 真 Node；python → daemon；其余 → Lifo）。
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
-import { hasShellMetaToken, tryTokenize } from '../tokenize.js';
-import { registerProcess } from '../host-procs.js';
-import { pythonDaemon, PYTHON_DAEMON_JS } from '../python-daemon-client.js';
-import { WORKSPACE_MOUNT, PIP_PREFIX_RE, classifyPrefix, classifyRoute, pythonRuntimeArgs, mapDataDirArgs, lifoSpawndCwd, lifoCwdToSessionCwd, capOutput, withEaccesHint, CD_PREFIX_RE } from '../host-route.js';
-import { getSessionCwd, setSessionCwd, mergedEnv, currentInstanceId, spawnCwd } from './config.js';
-import { attachOutputCollector, spawnChild } from './spawn.js';
+import { hasShellMetaToken, hasUnsupportedHereDocument, tryTokenize } from '../tokenize.js';
+import { WORKSPACE_MOUNT, browserPathToLifoCwd, canonicalizeVirtualPath, classifyPrefix, classifyRoute, mapDataDirArgs, lifoCwdToSessionCwd, capOutput, instanceStateRootFor, instanceStateFile } from '../host-route.js';
+import { getSessionCwd, setSessionCwd, persistedEnv } from './config.js';
+import { spawnChild } from './spawn.js';
 import { writeResult, instanceOf, type CommandRequest } from './rpc.js';
+import type { RpcRequestId } from '../rpc-v2.js';
+import type { ITerminal } from '@lifo-sh/core';
+import { TerminalHub } from '../terminal-hub.js';
+import { registerRealBinaryCommands } from './real-binaries.js';
+import { runPython } from './run-python.js';
+import { applyUserlandRegistryToSandbox, createSandboxUserlandRegistry } from './userland.js';
+import { USERLAND_REGISTRY_PATH, parseUserlandRegistrySnapshot } from '../../userland/index.js';
+import { restoreServiceEnablement } from './service-world.js';
+import { LifoProcessProjection } from './process-world.js';
+import type { ProcInfo, KillResult } from '../host-procs.js';
+import { killProjectedLifoProcess, listProjectedLifoProcesses } from './process-commands.js';
+import { attachTerminalContext, detachTerminalContext } from './terminal-context.js';
+import { mountPersistentLifoState, persistentLifoMounts, type PersistentLifoMounts } from './state-mounts.js';
+import { installPackageManifestTracking, reconcileRegisteredUserlandPackages } from './package-world.js';
+import { requestBrowserControl } from './control.js';
 
 // Lifo 命令默认超时（与 node 子进程的 NODE_TIMEOUT_MS 分开：纯 Lifo 命令一般秒级完成）。
 const LIFO_TIMEOUT_MS = 25000;
 
-// TASK18：Lifo 内核懒加载 + 延迟预热（评估成本后的选择）。
-// @lifo-sh/core 单独 bundle（lifo-core.js，~1MB），解析执行都慢；若静态 import 进 host.js，
-// host 启动就要解析整个 1MB bundle，实测 boot 探活 ping 被拖慢 ~640ms。
-// 因此：host.js 保持轻量（RPC/进程表/node 子进程），Lifo 内核经动态 import('../lifo-core.js')
-// 在首次使用时加载；并延迟预热（setTimeout 150ms，host 响应完首批 ping 后在后台加载）。
-// 协议不变：只把内核加载从"启动阻塞"改为"延迟预热 + 首次使用懒加载"。
-let sandboxPromise: Promise<Awaited<ReturnType<typeof import('../lifo-core.js').Sandbox.create>>> | null = null;
+// Lifo 内核懒加载：静态载入约 1MB 会让首个 ping 额外约 640ms。
+// host 保持轻量，首次 Lifo 请求动态 import；150ms 后只预热 default。
+// 协议不变，只把内核成本推迟到需要时。
+type LifoSandbox = Awaited<ReturnType<typeof import('../lifo-core.js').Sandbox.create>>;
 
-function getSandbox(): Promise<Awaited<ReturnType<typeof import('../lifo-core.js').Sandbox.create>>> {
-  if (!sandboxPromise) {
-    sandboxPromise = import('../lifo-core.js')
-      .then(({ Sandbox }) =>
-        Sandbox.create({
-          // TASK23：初始 cwd = /workspace 挂载点（默认是 /home/user，Lifo VFS 私有路径），
-          // 让 Lifo 起始 cwd 与会话 cwd（process.cwd()）一致 —— pwd / node 子进程口径统一。
-          cwd: WORKSPACE_MOUNT,
+/** All mutable Lifo state lives in this map, never in a page-global sandbox.
+ * A Sandbox owns its command registry, cwd, shell history/jobs, package and
+ * service registries; isolating it is therefore the per-instance boundary. */
+export interface SandboxContext {
+  instanceId: string;
+  sandbox: LifoSandbox;
+  terminal: TerminalHub;
+  createdAt: number;
+  releaseUserland?: () => void;
+  userlandSignature?: string;
+  terminalSessionId?: string;
+}
+
+const sandboxContexts = new Map<string, Promise<SandboxContext>>();
+const lifoRunControllers = new Map<string, AbortController>();
+const sandboxRunLocks = new Map<string, Promise<void>>();
+const contextStateSignatures = new Map<string, string>();
+const lifoProcesses = new LifoProcessProjection();
+
+function instanceInitialCwd(instanceId: string): string {
+  const saved = getSessionCwd(instanceId);
+  if (saved.startsWith(WORKSPACE_MOUNT)) return saved;
+  return instanceId === 'default' ? WORKSPACE_MOUNT : browserPathToLifoCwd(`/workspace/.succinix-${instanceId}`);
+}
+
+function rewriteDirectShellScript(command: string, sandbox: LifoSandbox): string {
+  const parsed = tryTokenize(command);
+  if (!parsed.ok || hasShellMetaToken(parsed.tokens)) return command;
+  const [requested] = parsed.tokens;
+  if (!requested || (!requested.startsWith('./') && !requested.startsWith('../') && !requested.startsWith('/'))) return command;
+  let file: string;
+  try { file = canonicalizeVirtualPath(requested.startsWith('/') ? requested : `${sandbox.cwd}/${requested}`); } catch { return command; }
+  if (!sandbox.kernel.vfs.exists(file)) return command;
+  try {
+    if (!requested.endsWith('.sh') && !sandbox.kernel.vfs.readFileString(file).startsWith('#!')) return command;
+  } catch {
+    return command;
+  }
+  const quoted = parsed.tokens.map((token) => `'${token.replaceAll("'", "'\\''")}'`).join(' ');
+  return `sh ${quoted}`;
+}
+
+function prepareInstanceMounts(instanceId: string): { workspace: string; tmp: string; home: string; persistent: PersistentLifoMounts } {
+  const workspace = process.cwd();
+  const stateRoot = instanceStateRootFor(instanceId, workspace);
+  const tmp = `${stateRoot}/tmp`;
+  const home = `${stateRoot}/home/guest`;
+  // These directories are execution-world state.  Creating them before the
+  // native mounts makes the first Sandbox boot deterministic for a fresh
+  // instance and keeps /tmp and /home/guest from being shared accidentally.
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(`${workspace}/workspace`, { recursive: true });
+  return { workspace, tmp, home, persistent: persistentLifoMounts(instanceId, workspace) };
+}
+
+async function syncContextState(instanceId: string, context: SandboxContext): Promise<void> {
+  const cwd = lifoCwdToSessionCwd(context.sandbox.cwd);
+  if (cwd !== null && cwd !== getSessionCwd(instanceId)) setSessionCwd(instanceId, cwd);
+  const env = context.sandbox.env;
+  const entries = Object.entries(env)
+    .filter(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !/(?:TOKEN|PASSWORD|SECRET|AUTH|PRIVATE_KEY)/i.test(key) && typeof value === 'string')
+    .sort(([a], [b]) => a.localeCompare(b));
+  const signature = entries.map(([key, value]) => `${key}=${value}`).join('\n');
+  const previousSignature = contextStateSignatures.get(instanceId);
+  if (previousSignature === signature) return;
+  contextStateSignatures.set(instanceId, signature);
+  try {
+    const file = instanceStateFile(instanceId, process.cwd(), 'etc/succinix.env');
+    fs.mkdirSync(`${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
+    fs.writeFileSync(file, `${signature}${signature ? '\n' : ''}`);
+  } catch {
+    // Environment persistence is best effort; the live Sandbox remains the
+    // source of truth for the current shell.
+  }
+  // The browser owns binary snapshot export. Mirror only a changed, existing
+  // context into its WebContainer fs before callers can request a snapshot.
+  // The fixed control action accepts no path and cannot execute shell input.
+  if (previousSignature !== undefined) {
+    try {
+      await requestBrowserControl('environment', instanceId, { timeoutMs: 2_000, args: { content: `${signature}${signature ? '\n' : ''}` } });
+    } catch {
+      // During early host prewarm the browser bridge is not attached yet; the
+      // native mount remains the live execution-world source of truth.
+    }
+  }
+}
+
+function cleanupSandbox(context: SandboxContext): void {
+  const { sandbox, terminal, releaseUserland } = context;
+  try {
+    for (const job of sandbox.shell.getJobTable().list()) job.abortController.abort();
+  } catch { /* older Lifo builds may not expose job internals */ }
+  try {
+    for (const process of sandbox.kernel.processRegistry.getRunning()) {
+      sandbox.kernel.processRegistry.kill(process.pid, 'SIGKILL');
+    }
+  } catch { /* best effort during host teardown */ }
+  try {
+    for (const unit of sandbox.kernel.serviceManager?.listUnits() ?? []) {
+      if (unit.active === 'active' || unit.active === 'activating') void sandbox.kernel.serviceManager?.stop(unit.name);
+    }
+  } catch { /* service cleanup is best effort */ }
+  try {
+    releaseUserland?.();
+  } catch { /* userland registry teardown is best effort */ }
+  terminal.dispose();
+  // Lifo 0.10.10 只公开 destroy()；前述显式清理补足其未覆盖的运行项。
+  sandbox.destroy();
+}
+
+/** 从运行时邮箱装载浏览器插件声明；损坏的声明不会替换已工作的注册表。 */
+function currentSandboxUserland(): { registry: ReturnType<typeof createSandboxUserlandRegistry>; signature: string } {
+  const file = `${process.cwd()}${USERLAND_REGISTRY_PATH}`;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    if (raw.length > 1024 * 1024) throw new Error('userland registry exceeds 1 MiB');
+    const snapshot = parseUserlandRegistrySnapshot(JSON.parse(raw));
+    if (!snapshot) throw new Error('invalid userland registry snapshot');
+    return { registry: createSandboxUserlandRegistry(snapshot), signature: raw };
+  } catch (error) {
+    if (error instanceof Error && /ENOENT/i.test(error.message)) {
+      return { registry: createSandboxUserlandRegistry(), signature: 'builtin' };
+    }
+    throw error;
+  }
+}
+
+/** 复用同一 Lifo 命令、VFS 与 ServiceManager 热更新结构化 Userland 声明。 */
+async function syncSandboxUserland(context: SandboxContext): Promise<void> {
+  const next = currentSandboxUserland();
+  if (context.userlandSignature === next.signature) return;
+  const previousRelease = context.releaseUserland;
+  await reconcileRegisteredUserlandPackages(context.sandbox, next.registry.listPackages());
+  try {
+    previousRelease?.();
+  } catch {
+    // 老 Sandbox 在销毁边界可能已没有 shell registry；继续安装完整新快照。
+  }
+  const release = applyUserlandRegistryToSandbox(context.sandbox, next.registry, {
+    workingDirectory: context.sandbox.cwd,
+  });
+  context.releaseUserland = release;
+  context.userlandSignature = next.signature;
+}
+
+/** Interrupt the foreground Lifo command for one instance.  This is kept
+ * separate from the browser terminal transport so batch AbortSignal and
+ * Ctrl+C use the same execution-world cancellation primitive. */
+export function interruptLifoRun(instanceId: string): boolean {
+  const controller = lifoRunControllers.get(instanceId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
+export function sandboxContextCount(): number {
+  return sandboxContexts.size;
+}
+
+export async function resetSandboxContext(instanceId: string): Promise<void> {
+  const context = sandboxContexts.get(instanceId);
+  sandboxContexts.delete(instanceId);
+  sandboxRunLocks.delete(instanceId);
+  contextStateSignatures.delete(instanceId);
+  lifoRunControllers.get(instanceId)?.abort();
+  lifoRunControllers.delete(instanceId);
+  lifoProcesses.forgetInstance(instanceId);
+  if (!context) return;
+  try {
+    const resolved = await context;
+    cleanupSandbox(resolved);
+  } catch {
+    /* A failed/old sandbox must not prevent a fresh instance context. */
+  }
+}
+
+function getSandboxContext(instanceId: string): Promise<SandboxContext> {
+  let context = sandboxContexts.get(instanceId);
+  if (!context) {
+    // The hub is the stable terminal supplied to Sandbox.create(). Browser
+    // devices attach only after the shell has registered its one onData
+    // callback; attaching here as well would register it twice.
+    const terminal = new TerminalHub();
+    const mounts = prepareInstanceMounts(instanceId);
+    const cwd = instanceInitialCwd(instanceId);
+    context = import('../lifo-core.js')
+      .then(async ({ Sandbox, rehydrateGlobalPackages, runGitCommand }) => {
+        const sandbox = await Sandbox.create({
+          cwd,
+          terminal,
+          env: { HOME: '/home/guest', USER: 'guest', HOSTNAME: 'succinix', SHELL: '/bin/succinix', PWD: cwd, ...persistedEnv(instanceId) },
           mounts: [
-            {
-              virtualPath: '/workspace',
-              hostPath: process.cwd(),
-              fsModule: fs as never,
-            },
+            { virtualPath: '/workspace', hostPath: mounts.workspace, fsModule: fs as never },
+            { virtualPath: '/tmp', hostPath: mounts.tmp, fsModule: fs as never },
+            { virtualPath: '/home/guest', hostPath: mounts.home, fsModule: fs as never },
           ],
-        })
-      )
-      .then((sandbox) => {
+        });
+        return { sandbox, rehydrateGlobalPackages, runGitCommand };
+      })
+      .then(async ({ sandbox, rehydrateGlobalPackages, runGitCommand }) => {
+        // Sandbox.create applies cwd before native mounts are installed. Set it
+        // again after mountNative so instance roots are valid on first boot.
+        try { sandbox.cwd = cwd; } catch { /* invalid persisted cwd falls back to mount root */ }
+        mountPersistentLifoState(sandbox, mounts.persistent);
+        const lifoPackageCommand = await sandbox.shell.getRegistry().resolve('lifo');
         // TASK24 坑 1：node 系命令含 shell 元字符时整条回退给 Lifo shell 执行。Lifo 内置
         // node/npm/npx 是进程内 JS 解释器（报自己的版本号），不是真 node —— 这里注册转发
         // 命令，把 Lifo shell 里的 node/npm/npx 段直启真二进制（cwd/环境与会话 cwd 对齐），
         // stdout/stderr 写进 Lifo 命令上下文流（Lifo shell 已把它们接到管道/重定向）。
         // 递归防护：转发命令直接 spawn 真二进制，不再回 host 分派 → 不会二次回退。
-        registerRealBinaryCommands(sandbox);
-        return sandbox;
+        registerRealBinaryCommands(sandbox, instanceId, { runGitCommand });
+        rehydrateGlobalPackages(sandbox.kernel.vfs, sandbox.shell.getRegistry());
+        if (!lifoPackageCommand) throw new Error('Lifo package command is unavailable');
+        installPackageManifestTracking(sandbox, lifoPackageCommand);
+        const resolved: SandboxContext = { instanceId, sandbox, terminal, createdAt: Date.now() };
+        await syncSandboxUserland(resolved);
+        restoreServiceEnablement(sandbox.kernel.vfs, sandbox.kernel.serviceManager);
+        await sandbox.kernel.serviceManager?.bootEnabledServices();
+        await syncContextState(instanceId, resolved);
+        return resolved;
       })
       .catch((e) => {
-        // 预热/首用失败（如 lifo-core.js 尚未注入完成）：清空缓存，下次调用重试。
-        sandboxPromise = null;
+        sandboxContexts.delete(instanceId);
         throw e;
       });
+    sandboxContexts.set(instanceId, context);
   }
-  return sandboxPromise;
+  return context;
 }
 
-// 在 Lifo 内核里注册 node/npm/npx/python/python3 转发命令（覆盖内置 JS 解释器 shim）。
-// 每个命令把 ctx.args 直传给真二进制（python 是 node 加载运行时脚本），输出累积后写入
-// ctx.stdout/stderr（管道/链在 shell 层已接好，写 ctx 流即进管道）。stderr 累积以支持 EACCES 提示追加。
-// cwd 用 Lifo 命令上下文的 VFS cwd 映射回 host 真实路径（链内 `cd /workspace/sub` 也能跟随，
-// 与 runNode 的 spawnCwd(instanceId) 语义一致）；非 /workspace 的 Lifo 私有路径回落会话 cwd。
-function registerRealBinaryCommands(
-  sandbox: Awaited<ReturnType<typeof import('../lifo-core.js').Sandbox.create>>
-): void {
-  // M2：Lifo 混合链的 node/python 转发在「当前在途请求」的实例上下文里执行（单 host 串行
-  // 处理请求，currentInstanceId() 即请求所属实例）；cwd/环境按该实例解析。
-  const lifoSpawnCwd = (vfsCwd: string): string => lifoSpawndCwd(vfsCwd, getSessionCwd(currentInstanceId()), process.cwd());
-  // 共享转发：spawn 一个真实子进程，stdout/stderr 累积后写入 Lifo 命令上下文流；
-  // 超时/中断（Lifo shell 的 signal）时子进程一并杀掉。
-  // V1 H1-2：把 Lifo 混合链拉起的 node/npm/npx 真实子进程登记进 host 进程表（host-procs.ts），
-  // 使前台 `cd <root> && npm test` 这类混合链命令的活跃子进程在 ps() 可见、kill 可终止——
-  // 此前它们只在 Lifo shell 内部运行，UI 进程表完全不可见。
-  // TASK-CISOL（R1）：登记时带上 spawn 的启动 cwd（realCwd），host-procs 据此判定容器归属
-  // （cd /workspace/c-<id> 前缀 → 子进程 cwd 落在容器根 → scope=container + containerId）。
-  const forward = (
-    ctx: { stdout: { write(s: string): void }; stderr: { write(s: string): void }; signal?: AbortSignal | null },
-    child: ReturnType<typeof spawn>,
-    cmd: string,
-    realCwd: string
-  ): Promise<number> => {
-    // M5：Lifo 混合链转发进程同样按请求实例显式归属（cwd 可能是容器 home，无状态根段）。
-    const pid = registerProcess(cmd, child, realCwd, currentInstanceId());
-    // both：既累积（写 ctx 流）也追加进程表（ps/kill 可见）。
-    const out = attachOutputCollector(child, pid, 'both');
-    const onAbort = () => child.kill();
-    ctx.signal?.addEventListener('abort', onAbort);
-    return new Promise<number>((resolve) => {
-      child.on('close', (code) => {
-        ctx.signal?.removeEventListener('abort', onAbort);
-        ctx.stdout.write(out.stdout());
-        ctx.stderr.write(withEaccesHint(out.stderr()));
-        resolve(code ?? -1);
-      });
-      child.on('error', (e: Error) => {
-        ctx.signal?.removeEventListener('abort', onAbort);
-        ctx.stderr.write(String(e));
-        resolve(-1);
-      });
-    });
-  };
+// Keep the execution-world cwd/env mirror current for interactive shell input
+// as well as batch `commands.run()`.  This is intentionally a single host-side
+// timer; it never creates browser command state and disappears when the host
+// process exits.
+setInterval(() => {
+  for (const [instanceId, pending] of sandboxContexts) {
+    void pending.then(async (context) => {
+      await syncSandboxUserland(context);
+      await syncContextState(instanceId, context);
+    }).catch(() => {});
+  }
+}, 250);
 
-  for (const name of ['node', 'npm', 'npx']) {
-    sandbox.commands.register(name, async (ctx) => {
-      const realCwd = lifoSpawnCwd(ctx.cwd);
-      const child = spawn(name, ctx.args, { cwd: realCwd, env: mergedEnv(currentInstanceId()) });
-      return forward(ctx, child, [name, ...ctx.args].join(' '), realCwd);
+/** Attach a browser/device terminal to the already-created instance shell.
+ * The returned promise is intentionally fire-and-forget for the host mailbox
+ * scanner; input frames are queued by the transport until the shell exists. */
+export function attachRpcTerminal(instanceId: string, terminal: ITerminal): void {
+  void getSandboxContext(instanceId)
+    .then(() => attachTerminalContext(sandboxContexts, instanceId, terminal))
+    .catch((error) => {
+      // 终端设备连接失败不能终止 RPC daemon；批处理命令仍可返回结构化 Lifo 错误。
+      console.error('[succinix host] terminal attach failed:', error);
     });
-  }
-  // TASK27：python/pip 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段
-  // 转发到常驻 Pyodide daemon（python-daemon-client）。资产未注入时给明确错误，与 runPython 一致。
-  const pythonForward = async (
-    ctx: { stdout: { write(s: string): void }; stderr: { write(s: string): void }; cwd: string },
-    args: string[]
-  ): Promise<number> => {
-    if (!fs.existsSync(PYTHON_DAEMON_JS)) {
-      ctx.stderr.write(
-        'python runtime failed to load: assets not injected yet — run any other command first, or refresh the page (the runtime is injected on first use)'
-      );
-      return -1;
-    }
-    const r = await pythonDaemon.exec(args, lifoSpawnCwd(ctx.cwd), PYTHON_TIMEOUT_MS);
-    ctx.stdout.write(r.stdout);
-    ctx.stderr.write(withEaccesHint(r.stderr));
-    return r.exitCode;
-  };
-  for (const name of ['python', 'python3']) {
-    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, pythonRuntimeArgs(ctx.args, process.cwd())));
-  }
-  for (const name of ['pip', 'pip3']) {
-    sandbox.commands.register(name, async (ctx) => pythonForward(ctx, ['-m', 'pip', ...ctx.args]));
-  }
-
-  // dsh ctx.sandbox wrapper: top-level argv confinement marker for the Lifo
-  // execution world. This is not a security boundary; it reports the mode and
-  // fails closed for real Node subprocesses, which cannot be fenced per call.
-  sandbox.commands.register('succinix-sandbox', async (ctx) => {
-    const args = ctx.args;
-    const modeIndex = args.indexOf('--mode');
-    const rootIndex = args.indexOf('--workspace');
-    const mode = modeIndex >= 0 ? args[modeIndex + 1] : undefined;
-    const workspace = rootIndex >= 0 ? args[rootIndex + 1] : undefined;
-    if (mode !== 'read-only' && mode !== 'workspace-write') {
-      ctx.stderr.write(`sandbox unavailable: unsupported mode ${mode ?? '(missing)'}\n`);
-      return 126;
-    }
-    if (typeof workspace !== 'string' || !workspace.startsWith('/workspace')) {
-      ctx.stderr.write('sandbox unavailable: invalid workspace root\n');
-      return 126;
-    }
-    const afterRoot = rootIndex >= 0 ? rootIndex + 2 : modeIndex + 2;
-    const command = args.slice(afterRoot).join(' ');
-    if (!command || classifyPrefix(command) === 'node') {
-      ctx.stderr.write(`sandbox unavailable for mode ${mode}: real node subprocesses cannot be confined\n`);
-      return 126;
-    }
-    if (typeof ctx.executeCaptureResult !== 'function') {
-      ctx.stderr.write('sandbox unavailable: Lifo runner is not ready\n');
-      return 126;
-    }
-    const r = await ctx.executeCaptureResult(command, { cwd: ctx.cwd });
-    ctx.stdout.write(r.stdout);
-    ctx.stderr.write(r.stderr);
-    return r.code;
-  });
 }
+
+export const detachRpcTerminal = (instanceId: string, terminal?: ITerminal): Promise<void> =>
+  detachTerminalContext(sandboxContexts, instanceId, terminal);
+
+/** Return the Lifo process view for one instance, or all live instances for
+ * the legacy default `ps` view. Failed/tearing-down contexts are skipped. */
+export const listLifoProcesses = (instanceId: string, includeAll = instanceId === 'default'): Promise<ProcInfo[]> =>
+  listProjectedLifoProcesses(sandboxContexts, lifoProcesses, instanceId, includeAll);
+
+/** Kill a projected Lifo PID. Returns null when the PID belongs to a real
+ * host child process, allowing the caller to fall through to host-procs. */
+export const killLifoProcess = (
+  publicPid: number,
+  signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL' = 'SIGTERM',
+): Promise<KillResult | null> => killProjectedLifoProcess(sandboxContexts, lifoProcesses, publicPid, signal);
 
 // 延迟预热：host 模块加载完成 + 首批 ping 响应后启动内核加载（见上注释）。
 // 预热失败（lifo-core.js 可能还在注入中）时静默，首个 Lifo 命令会重试。
 setTimeout(() => {
-  void getSandbox().catch(() => {});
+  // Only warm the default instance. Other instances are created lazily so a
+  // page embedding many instances does not allocate unused shell state.
+  void getSandboxContext('default').catch(() => {});
 }, 150);
-
-// python 命令默认超时（比 node 子进程宽松）：首个命令含 daemon 懒启动 + 可能的重装恢复，
-// pip install 走网络拉 wheel —— 120s 内可完成；daemon 内部也有同等超时兜底。
-const PYTHON_TIMEOUT_MS = 150000;
 
 // 统一路由：node|npm|npx → spawn 真 Node；其余 → lifo sandbox。
 // TASK24 坑 1：node 系命令含 shell 元字符（&& / | / > / 2>&1 ...）时，整条命令回退给
@@ -187,6 +320,16 @@ export async function dispatchRun(req: CommandRequest): Promise<void> {
     return;
   }
   const inst = instanceOf(req);
+  if (hasUnsupportedHereDocument(command)) {
+    writeResult(req.id, {
+      ok: false,
+      exitCode: 2,
+      stdout: '',
+      stderr: 'succinix: here-document: unsupported\n',
+      runtime: 'lifo',
+    }, inst);
+    return;
+  }
   const prefix = classifyPrefix(command);
   if (prefix !== 'lifo') {
     // node/python/pip 系才分词做 shell 元字符检查（与旧行为一致：纯 Lifo 命令不经过
@@ -213,7 +356,7 @@ export async function dispatchRun(req: CommandRequest): Promise<void> {
 
 // 真 Node 子进程：命令串 → 简单分词 → spawn(prog, args, { cwd: spawnCwd(currentInstanceId()) })。
 // 结果带 runtime: 'node'。进程登记进进程表，可被 ps / kill 管理。
-function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): void {
+function runNode(command: string, opts: Record<string, unknown> | undefined, reqId: RpcRequestId, instanceId: string): void {
   const t = tryTokenize(command);
   if (!t.ok) {
     writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, instanceId);
@@ -226,49 +369,50 @@ function runNode(command: string, opts: Record<string, unknown> | undefined, req
   spawnChild(prog, args, opts, reqId, 'node', instanceId);
 }
 
-// TASK27：python / python3 / pip / pip3 命令 → 发往常驻 Pyodide daemon（python-daemon-client）。
-// 纯 python/pip 命令（无 shell 元字符）走这里；含管道/重定向的混合链由 dispatchRun 转给
-// Lifo shell（python/pip 段再经 registerRealBinaryCommands 转发到同一 daemon —— 实例状态共享）。
-// 资产未注入时给明确错误，系统不崩（装不坏：python 不依赖用户 npm install）。
-async function runPython(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): Promise<void> {
-  if (!fs.existsSync(PYTHON_DAEMON_JS)) {
-    writeResult(reqId, {
-      ok: false,
-      exitCode: -1,
-      stdout: '',
-      stderr:
-        'python runtime failed to load: assets not injected yet — run any other command first, or refresh the page (the runtime is injected on first use)',
-      runtime: 'node',
-    }, instanceId);
-    return;
-  }
-  const t = tryTokenize(command);
-  if (!t.ok) {
-    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: t.error, runtime: 'node' }, instanceId);
-    return;
-  }
-  const [, ...rawArgs] = t.tokens; // 丢弃 python/python3/pip/pip3 前缀
-  const args = PIP_PREFIX_RE.test(command) ? ['-m', 'pip', ...rawArgs] : pythonRuntimeArgs(rawArgs, process.cwd());
-  const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : PYTHON_TIMEOUT_MS;
-  const r = await pythonDaemon.exec(args, spawnCwd(currentInstanceId()), timeoutMs);
-  writeResult(reqId, {
-    ok: r.exitCode === 0,
-    exitCode: r.exitCode,
-    stdout: capOutput(r.stdout),
-    stderr: withEaccesHint(capOutput(r.stderr)),
-    runtime: 'node',
-  }, instanceId);
-}
-
 // Lifo sandbox：Unix 工具（grep / cat / wc / echo / curl ...）。结果带 runtime: 'lifo'。
 // TASK23：cd 成功后把会话 cwd 同步到 Lifo 新 cwd（仅 /workspace 下 —— 映射 host 真实路径），
 // 并持久化 /etc/succinix.cwd；cd 到不存在目录 → Lifo 报错（exit≠0），会话 cwd 不变。
-async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: number, instanceId: string): Promise<void> {
+async function runLifo(command: string, opts: Record<string, unknown> | undefined, reqId: RpcRequestId, instanceId: string): Promise<void> {
+  // 显式 cwd 只用于单次 dsh/SDK 请求；常规交互/批处理不传 cwd。
+  // Lifo 对含 cwd 的执行会在 finally 恢复原目录；每次传入会使跨命令 cd 失效。
+  // 因此用 sandbox 当前 cwd 保持会话语义。
+  const explicitCwd = opts?.cwd;
+  if (explicitCwd !== undefined && (typeof explicitCwd !== 'string' || !explicitCwd.startsWith('/'))) {
+    writeResult(reqId, { ok: false, exitCode: 1, stdout: '', stderr: 'cwd must be an absolute path', runtime: 'lifo' }, instanceId);
+    return;
+  }
+  const controller = new AbortController();
+  lifoRunControllers.set(instanceId, controller);
   try {
     const timeout = typeof opts?.timeout === 'number' ? opts.timeout : LIFO_TIMEOUT_MS;
     // 首次使用才 await sandbox 初始化（懒加载兜底；延迟预热通常已让内核就绪）。
-    const sandbox = await getSandbox();
-    const r = await sandbox.commands.run(command, { timeout });
+    const context = await getSandboxContext(instanceId);
+    await syncSandboxUserland(context);
+    const sandbox = context.sandbox;
+    const envOverride: Record<string, string> = {};
+    if (opts?.env && typeof opts.env === 'object' && !Array.isArray(opts.env)) {
+      for (const [key, value] of Object.entries(opts.env as Record<string, unknown>)) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value !== undefined && value !== null) envOverride[key] = String(value);
+      }
+    }
+    const previous = sandboxRunLocks.get(instanceId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lock = previous.then(() => gate);
+    sandboxRunLocks.set(instanceId, lock);
+    await previous;
+    let r: { exitCode: number; stdout: string; stderr: string };
+    try {
+      r = await sandbox.commands.run(rewriteDirectShellScript(command, sandbox), {
+        ...(explicitCwd !== undefined ? { cwd: explicitCwd } : {}),
+        ...(Object.keys(envOverride).length ? { env: envOverride } : {}),
+        timeout,
+        signal: controller.signal,
+      });
+    } finally {
+      release();
+      if (sandboxRunLocks.get(instanceId) === lock) sandboxRunLocks.delete(instanceId);
+    }
     const payload: Record<string, unknown> = {
       ok: r.exitCode === 0,
       exitCode: r.exitCode,
@@ -277,19 +421,23 @@ async function runLifo(command: string, opts: Record<string, unknown> | undefine
       stderr: capOutput(r.stderr),
       runtime: 'lifo',
     };
-    if (r.exitCode === 0 && CD_PREFIX_RE.test(command)) {
-      const lifoCwd = sandbox.cwd;
+    if (r.exitCode === 0) {
+      const effectiveLifoCwd = sandbox.cwd;
       // cd 后 Lifo cwd → 会话 cwd（TASK23 同步；`cd /` 映射到工作区根 /workspace —— 否则
       // isUnderWorkspace('/') 为 false、会话 cwd 不更新，"回到根目录"不可达。决策见 host-route.ts）。
-      const effectiveCwd = lifoCwdToSessionCwd(lifoCwd);
+      const effectiveCwd = lifoCwdToSessionCwd(effectiveLifoCwd);
       if (effectiveCwd !== null) {
-        setSessionCwd(currentInstanceId(), effectiveCwd);
+        setSessionCwd(instanceId, effectiveCwd);
         // 结果带会话 cwd 字段（新增可选协议字段，向后兼容）。
         payload.cwd = effectiveCwd;
       }
+      await syncContextState(instanceId, context);
     }
     writeResult(reqId, payload, instanceId);
   } catch (e) {
-    writeResult(reqId, { ok: false, exitCode: -1, stdout: '', stderr: String(e).slice(0, 200), runtime: 'lifo' }, instanceId);
+    const aborted = controller.signal.aborted;
+    writeResult(reqId, { ok: false, exitCode: aborted ? 130 : -1, stdout: '', stderr: aborted ? 'command aborted' : String(e).slice(0, 200), runtime: 'lifo' }, instanceId);
+  } finally {
+    if (lifoRunControllers.get(instanceId) === controller) lifoRunControllers.delete(instanceId);
   }
 }

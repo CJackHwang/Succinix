@@ -22,7 +22,7 @@ import {
   type TerminalServiceDeps,
 } from '../src/plugin/terminal-service.js';
 import { SuccinixTerminalBackend } from '../src/plugin/terminal-backend.js';
-import { SuccinixTerminalSession, type TerminalOutput } from '../src/terminal/index.js';
+import type { InteractiveTerminalSession } from '../src/engine/index.js';
 
 class OwnerRegistry {
   private readonly live = new Set<Agent>();
@@ -330,19 +330,50 @@ describe('ctx.terminals registry', () => {
 });
 
 describe('ctx.terminals Succinix backend', () => {
-  it('wraps SuccinixTerminalSession with captured scrollback and serialized sends', async () => {
-    const outputs: TerminalOutput[] = [];
+  class FakeInteractiveSession implements InteractiveTerminalSession {
+    readonly id = 'interactive-1';
+    readonly sent: string[] = [];
+    readonly signals: Array<'SIGINT' | 'SIGTERM' | 'SIGKILL'> = [];
+    closes = 0;
+    private readonly listeners = new Set<(data: string) => void>();
+
+    async send(data: string): Promise<void> {
+      this.sent.push(data);
+      if (data.includes('printf hello')) this.emit('hello\r\nguest@succinix:~$ ');
+      if (data.includes('printf delayed')) {
+        setTimeout(() => this.emit('delayed\r\nguest@succinix:~$ '), 70);
+      }
+      if (data.includes('printf late')) {
+        setTimeout(() => this.emit('late\r\nguest@succinix:~$ '), 180);
+      }
+    }
+
+    async resize(): Promise<void> {}
+
+    onData(listener: (data: string) => void): () => void {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+
+    async signal(signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL'): Promise<void> {
+      this.signals.push(signal);
+    }
+
+    async close(): Promise<void> {
+      this.closes++;
+    }
+
+    emit(data: string): void {
+      for (const listener of this.listeners) listener(data);
+    }
+  }
+
+  it('wraps the execution-world interactive session with captured scrollback and raw sends', async () => {
+    const interactive = new FakeInteractiveSession();
     const backend = new SuccinixTerminalBackend({
-      createSession: (options) => {
-        outputs.push(options.output);
-        return new SuccinixTerminalSession(
-          {
-            exec: async () => ({ ok: true, exitCode: 0, stdout: 'hello\n', runtime: 'lifo' }),
-            ping: async () => true,
-          },
-          options.output,
-          options
-        );
+      open: async () => {
+        setTimeout(() => interactive.emit('guest@succinix:~$ '), 0);
+        return interactive;
       },
     });
     const session = await backend.spawn({
@@ -356,22 +387,59 @@ describe('ctx.terminals Succinix backend', () => {
     const result = await send.done;
     expect(result.waitReason).toBe('inferred_idle');
     expect(result.sessionStatus.kind).toBe('running');
+    expect(interactive.sent).toEqual(['printf hello\r']);
     expect(session.read({ count: 10 }).text).toContain('hello');
     await session.close('test');
+    expect(interactive.closes).toBe(1);
     expect(session.status()).toEqual({ kind: 'exited', exitCode: 0, signal: null });
   });
 
-  it('rejects signals that have no verifiable foreground channel', async () => {
+  it('waits for command output before reporting an inferred idle state', async () => {
+    const interactive = new FakeInteractiveSession();
     const backend = new SuccinixTerminalBackend({
-      createSession: (options) =>
-        new SuccinixTerminalSession(
-          {
-            exec: async () => ({ ok: true, exitCode: 0, stdout: '', runtime: 'lifo' }),
-            ping: async () => true,
-          },
-          options.output,
-          options
-        ),
+      open: async () => {
+        setTimeout(() => interactive.emit('guest@succinix:~$ '), 0);
+        return interactive;
+      },
+    });
+    const session = await backend.spawn({
+      sessionId: TerminalSessionId('pty-delayed'),
+      owner: owner(),
+      type: 'succinix',
+    });
+
+    const result = await session.startSend({ text: 'printf delayed', submit: true }).done;
+
+    expect(result.waitReason).toBe('inferred_idle');
+    expect(result.viewport).toContain('delayed');
+    expect(session.read({ count: 10 }).text).toContain('delayed');
+  });
+
+  it('accepts a command before the first prompt reaches the subscriber', async () => {
+    const interactive = new FakeInteractiveSession();
+    const backend = new SuccinixTerminalBackend({
+      open: async () => interactive,
+    });
+    const session = await backend.spawn({
+      sessionId: TerminalSessionId('pty-late-prompt'),
+      owner: owner(),
+      type: 'succinix',
+    });
+
+    const result = await session.startSend({ text: 'printf late', submit: true }).done;
+
+    expect(result.waitReason).toBe('inferred_idle');
+    expect(result.viewport).toContain('late');
+    expect(session.read({ count: 10 }).text).toContain('late');
+  });
+
+  it('rejects signals that have no verifiable foreground channel', async () => {
+    const interactive = new FakeInteractiveSession();
+    const backend = new SuccinixTerminalBackend({
+      open: async () => {
+        setTimeout(() => interactive.emit('guest@succinix:~$ '), 0);
+        return interactive;
+      },
     });
     const session = await backend.spawn({
       sessionId: TerminalSessionId('pty-2'),
@@ -379,6 +447,7 @@ describe('ctx.terminals Succinix backend', () => {
       type: 'succinix',
     });
     await expect(session.signal('SIGINT')).resolves.toEqual({ delivered: true, targetPgid: expect.any(Number) });
+    expect(interactive.signals).toEqual(['SIGINT']);
     await expect(session.signal('SIGHUP')).rejects.toThrow('no verifiable foreground delivery channel');
   });
 });

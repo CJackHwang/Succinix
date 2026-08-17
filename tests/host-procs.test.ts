@@ -102,6 +102,14 @@ describe('registerProcess + listProcesses（登记记录 cwd → ps 附带归属
     expect(view?.containerId).toBeUndefined();
   });
 
+  it('keeps Lifo adapter children manageable without exposing a duplicate ps row', () => {
+    const child = fakeChild(1007);
+    registerProcess('node worker.js', child, '/home/wc-1', 'c-1', { runtime: 'node', internal: true });
+    expect(listProcesses().some((entry) => entry.pid === 1007)).toBe(false);
+    expect(killProcess(1007).killed).toBe(true);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
   it('killProcess escalates to SIGKILL after the requested grace period', async () => {
     vi.useFakeTimers();
     try {

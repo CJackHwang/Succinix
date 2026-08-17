@@ -19,7 +19,7 @@ alignment on the dsh fork.
   `@webcontainer/api ^1.6.4`
 - Public service keys: `ctx.fs`, `ctx.sandbox`, `ctx.terminals`,
   `ctx.sessionPersistence`
-- Lifecycle seam: `succinix-host` via `ctx.get('succinix-host', false)`
+- Lifecycle seam: `succinix` via `ctx.get('succinix', false)`
 
 The vendored dsh d.ts files are the shape authority. Succinix implements the
 service shapes locally and does not install the four dsh service packages at
@@ -82,7 +82,7 @@ reloads.
 3. Use static plugin composition plus `fiber.update()` / dispose-reapply for
    reload semantics.
 4. Expose the four dsh service keys and keep container lifecycle behind the
-   internal `succinix-host` seam.
+   internal `succinix` seam.
 5. Vendor `docs/contracts/dsh-0.1.0-rc.6/` as the immutable service-shape
    snapshot and gate against it with `scripts/check-dsh-shapes.mjs`.
 6. Fail closed for `node|npm|npx` under `ctx.sandbox.confine`; the browser

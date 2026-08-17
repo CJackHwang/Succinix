@@ -9,6 +9,16 @@
 // 同名冲突优先 lifo（工具类，README 注明规则）。
 // 约束：网络类操作失败按"已知边界"处理 —— 明确提示原因，不吞错、不假装成功。
 export type { PackageEntry, SearchEntry, PkgContext, ActionResult, SearchOutcome } from './metadata.js';
+export type { InstalledPackage, PackageManifest, PackageManifestFs } from './manifest.js';
+export {
+  PACKAGE_MANIFEST_PATH,
+  PACKAGE_MANIFEST_VERSION,
+  readPackageManifest,
+  writePackageManifest,
+  recordPackageInstall,
+  recordPackageRemove,
+  packageManifestJson,
+} from './manifest.js';
 export { isValidPackageName, formatPackageList, formatSearchResults } from './metadata.js';
 export { listPackages, searchPackages } from './registry.js';
 export { installPackage, removePackage, packageInfo } from './installer.js';

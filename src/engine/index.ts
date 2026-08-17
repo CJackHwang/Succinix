@@ -9,11 +9,85 @@ import type { ProcInfo } from './host-procs.js';
 import { DEFAULT_INSTANCE_ID, instanceStateFile } from './host-route.js';
 import { pagePorts } from './ports.js';
 import { sleep } from './sleep.js';
+import type { UserlandCapabilitySnapshot } from '../userland/index.js';
+import type {
+  DegradationStatus,
+  ExecOptions,
+  InteractiveTerminalService,
+  KillOptions,
+  PersistenceStatus,
+  ProcessListOptions,
+  RuntimeStatus,
+  SpawnOptions,
+} from './api-types.js';
+
+export type {
+  DegradationStatus,
+  ExecOptions,
+  InteractiveTerminalOpenOptions,
+  InteractiveTerminalService,
+  InteractiveTerminalSession,
+  KillOptions,
+  PersistenceStatus,
+  ProcessListOptions,
+  RuntimeErrorShape,
+  RuntimeStatus,
+  SpawnOptions,
+} from './api-types.js';
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 export type { ProcInfo } from './host-procs.js';
 export { ensurePythonRuntime, PYTHON_RUNTIME_DIR } from './python-assets.js';
+export { ensureRubyRuntime, RUBY_RUNTIME_DIR, RUBY_RUNTIME_VERSION } from './ruby-assets.js';
+export {
+  startRuntimeAssetBridge,
+  RUNTIME_REQUEST_ROOT,
+  type RuntimeAssetBridgeController,
+  type RuntimeAssetBridgeOptions,
+} from './runtime-asset-bridge.js';
+export {
+  startBrowserControlBridge,
+  type BrowserControlBridgeController,
+  type BrowserControlBridgeHandlers,
+  type BrowserControlBridgeOptions,
+} from './browser-control-bridge.js';
+export {
+  CONTROL_REQUEST_ROOT,
+  type BrowserControlAction,
+  type BrowserControlRequest,
+  type BrowserControlResponse,
+} from './control-protocol.js';
 export { pagePorts, type PortEventHooks } from './ports.js';
+export {
+  RpcTerminalClient,
+  createTerminalIdentity,
+  type BrowserRpcTerminalOptions,
+  type TerminalTransportFs,
+} from '../terminal/transport.js';
+export { TERMINAL_MAX_BUFFER_BYTES } from '../terminal/transport-protocol.js';
+export type {
+  TerminalIdentity,
+  TerminalOutputFrame,
+} from '../terminal/transport-protocol.js';
+export {
+  USERLAND_PROFILE,
+  USERLAND_DENY_EXIT_CODE,
+  USERLAND_DENYLIST,
+  defaultUserlandCapabilities,
+  deniedCommandCapability,
+  denylistedCommandResult,
+  isDenylistedCommand,
+  createUserlandRegistry,
+  type UserlandCommandStatus,
+  type UserlandRuntime,
+  type UserlandExecution,
+  type UserlandCommandCapability,
+  type UserlandCapabilitySnapshot,
+  type UserlandRegistry,
+  type UserlandCommandDefinition,
+  type UserlandPackageSource,
+  type UserlandServiceTemplate,
+} from '../userland/index.js';
 
 // ─── 公开选项 / 接口（TASK21 契约）───
 
@@ -46,13 +120,13 @@ export interface TerminalExecutor {
   /** 执行一条命令（统一路由：node|npm|npx → 真 Node，其余 → Lifo；协议命令直接命中）。
    *  返回完整 ExecResult（含 protocol 字段如 processes/cwd/killed，见 docs/PROTOCOL.md）。
    *  超时不再抛异常：返回 { ok:false, timedOut:true }。 */
-  exec(command: string, opts?: { timeoutMs?: number }): Promise<ExecResult>;
+  exec(command: string, opts?: ExecOptions): Promise<ExecResult>;
   /** 后台长驻进程（仅 node 系）。返回 ExecResult（含 pid）；是 { pid } 契约的超集 */
-  spawn(command: string, opts?: { timeoutMs?: number }): Promise<ExecResult>;
+  spawn(command: string, opts?: SpawnOptions): Promise<ExecResult>;
   /** 进程表快照（host 拉起的真实子进程） */
-  listProcesses(): Promise<ProcInfo[]>;
+  listProcesses(options?: ProcessListOptions): Promise<ProcInfo[]>;
   /** 终止真实子进程（SIGTERM）；成功返回 true */
-  kill(pid: number): Promise<boolean>;
+  kill(pid: number, options?: KillOptions): Promise<boolean>;
   /** host 存活探测 */
   ping(): Promise<boolean>;
   /** 看门狗直接探活（P1-3）：绕过互斥队列 —— 长命令占着队列时也能及时确认 host 存活。
@@ -61,6 +135,16 @@ export interface TerminalExecutor {
   /** Ctrl+C 真中断（P5-15）：绕过互斥队列直接发 interrupt；pid 为数字 = 已向该进程发 kill；
    *  pid 为 null = 无当前 run 可中断；null = 通道忙 / 无法发送。 */
   interruptDirect(timeoutMs?: number): Promise<ExecResult | null>;
+  /** Current runtime readiness snapshot (v0.7). */
+  runtimeStatus(): RuntimeStatus[];
+  /** Persistence health snapshot supplied by the host/application. */
+  persistenceStatus(): PersistenceStatus;
+  /** Registered capability degradations, if any. */
+  degradations(): DegradationStatus[];
+  /** Stable execution-world capability profile (v0.7). */
+  capabilities(): UserlandCapabilitySnapshot;
+  /** Open a WebContainer-native interactive terminal session. */
+  readonly interactive?: InteractiveTerminalService;
   /** 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
    *  cmd.json），重新注入资产并等待就绪。返回后 host 可立即接受命令。 */
   respawn(): Promise<void>;
@@ -68,6 +152,8 @@ export interface TerminalExecutor {
   getHostProc(): WebContainerProcess | null;
   /** 释放资源（kill host 进程、清引用）。幂等 */
   dispose(): Promise<void>;
+  /** Alias for dispose() used by SDK consumers. */
+  shutdown(): Promise<void>;
 }
 
 // ─── host 拉起（前端 boot 与 createTerminalExecutor 共用）───
@@ -119,6 +205,7 @@ export async function bootEngineHost(
     hooks.onInjected?.();
   }
   const hostProc = await wc.spawn('node', ['host.js']);
+  forwardHostOutput(hostProc);
   hooks.onSpawned?.();
   // lifo-core.js 异步写入（不进 boot 关键路径）：host 首个 Lifo 命令时才需要；
   // 写入失败时 host 侧 getSandbox 会重试（容器已有该文件则跳过）。随快照排除（persist）。
@@ -133,6 +220,20 @@ export async function bootEngineHost(
     pagePorts.subscribe(hooks.instanceId ?? DEFAULT_INSTANCE_ID, hooks);
   }
   return hostProc;
+}
+
+// WebContainer 子进程的输出流必须持续消费；否则启动失败的堆栈会被静默丢失，
+// 也可能因未消费的输出产生背压。正常 host 不输出，故只在异常时写入浏览器控制台。
+function forwardHostOutput(hostProc: WebContainerProcess): void {
+  const output = hostProc.output as unknown;
+  if (!output || typeof (output as { pipeTo?: unknown }).pipeTo !== 'function') return;
+  void (output as ReadableStream<string>).pipeTo(new WritableStream<string>({
+    write(chunk) {
+      if (chunk.trim()) console.error(`[succinix host] ${chunk.trimEnd()}`);
+    },
+  })).catch(() => {
+    /* Host 退出会关闭输出流；这里无需浏览器侧恢复。 */
+  });
 }
 
 // 等 host 就绪：命令轮询循环可响应（pong）。TASK18：重试间隔 300ms → 100ms。
@@ -151,132 +252,6 @@ export async function waitForHostReady(client: TerminalClient, attempts = 60): P
 
 // ─── 命令式接口（生态消费者：import { createTerminalExecutor } from '@succinix/engine'）───
 
-class TerminalExecutorImpl implements TerminalExecutor {
-  private wc: WebContainer | null = null;
-  private client: TerminalClient | null = null;
-  private hostProc: WebContainerProcess | null = null;
-  private sharedHost = false;
-  private opts: EngineBootHooks = {};
 
-  /** 复用已 boot 的 client / host（createTerminalExecutor(seed) 用；避免双 host） */
-  seed(s: TerminalExecutorSeed): void {
-    this.wc = s.wc ?? null;
-    this.client = s.client ?? null;
-    this.hostProc = s.hostProc ?? null;
-    this.sharedHost = s.sharedHost ?? false;
-  }
-
-  async boot(wc: WebContainer, opts: EngineBootHooks = {}): Promise<void> {
-    this.wc = wc;
-    this.opts = opts;
-    const hooks = opts;
-    const hostSrc = hooks.hostSrc ?? (await fetch(opts.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
-    const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(opts.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
-    // M5：已 seed 的 client 复用（实例工厂先建带 instanceId 的 client 再 boot，避免双客户端）；
-    // 未 seed 时自建（缺省 = 现状，instanceId 经 hooks 透传）。
-    if (!this.client) {
-      this.client = new TerminalClient(wc, { onCommand: hooks.onCommand, instanceId: hooks.instanceId });
-    }
-    this.hostProc = await bootEngineHost(wc, this.client, { ...hooks, hostSrc, lifoCoreSrc });
-    await waitForHostReady(this.client);
-  }
-
-  async exec(command: string, opts: { timeoutMs?: number } = {}): Promise<ExecResult> {
-    const client = this.requireClient();
-    try {
-      const res = await client.terminal(command, undefined, opts.timeoutMs);
-      return { ...res, timedOut: false };
-    } catch (e) {
-      return { ok: false, exitCode: -1, stdout: '', stderr: String(e), runtime: 'browser', timedOut: true };
-    }
-  }
-
-  async spawn(command: string, opts: { timeoutMs?: number } = {}): Promise<ExecResult> {
-    return this.requireClient().spawn(command, undefined, opts.timeoutMs);
-  }
-
-  async listProcesses(): Promise<ProcInfo[]> {
-    const res = await this.requireClient().terminal('ps');
-    return (Array.isArray(res.processes) ? res.processes : []) as unknown as ProcInfo[];
-  }
-
-  async kill(pid: number): Promise<boolean> {
-    const res = await this.requireClient().terminal(`kill ${pid}`);
-    return res.killed === true;
-  }
-
-  async ping(): Promise<boolean> {
-    const client = this.client;
-    if (!client) return false;
-    try {
-      const res = await client.exec('ping');
-      return res.kind === 'pong';
-    } catch {
-      return false;
-    }
-  }
-
-  async pingDirect(timeoutMs = 30000): Promise<boolean | null> {
-    const client = this.client;
-    if (!client) return false;
-    return client.pingDirect(timeoutMs);
-  }
-
-  async interruptDirect(timeoutMs = 2000): Promise<ExecResult | null> {
-    return this.requireClient().interruptDirect(timeoutMs);
-  }
-
-  // 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
-  // cmd.json），重新注入资产并等待就绪。引擎自包含 —— kill-before-spawn 就地实现，
-  // 不依赖系统层 host-restart.ts。
-  async respawn(): Promise<void> {
-    const wc = this.wc;
-    const client = this.client;
-    if (!wc || !client) throw new Error('TerminalExecutor not booted — call boot(wc) first');
-    const hooks = this.opts as EngineBootHooks;
-    // 资产源：boot 时预取的文本优先，否则按配置 URL 拉取（容器内 host.js 已存在则跳过写入）。
-    const hostSrc = hooks.hostSrc ?? (await fetch(hooks.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
-    const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(hooks.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
-    // kill 旧 host 必须在 spawn 新 host 之前（单 host 不变量）。旧句柄失效时 kill 是 no-op。
-    try {
-      this.hostProc?.kill();
-    } catch {
-      /* 旧句柄失效：忽略 */
-    }
-    this.hostProc = await bootEngineHost(wc, client, { ...hooks, hostSrc, lifoCoreSrc });
-    await waitForHostReady(client);
-  }
-
-  async dispose(): Promise<void> {
-    if (this.hostProc && !this.sharedHost) {
-      try {
-        this.hostProc.kill();
-      } catch {
-        /* 句柄失效：忽略 */
-      }
-    }
-    this.hostProc = null;
-    this.client = null;
-    this.wc = null;
-  }
-
-  /** 前端需要：host 进程句柄（main.ts 重启路径 kill 旧 host 用） */
-  getHostProc(): WebContainerProcess | null {
-    return this.hostProc;
-  }
-
-  private requireClient(): TerminalClient {
-    if (!this.client) throw new Error('TerminalExecutor not booted — call boot(wc) first');
-    return this.client;
-  }
-}
-
-/** 构造命令式通道。可选 seed 复用已 boot 的 client（宿主 boot 流程已拉起 host 时，
- *  直接包装既有 TerminalClient，避免双 host；未传时行为不变 —— boot(wc) 自建 client）。 */
-export function createTerminalExecutor(seed?: TerminalExecutorSeed): TerminalExecutor {
-  const impl = new TerminalExecutorImpl();
-  if (seed) {
-    impl.seed(seed);
-  }
-  return impl;
-}
+// 命令式接口（生态消费者）：实现已拆到 terminal-executor.ts（文件规模门禁）。
+export { createTerminalExecutor } from './terminal-executor.js';

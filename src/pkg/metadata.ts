@@ -2,6 +2,7 @@
 // lifo search 输出解析、表格格式化。无 IO 依赖。
 import type { WebContainer } from '@webcontainer/api';
 import type { TerminalClient } from '../engine/index.js';
+import type { PackageManifestFs } from './manifest.js';
 
 export interface PackageEntry {
   name: string;
@@ -19,6 +20,9 @@ export interface SearchEntry {
 export interface PkgContext {
   wc: WebContainer;
   client: TerminalClient;
+  /** Optional execution-world manifest sink (omitted by legacy callers). */
+  manifestFs?: PackageManifestFs;
+  manifestPath?: string;
 }
 
 // 命令执行结果：install/remove 共享同一形状。outputTail 为真实命令 stdout 尾部

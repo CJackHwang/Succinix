@@ -5,6 +5,102 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-08-16
+
+### Breaking
+
+- **The human terminal is now WebContainer-native.** Browser xterm is only the
+  device plane; line editing, history, completion, Ctrl+C, raw mode, jobs, and
+  the prompt live in the Lifo Shell started by `Sandbox.create({ terminal })`
+  through the new `RpcTerminal` transport. The browser-side parallel REPL
+  session state is removed.
+- **File RPC v2.** Requests carry `protocolVersion` / `bootNonce` /
+  `instanceId`; request IDs are no longer reused across page refreshes; the
+  host keeps a bounded processed-ID set; results are temp-write + rename;
+  malformed JSON / unknown versions return structured errors; timing
+  (`queueMs` / `hostMs` / `resultPollMs` / `totalMs`) is reported.
+- **Persistence v2.** New IndexedDB store `succinix-persist-v2` with binary
+  export, chunked generations, SHA-256 manifest, and last-known-good pointer;
+  session segments (JSONL) replace single-file session logs by default. The
+  v0.6 store is detected and reported as `legacy snapshot detected`, never
+  migrated or deleted.
+- **Main bundle no longer statically ships xterm.** xterm loads lazily so the
+  initial entry stays under 400 KiB raw / 120 KiB gzip (enforced by
+  `check:bundle-budget`).
+
+### Added
+
+- **Per-instance `SandboxContext`** keyed by instance id: independent
+  Sandbox/Shell/RpcTerminal, cwd/env/history/jobs, process/service/package
+  registries, terminal sessions, and persist context.
+- **Unified process model:** `ProcessRecord` covers
+  node/python/lifo/wasi/ruby and interactive sessions; `ps` / `kill` / Ctrl+C
+  (AbortSignal, SIGTERM -> SIGKILL escalation) work across runtimes; service
+  registry, `succinix service`, `systemctl`, and port views share one data
+  source; official templates: node-http, vite, static-http, python-http,
+  tinbase, websocket, worker.
+- **Linux userland profile `succinix-linux-userland/0.7`:** 40+ Unix commands
+  with exit-code contracts, a fail-closed denylist (chmod/chown/ln/mount/
+  sudo/su/ssh/gcc/...), `succinix doctor`, and `succinix capabilities`.
+- **Package manifest** `/etc/succinix.packages.json` and
+  `succinix pkg install|remove|update|lock|doctor|cache|restore` with
+  integrity checks and rehydration; Lifo packages take precedence, `npm:`
+  selects npm explicitly.
+- **Git HTTPS workflow** (init/status/add/commit/log/diff/branch/checkout/
+  clone/fetch/pull/push) via Isomorphic Git; SSH transport unsupported; `.git`
+  excluded from snapshots by default; tokens never enter logs.
+- **Honest network view:** curl/wget/dig/host/nslookup/netstat/ss/ip plus
+  `succinix net doctor|preview|tunnel`, with outputs labeled
+  virtual|preview|outbound|unavailable.
+- **Ruby WASM** (`ruby -e` / scripts / `--version`) and **WASI**
+  (`wasi-run` / `wasi-info`) as deferred runtime assets.
+- **`vi` / `nano`** as native Lifo interactive packages over `ITerminal` and
+  `CommandContext.stdin` / `setRawMode`.
+- **Execution-world service authority.** Service definitions now live in
+  `/etc/systemd/system/*.service` and lifecycle/state are owned by the same
+  per-instance Lifo `ServiceManager` used by `systemctl`. Enablement is kept
+  as snapshot-backed markers under `/workspace/.succinix-service-state/` and
+ restored at boot; the former browser-side service definition/autostart files are no
+  longer the source of truth.
+- **Third-party `UserlandRegistry`** (listCommands/registerCommand/
+  registerPackage/registerServiceTemplate/capabilities); registered commands
+  run in the WebContainer userland with the shared registries and lifecycle.
+- **Public API:** `InteractiveTerminalService`
+  (open/send/resize/onData/signal/close), executor `capabilities()` /
+  `degradations()` / `persistenceStatus()`, and Cordis events
+  `succinix/command-start|finish`, `succinix/runtime-ready`,
+  `succinix/degradation`, `succinix/persistence`,
+  `succinix/terminal-open|close|backpressure`.
+- **Dependency baseline:** `@lifo-sh/core@0.10.10`, `browser-metro@1.0.36`,
+  Vite 8.2.1, esbuild 0.28.2, ESLint 10.8.1, typescript-eslint 8.67.0,
+  `@types/node@26.2.0`, TypeScript CLI 7.0.2 (dual-track with TypeScript 6 for
+  typescript-eslint), globals 17.11.0, nanoid override >= 3.3.18.
+
+### Changed
+
+- Runtime errors are normalized to `RuntimeErrorShape`
+  (code/message/runtime/retryable/degraded); command logs redact
+  tokens/passwords/npm auth/env secrets/URL query secrets.
+- Observability fields: boot phase, RPC queue/host/poll timings, terminal
+  input/frame/ack/backpressure, snapshot collect/write/IDB, session
+  append/flush, watchdog restarts, runtime asset loads, and registry sizes.
+- Source files are capped at 450 lines (enforced by `audit:files`).
+
+### Fixed
+
+- **Binary snapshot restore no longer loses files.** The v2 export was taken
+  from the container-root path space while the v2 mount targets the fs-space
+  root (a random `home/<id>` that differs across boots), so a reload after a
+  snapshot could leave files under a stale prefix and appear missing. Exports
+  now use the container `workdir` as the fs-space root; pip-installed compiled
+  wheels (`.so`, e.g. `numpy`) persist across a refresh as part of the same
+  binary export (`S11`).
+- **Interactive `cd` persists to child processes.** Lifo's `Shell.execute`
+  restores the pre-run cwd whenever a `cwd` option is passed, reverting a
+  session `cd` on every command. Session runs no longer pass a `cwd`, so
+  `cd` followed by `node` / `npm` / `python` children executes in the session
+  directory (`S12`-`S14`).
+
 ## [0.6.0] — 2026-08-14
 
 ### Breaking
@@ -165,7 +261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Brand migration (TASK26): the project is now Succinix (SuccinixOS)** — unified rename with zero functional change and no old-name compatibility layer.
   - Identity: package name `succinix`, `<title>` / boot-version / env-error page, boot banner (`Succinix 0.2.0 ...`), boot-splash ASCII art (SUCCINIX), terminal prompt `guest@succinix:~$`, `uname` identity (`Succinix 0.2.0 ...`, hostname `succinix`), help / reboot / self-test strings.
-  - State files `/etc/succinix.*` (`env` / `settings` / `services` / `autostart` / `motd` / `cwd` / `engine.json`), log `/var/log/succinix.log`, python runtime assets `/usr/lib/succinix`.
+  - State files `/etc/succinix.*` (`env` / `settings` / `motd` / `cwd` / `engine.json`), execution-world service units `/etc/systemd/system/*.service`, snapshot enablement markers `/workspace/.succinix-service-state/*.enabled`, log `/var/log/succinix.log`, python runtime assets `/usr/lib/succinix`.
   - Persistence: IndexedDB database `succinix-persist`; window hooks `__succinixBench` / `__succinixScenario`; dev-tool temp-dir prefixes `succinix-*`.
   - Ecosystem naming (`docs/SDK.md`): `@succinix/engine`, `@succinix/sandbox-page`, `create-succinix-app`.
   - `docs/tasks/*` historical archive intentionally unchanged; version stays **0.2.0**.
@@ -249,14 +345,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- TASK19 scenario suite: `scripts/scenarios.mjs` — a headless-Chrome/CDP driven real-workflow test suite (zero new deps, mirrors `verify-deploy.mjs`/`bench.mjs`) running 10 real scenarios against the real browser+container: S1 npm project dev loop (real HTTP 200 to the preview port), S2 git operations (`pkg install lifo-pkg-git` → init/add/commit/log with a real commit hash), S3 database full lifecycle (create table/insert/read via tinbase `/admin/v1/sql` + `/rest/v1`, data persists across `db stop`/`db start`), S4 service autostart (`service enable tinbase` survives a refresh and boots `running`; disable stops it), S5 multi-workspace isolation (files isolated per workspace, state retained after refresh), S6 concurrency stress (3 parallel long commands — per-id results not interleaved), S7 big output (`seq 1 10000` complete, 2 MB node output capped at 1 MB, no OOM), S8 persistence stress (300 files survive `snapshot now` + refresh, sampled content verified), S9 error paths (unknown command / missing dir / CORS curl all error cleanly in English), S10 environment boundary (`reboot` keeps files and a clean process table). `?scenario=1` exposes `window.__succinixScenario` (a `run()` that mirrors the real terminal dispatch path + `client`/`wc`/`ports`/`saveSnapshot`) for the driver.
+- TASK19 scenario suite: `scripts/scenarios.mjs` — a headless-Chrome/CDP driven real-workflow test suite (zero new deps, mirrors `verify-deploy.mjs`/`bench.mjs`) running 10 real scenarios against the real browser+container: S1 npm project dev loop (real HTTP 200 to the preview port), S2 git operations (`pkg install lifo-pkg-git` → init/add/commit/log with a real commit hash), S3 database full lifecycle (create table/insert/read via tinbase `/admin/v1/sql` + `/rest/v1`, data persists across `db stop`/`db start`), S4 service enablement (`service enable tinbase` survives a refresh and boots `running`; disable stops it), S5 multi-workspace isolation (files isolated per workspace, state retained after refresh), S6 concurrency stress (3 parallel long commands — per-id results not interleaved), S7 big output (`seq 1 10000` complete, 2 MB node output capped at 1 MB, no OOM), S8 persistence stress (300 files survive `snapshot now` + refresh, sampled content verified), S9 error paths (unknown command / missing dir / CORS curl all error cleanly in English), S10 environment boundary (`reboot` keeps files and a clean process table). `?scenario=1` exposes `window.__succinixScenario` (a `run()` that mirrors the real terminal dispatch path + `client`/`wc`/`ports`/`saveSnapshot`) for the driver.
 - `respawnWithKillFirst` (new `src/host-restart.ts`): the kill-old-host-before-spawn invariant extracted into a testable helper; `main.ts` `restartHost` uses it and the self-test asserts the ordering directly.
 - Self-test regressions (now 57 passed): `spawn npx definitely-not-exist-xyz` must return `ok:false` (not falsely report a running process), and the dual-host invariant (kill before spawn).
 
 ### Changed
 
 - `?scenario=1` driver mode in `main.ts`: exposes the scenario handle only in scenario mode, mirroring `execute()`'s dispatch (browser-side intercept → host RPC) with structured output capture.
-- `startService` now runs `npm install <pkg>` first when a service command is `npx <pkg> ...` and `<pkg>` isn't installed — node_modules doesn't ride snapshots, so autostart after a refresh used to race npx's on-the-fly download against the 30 s port-wait (flaky).
+- `startService` now runs `npm install <pkg>` first when a service command is `npx <pkg> ...` and `<pkg>` isn't installed — node_modules doesn't ride snapshots, so an enabled service after a refresh used to race npx's on-the-fly download against the 30 s port-wait (flaky).
 - tinbase persistence messaging is now honest: `db start` reports data persists across `db restart` in-session and that a browser refresh recreates the WASM store (binary db files aren't snapshotted); README Persistence section updated to match.
 
 ### Fixed
@@ -291,7 +387,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory management: `free`/`top` memory overview (honest sandbox estimates), `reboot` (browser reload, persisted data survives), `shutdown`, and `cache`/`cache clear` (rebuildable caches only — never `/workspace`).
 - Workspace split: multiple isolated workspaces (`/ws/<name>`) managed by the `workspace` command family (`create`/`switch`/`rm`); current workspace recorded in `/ws/.current` and persisted across refreshes; default `main` workspace initialized on first boot.
 - System configuration: `env` manages persistent environment variables (`/etc/succinix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/succinix.settings`: tinbase `preview-port` default 3001, `default-workspace` used at boot, `font-size` applied live to the terminal).
-- Service management: `service` command family (`list`/`start`/`stop`/`status`/`enable`/`disable`) over the existing `spawn`/`ps`/`kill` + port registry, with declarative service definitions (`/etc/succinix.services`, `name|command|port`, `${PORT}` placeholder resolved from `preview-port`) and boot autostart (`/etc/succinix.autostart`, declarative restart at boot — not a daemon, no crash self-healing).
+- Service management: `service`/`systemctl` command family (`list`/`start`/`stop`/`status`/`enable`/`disable`) over the shared Lifo `ServiceManager`, process table, and port registry, with declarative unit definitions (`/etc/systemd/system/*.service`) and snapshot-backed boot enablement markers (`/workspace/.succinix-service-state/*.enabled`) — not a PID 1 daemon, no crash self-healing.
 - Logging system (journald-style): persistent log at `/var/log/succinix.log` (container FS, rides snapshots; auto-truncates to a ~200 KB tail) capturing boot events (`BOOT`), command executions (`INFO` — `cmd: <command> exit=<code> runtime=<node|lifo|browser|protocol>`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`); `log` command family (`log` last 20, `log -n <count>`, `log boot`, `log clear`). Interactive `log -f` is deferred (POC).
 - Virtual network view: `netstat` lists the virtual listening ports (port registry rendered as `Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process — matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual`; no fabricated interfaces, IPs, or connections.
 - System information & login banner: `uname` reports the honest browser-native system identity — summary line `Succinix 0.2.0 js-runtime+webcontainer <api-version> <arch>` (kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel), `-a` all fields with hostname/OS, `-r` the `@webcontainer/api` runtime version, `-m` the UA-derived architecture (`unknown` when absent) — and `motd` views/edits the persisted login banner at `/etc/succinix.motd` (`motd <text>` sets it, `motd reset` restores the default welcome line, printed at every boot).

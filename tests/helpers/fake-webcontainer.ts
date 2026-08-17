@@ -4,13 +4,17 @@ import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { FakeFS } from './fakes.js';
 
 export interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
+  bootNonce?: string;
+  instanceId?: string;
 }
 
 export class RpcFakeFS extends FakeFS {
+  readonly requests: CmdReq[] = [];
+
   constructor(private readonly respond: (req: CmdReq) => unknown) {
     super();
   }
@@ -19,9 +23,23 @@ export class RpcFakeFS extends FakeFS {
     await super.writeFile(path, content);
     if (path === '/cmd.json') {
       const req = JSON.parse(content) as CmdReq;
+      this.requests.push(req);
+      await super.writeFile(`/ack-${req.id}.json`, JSON.stringify({
+        protocolVersion: 2,
+        id: req.id,
+        bootNonce: req.bootNonce,
+        instanceId: req.instanceId ?? 'default',
+        acceptedAt: Date.now(),
+      }));
       const payload = this.respond(req);
       if (payload !== undefined) {
-        await super.writeFile(`/result-${req.id}.json`, JSON.stringify({ id: req.id, ...(payload as object) }));
+        await super.writeFile(`/result-${req.id}.json`, JSON.stringify({
+          protocolVersion: 2,
+          id: req.id,
+          bootNonce: req.bootNonce,
+          instanceId: req.instanceId ?? 'default',
+          ...(payload as object),
+        }));
       }
     }
   }
@@ -66,6 +84,21 @@ function defaultRespond(req: CmdReq): unknown {
   if (req.cmd === 'ping') return { ok: true, kind: 'pong' };
   if (req.cmd === 'ps') return { ok: true, processes: [] };
   if (req.cmd === 'spawn') return { ok: true, pid: 123, runtime: 'node' };
+  if (req.cmd === 'run') {
+    const command = String(req.opts?.command ?? '');
+    if (command.startsWith('succinix service ')) {
+      if (command.includes("'inspect'")) {
+        if (command.includes("'missing'")) return { ok: false, exitCode: 3, stdout: 'null', runtime: 'lifo' };
+        return {
+          ok: true,
+          exitCode: 0,
+          stdout: JSON.stringify([{ name: 'tinbase', command: 'npx tinbase start --port 3001 --engine wasm', port: 3001, description: 'Tinbase', enabled: false, state: 'stopped' }]),
+          runtime: 'lifo',
+        };
+      }
+      if (command.includes("'missing'")) return { ok: false, exitCode: 1, stderr: 'unknown service: missing', runtime: 'lifo' };
+    }
+  }
   return { ok: true, exitCode: 0, stdout: 'ok', runtime: 'lifo' };
 }
 

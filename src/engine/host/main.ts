@@ -14,71 +14,146 @@
 // 统一路由结果必须带 runtime: 'node' | 'lifo' 字段，方便验证走的是哪条路径。
 
 import fs from 'node:fs';
-import { CMD_FILE, writeResult, instanceOf, type CommandRequest } from './rpc.js';
-import { setCurrentInstanceId, getSessionCwd } from './config.js';
+import { CMD_FILE, beginRequest, writeAck, writeProtocolError, writeResult, instanceOf, type CommandRequest } from './rpc.js';
+import { setCurrentInstanceId, currentInstanceId, getSessionCwd } from './config.js';
 import { dispatchRun } from './run.js';
 import { dispatchSpawn } from './spawn.js';
 import { dispatchPs, dispatchKill, dispatchResetInstance, dispatchInterrupt, dispatchSetCwd } from './ps-kill.js';
 import { pruneStaleResults } from './rpc.js';
-import { shouldRemoveCmdFile } from '../host-route.js';
+import { BoundedProcessedIds, RPC_PROTOCOL_VERSION, isValidRpcRequestId, type RpcStructuredError } from '../rpc-v2.js';
+import { RpcTerminal, TerminalMailboxHost } from './terminal.js';
+import { attachRpcTerminal, detachRpcTerminal } from './run.js';
 
 // 统一命令入口：各分支自行写 result-<id>.json。
 // node 子进程的 run 会立即返回（结果异步写回），保证 ps/kill 在长命令期间仍可用。
 export async function handleCommand(req: CommandRequest): Promise<void> {
+  const previousInstance = currentInstanceId();
   setCurrentInstanceId(instanceOf(req));
   const inst = instanceOf(req);
-  switch (req.cmd) {
-    case 'ping':
-      writeResult(req.id, { ok: true, kind: 'pong' }, inst);
-      return;
-    case 'cwd':
-      writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(inst), hostRoot: process.cwd() }, inst);
-      return;
-    case 'setCwd':
-      dispatchSetCwd(req);
-      return;
-    case 'run':
-      await dispatchRun(req);
-      return;
-    case 'spawn':
-      dispatchSpawn(req);
-      return;
-    case 'ps':
-      dispatchPs(req);
-      return;
-    case 'kill':
-      dispatchKill(req);
-      return;
-    case 'reset-instance':
-      dispatchResetInstance(req);
-      return;
-    case 'interrupt':
-      dispatchInterrupt(req);
-      return;
-    case 'exit':
-      writeResult(req.id, { ok: true, kind: 'bye' }, inst);
-      return;
-    default:
-      writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` }, inst);
+  try {
+    switch (req.cmd) {
+      case 'ping':
+        writeResult(req.id, { ok: true, kind: 'pong' }, inst);
+        return;
+      case 'cwd':
+        writeResult(req.id, { ok: true, kind: 'cwd', cwd: getSessionCwd(inst), hostRoot: process.cwd() }, inst);
+        return;
+      case 'setCwd':
+        dispatchSetCwd(req);
+        return;
+      case 'run':
+        await dispatchRun(req);
+        return;
+      case 'spawn':
+        dispatchSpawn(req);
+        return;
+      case 'ps':
+        await dispatchPs(req);
+        return;
+      case 'kill':
+        await dispatchKill(req);
+        return;
+      case 'reset-instance':
+        await dispatchResetInstance(req);
+        return;
+      case 'interrupt':
+        dispatchInterrupt(req);
+        return;
+      case 'exit':
+        writeResult(req.id, { ok: true, kind: 'bye' }, inst);
+        return;
+      default:
+        writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` }, inst);
+    }
+  } finally {
+    setCurrentInstanceId(previousInstance);
   }
 }
 
 // ─── 轮询循环：文件 RPC 通道 ───
 // 保持原有的 cmd.json → result-<id>.json 轮询协议，仅把处理逻辑结构化。
-let processedId = -1;
+const processedIds = new BoundedProcessedIds(4096);
 let busy = false;
+let priorityBusy = false;
+
+// Interactive terminal transport is a separate session-scoped mailbox.  It
+// runs alongside the batch RPC loop and never parses commands or owns shell
+// state; the Lifo Sandbox/ Shell remains the execution-world owner.
+const terminalMailbox = new TerminalMailboxHost((open, options) => {
+  const terminal = new RpcTerminal(open, options, { cols: open.cols, rows: open.rows });
+  attachRpcTerminal(open.instanceId, terminal);
+  return terminal;
+}, {
+  onSessionClose: (identity, terminal) => { void detachRpcTerminal(identity.instanceId, terminal); },
+});
+terminalMailbox.start(16);
+
+function removeIfSame(id: string | number): void {
+  try {
+    const current = fs.readFileSync(CMD_FILE, 'utf8');
+    const parsed = JSON.parse(current) as { id?: unknown };
+    if (parsed.id === id) fs.unlinkSync(CMD_FILE);
+  } catch {
+    /* file was replaced or removed */
+  }
+}
+
+function protocolError(error: RpcStructuredError, id?: string | number, bootNonce?: string, instanceId?: string): void {
+  writeProtocolError(error, id, bootNonce, instanceId);
+}
 
 // 定期清理被放弃请求留下的陈旧结果文件（浏览器已超时放弃的请求）。
 setInterval(pruneStaleResults, 60000);
 
 setInterval(async () => {
-  if (busy) return;
+  if (busy) {
+    if (!priorityBusy) void processPriorityRequest();
+    return;
+  }
   let req: CommandRequest | null = null;
   try {
     if (!fs.existsSync(CMD_FILE)) return;
-    req = JSON.parse(fs.readFileSync(CMD_FILE, 'utf8')) as CommandRequest;
-    if (typeof req.id !== 'number' || req.id === processedId) return;
-    processedId = req.id;
+    const raw = fs.readFileSync(CMD_FILE, 'utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      protocolError({ code: 'MALFORMED_JSON', message: 'RPC request is not valid JSON' });
+      try { fs.unlinkSync(CMD_FILE); } catch { /* ignore */ }
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      protocolError({ code: 'INVALID_REQUEST', message: 'RPC request must be an object' });
+      try { fs.unlinkSync(CMD_FILE); } catch { /* ignore */ }
+      return;
+    }
+    const candidate = parsed as Partial<CommandRequest>;
+    if (!isValidRpcRequestId(candidate.id)) {
+      protocolError({ code: 'INVALID_REQUEST_ID', message: 'RPC request id is invalid' });
+      try { fs.unlinkSync(CMD_FILE); } catch { /* ignore */ }
+      return;
+    }
+    if (candidate.protocolVersion !== RPC_PROTOCOL_VERSION) {
+      protocolError({ code: 'UNSUPPORTED_PROTOCOL', message: `unsupported RPC protocol version: ${String(candidate.protocolVersion)}` }, candidate.id, typeof candidate.bootNonce === 'string' ? candidate.bootNonce : undefined);
+      removeIfSame(candidate.id);
+      return;
+    }
+    if (typeof candidate.bootNonce !== 'string' || candidate.bootNonce.length < 1 || typeof candidate.cmd !== 'string') {
+      protocolError({ code: 'INVALID_REQUEST', message: 'RPC request requires bootNonce and cmd' }, candidate.id, candidate.bootNonce);
+      removeIfSame(candidate.id);
+      return;
+    }
+    req = candidate as CommandRequest;
+    if (processedIds.has(req.id)) {
+      // A retried delivery gets an acknowledgement, but is never executed a
+      // second time. The original result remains independently readable.
+      writeAck(req);
+      removeIfSame(req.id);
+      return;
+    }
+    processedIds.add(req.id);
+    beginRequest(req);
+    writeAck(req);
     busy = true;
     try {
       await handleCommand(req);
@@ -90,7 +165,7 @@ setInterval(async () => {
   } catch (e) {
     busy = false;
     try {
-      writeResult(-1, { ok: false, error: String(e).slice(0, 200) });
+      protocolError({ code: 'INVALID_REQUEST', message: String(e).slice(0, 200) });
     } catch {
       /* FS 不可用 */
     }
@@ -103,12 +178,37 @@ setInterval(async () => {
     // host 忙于长 Lifo/Python 命令时写 ping）。盲目删除会吞掉它 —— 看门狗等不到 pong 误判
     // host 失联（连续 2 次即重启），Ctrl+C 中断丢失。保留待下一轮轮询处理（决策见 host-route.ts）。
     if (req) {
-      try {
-        const current = fs.readFileSync(CMD_FILE, 'utf8');
-        if (shouldRemoveCmdFile(req.id, current)) fs.unlinkSync(CMD_FILE);
-      } catch {
-        /* 文件已被删除 / 不可读：忽略 */
-      }
+      removeIfSame(req.id);
     }
   }
 }, 50); // TASK18：轮询 120ms → 50ms（命令往返的 host 侧等待减半；fs.existsSync 每 50ms 一次开销可忽略）
+
+/** While a long Lifo/Python/Node request owns the normal scheduler, accept
+ * only the two priority controls that must not wait behind it.  The mailbox
+ * remains single-slot, so ordinary requests stay untouched until the active
+ * request completes; this prevents watchdog/Ctrl+C from being swallowed. */
+async function processPriorityRequest(): Promise<void> {
+  priorityBusy = true;
+  let req: CommandRequest | null = null;
+  try {
+    if (!fs.existsSync(CMD_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(CMD_FILE, 'utf8')) as Partial<CommandRequest>;
+    if (!isValidRpcRequestId(parsed.id) || parsed.protocolVersion !== RPC_PROTOCOL_VERSION || typeof parsed.bootNonce !== 'string' || typeof parsed.cmd !== 'string') return;
+    if (parsed.cmd !== 'ping' && parsed.cmd !== 'interrupt') return;
+    req = parsed as CommandRequest;
+    if (processedIds.has(req.id)) {
+      writeAck(req);
+      removeIfSame(req.id);
+      return;
+    }
+    processedIds.add(req.id);
+    beginRequest(req);
+    writeAck(req);
+    await handleCommand(req);
+  } catch {
+    /* The normal loop will report malformed/ordinary requests after busy clears. */
+  } finally {
+    if (req) removeIfSame(req.id);
+    priorityBusy = false;
+  }
+}

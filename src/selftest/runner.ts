@@ -67,8 +67,8 @@ export async function runTests(ctx: TestContext): Promise<TestResult> {
   term.writeln('');
 
   // 域顺序 = 原 tests.ts 输出顺序（?test=1 输出不变）。
-  const { hostCwd } = await runKernel(ctx);
-  await runFilesystem(ctx, hostCwd);
+  await runKernel(ctx);
+  await runFilesystem(ctx);
   await runPersistence(ctx);
   await runConfig(ctx);
   await runServices(ctx);

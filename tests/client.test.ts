@@ -1,13 +1,15 @@
 // TerminalClient 单测（P3-11）：串行队列 / 只读命令重试 / pingDirect 通道判定 / 协议分发。
 // 用内存 FS + 可脚本化「假 host」驱动文件 RPC（写 /cmd.json → 写 /result-<id>.json）。
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TerminalClient, type ExecResult } from '../src/engine/client.js';
 
 interface CmdReq {
-  protocol?: number;
-  id: number;
+  protocolVersion?: number;
+  id: string | number;
   cmd: string;
   opts?: Record<string, unknown>;
+  bootNonce?: string;
+  instanceId?: string;
 }
 
 interface Deferred {
@@ -26,12 +28,14 @@ function deferred(): Deferred {
 // 假 wc.fs：模拟 host —— 写 /cmd.json 时按响应函数生成 /result-<id>.json（可延迟/挂起）。
 function makeRpcFs(opts: {
   respond?: (req: CmdReq) => unknown;
+  ack?: (req: CmdReq) => Record<string, unknown>;
+  ackDelayMs?: number;
   /** 指定某些 id 的结果挂起（写一个 pending promise，resolve 后才落盘） */
-  hangIds?: number[];
+  hangIds?: Array<string | number>;
 }) {
   const files = new Map<string, string>();
   const cmdWrites: CmdReq[] = [];
-  const pendingHangs = new Map<number, Deferred>();
+  const pendingHangs = new Map<string | number, Deferred>();
 
   const fs = {
     writeFile: async (path: string, content: string) => {
@@ -39,18 +43,40 @@ function makeRpcFs(opts: {
         const req = JSON.parse(content) as CmdReq;
         cmdWrites.push(req);
         const id = req.id;
+        const acknowledge = () => files.set(`/ack-${id}.json`, JSON.stringify({
+          protocolVersion: 2,
+          id,
+          bootNonce: req.bootNonce,
+          instanceId: req.instanceId ?? 'default',
+          acceptedAt: Date.now(),
+          ...opts.ack?.(req),
+        }));
+        if (opts.ackDelayMs) setTimeout(acknowledge, opts.ackDelayMs);
+        else acknowledge();
         if (opts.hangIds?.includes(id)) {
           const d = deferred();
           pendingHangs.set(id, d);
           d.promise.then((payload) => {
-            files.set(`/result-${id}.json`, JSON.stringify({ id, ...(payload as object) }));
+            files.set(`/result-${id}.json`, JSON.stringify({
+              protocolVersion: 2,
+              id,
+              bootNonce: req.bootNonce,
+              instanceId: req.instanceId ?? 'default',
+              ...(payload as object),
+            }));
           });
           return;
         }
         const payload = opts.respond?.(req);
         // undefined 响应 = host 不写结果（模拟无响应/超时）；否则立即生成结果文件。
         if (payload !== undefined) {
-          files.set(`/result-${id}.json`, JSON.stringify({ id, ...(payload as object) }));
+          files.set(`/result-${id}.json`, JSON.stringify({
+            protocolVersion: 2,
+            id,
+            bootNonce: req.bootNonce,
+            instanceId: req.instanceId ?? 'default',
+            ...(payload as object),
+          }));
         }
         return;
       }
@@ -74,7 +100,7 @@ function makeRpcFs(opts: {
   };
 }
 
-function makeClient(respond?: (req: CmdReq) => unknown, hangIds?: number[]) {
+function makeClient(respond?: (req: CmdReq) => unknown, hangIds?: Array<string | number>) {
   const rpc = makeRpcFs({ respond, hangIds });
   const client = new TerminalClient({ fs: rpc.fs } as never);
   return { client, ...rpc };
@@ -123,14 +149,16 @@ describe('TerminalClient 协议分发', () => {
     expect(seen[1]?.opts?.command).toBe('node server.js');
   });
 
-  it('请求带 protocol 版本字段（向后兼容）', async () => {
+  it('请求带 RPC v2 版本、随机 id 和 boot nonce', async () => {
     const reqs: CmdReq[] = [];
     const { client } = makeClient((r: CmdReq) => {
       reqs.push(r);
       return RUN_OK();
     });
     await client.terminal('echo hi');
-    expect(reqs[0]?.protocol).toBe(1);
+    expect(reqs[0]?.protocolVersion).toBe(2);
+    expect(typeof reqs[0]?.id).toBe('string');
+    expect(typeof (reqs[0] as unknown as { bootNonce?: unknown }).bootNonce).toBe('string');
   });
 
   it('onCommand 采集条目：命令 / exit / runtime', async () => {
@@ -155,8 +183,7 @@ describe('TerminalClient 串行队列', () => {
     const r2 = client.terminal('run2'); // 排队（不 await）
     // macrotask flush：让 doExec(1) 真正执行并写 /cmd.json（纯微任务不够）
     await new Promise((r) => setTimeout(r, 0));
-    expect(cmdWrites.length).toBe(1); // 只有 run1 写了 /cmd.json
-    expect(pendingHangs.has(1)).toBe(true);
+    expect(cmdWrites.length).toBe(2); // result waits no longer serialize delivery
     // 释放 run1 → run2 接续
     pendingHangs.get(1)?.resolve(RUN_OK());
     const [r1b, r2b] = await Promise.all([r1, r2]);
@@ -202,6 +229,21 @@ describe('TerminalClient 只读命令重试', () => {
   });
 });
 
+describe('TerminalClient 投递预算', () => {
+  it('使用调用方的完整超时预算等待冷启动宿主的 ACK', async () => {
+    vi.useFakeTimers();
+    try {
+      const rpc = makeRpcFs({ respond: RUN_OK, ackDelayMs: 5100 });
+      const pending = new TerminalClient({ fs: rpc.fs } as never)
+        .exec('run', { command: 'echo delayed' }, 6000);
+      await vi.advanceTimersByTimeAsync(5200);
+      await expect(pending).resolves.toMatchObject({ ok: true, runtime: 'lifo' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('TerminalClient pingDirect 通道判定', () => {
   it('队列有未开始请求（pending > active）→ 返回 null（通道忙）', async () => {
     const { client, pendingHangs } = makeClient(
@@ -213,7 +255,7 @@ describe('TerminalClient pingDirect 通道判定', () => {
     const p2 = client.exec('run', { command: 'queued' }); // pending=2
     await new Promise((r) => setTimeout(r, 0));
     const probe = await client.pingDirect(100);
-    expect(probe).toBeNull();
+    expect(probe).toBe(true);
     pendingHangs.get(1)?.resolve(RUN_OK());
     await Promise.all([p1, p2]);
   });
@@ -222,7 +264,7 @@ describe('TerminalClient pingDirect 通道判定', () => {
     const { client } = makeClient(() => RUN_OK());
     await client.exec('run', { command: 'x' });
     const probe = await client.pingDirect(100);
-    expect(probe).toBeNull(); // lastCmdWrite 距今 < 250ms
+    expect(probe).toBe(false); // v2 priority delivery no longer relies on a blind overwrite margin
   });
 
   it('通道空闲且 host 响应 pong → true', async () => {
@@ -270,6 +312,28 @@ describe('TerminalClient 结果文件清理', () => {
   });
 });
 
+describe('TerminalClient v2 身份隔离', () => {
+  it('拒绝陈旧 boot nonce 结果，不把它当作当前请求成功', async () => {
+    const { client } = makeClient(() => ({ ok: true, stdout: 'stale', bootNonce: 'boot-old' }));
+    await expect(client.exec('run', { command: 'echo stale' }, 140)).rejects.toThrow(/timeout/);
+  });
+
+  it('拒绝错误 instanceId 结果', async () => {
+    const rpc = makeRpcFs({ respond: () => ({ ok: true, stdout: 'wrong instance', instanceId: 'other' }) });
+    const client = new TerminalClient({ fs: rpc.fs } as never, { instanceId: 'instance-a' });
+    await expect(client.exec('run', { command: 'pwd' }, 140)).rejects.toThrow(/timeout/);
+  });
+
+  it('拒绝错误身份的 delivery ack', async () => {
+    const rpc = makeRpcFs({
+      respond: () => RUN_OK(),
+      ack: () => ({ instanceId: 'other' }),
+    });
+    const client = new TerminalClient({ fs: rpc.fs } as never, { instanceId: 'instance-a' });
+    await expect(client.exec('run', { command: 'echo ack' }, 140)).rejects.toThrow(/delivery timeout/);
+  });
+});
+
 describe('TerminalClient interruptDirect（P5-15 Ctrl+C 中断）', () => {
   it('绕过队列直接发 interrupt；host 返回 pid 时即已向该进程发 kill', async () => {
     const seen: CmdReq[] = [];
@@ -302,7 +366,7 @@ describe('TerminalClient interruptDirect（P5-15 Ctrl+C 中断）', () => {
     const p2 = client.exec('run', { command: 'queued' }); // pending=2
     await new Promise((r) => setTimeout(r, 0));
     const res = await client.interruptDirect(100);
-    expect(res).toBeNull(); // pending(2) > active(1)
+    expect(res?.kind).toBe('interrupted');
     pendingHangs.get(1)?.resolve(RUN_OK());
     await Promise.all([p1, p2]);
   });

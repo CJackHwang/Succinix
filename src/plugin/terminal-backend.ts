@@ -1,11 +1,7 @@
-// invariant: Succinix PTY backend for dsh ctx.terminals over the existing
-// SuccinixTerminalSession. It captures scrollback, serializes sends through
-// the session state machine, and fails closed for signals it cannot verify.
-import type {
-  SuccinixTerminalSession,
-  TerminalOutput,
-  TerminalSessionOptions,
-} from '../terminal/index.js';
+// invariant: Succinix PTY backend for dsh ctx.terminals over the
+// WebContainer-native InteractiveTerminalSession. Browser code never parses
+// shell lines or owns history, completion, raw mode, cwd, or job state.
+import type { InteractiveTerminalSession } from '../engine/index.js';
 import type {
   TerminalBackend,
   TerminalBackendSession,
@@ -21,21 +17,29 @@ import type {
   TerminalSignalResult,
 } from './dsh-types.js';
 
+const INITIAL_OUTPUT_GRACE_MS = 250;
+const OUTPUT_QUIET_MS = 50;
 const SEND_IDLE_TIMEOUT_MS = 60000;
 
-class CapturedOutput implements TerminalOutput {
+class CapturedOutput {
   private text = '';
+  private revision = 0;
 
-  write(data: string): void {
+  append(data: string): void {
     this.text += data;
-  }
-
-  clear(): void {
-    this.text = '';
+    this.revision++;
   }
 
   textSince(offset: number): string {
     return this.text.slice(offset);
+  }
+
+  length(): number {
+    return this.text.length;
+  }
+
+  currentRevision(): number {
+    return this.revision;
   }
 
   lines(): string[] {
@@ -43,8 +47,37 @@ class CapturedOutput implements TerminalOutput {
   }
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForQuiet(
+  capture: CapturedOutput,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  requireOutput = false,
+  initialRevision = capture.currentRevision(),
+): Promise<boolean> {
+  const startedAt = Date.now();
+  let quietSince = startedAt;
+  let revision = initialRevision;
+  let observed = !requireOutput;
+  while (Date.now() - startedAt < timeoutMs) {
+    if (signal?.aborted) return false;
+    const current = capture.currentRevision();
+    if (current !== revision) {
+      revision = current;
+      observed = true;
+      quietSince = Date.now();
+    }
+    if (observed && Date.now() - quietSince >= OUTPUT_QUIET_MS) return true;
+    await wait(10);
+  }
+  return false;
+}
+
 export interface SuccinixTerminalBackendDeps {
-  createSession(options: TerminalSessionOptions & { output: TerminalOutput }): SuccinixTerminalSession;
+  open(spec: TerminalBackendSpawnSpec): Promise<InteractiveTerminalSession>;
 }
 
 export class SuccinixTerminalBackend implements TerminalBackend {
@@ -53,14 +86,23 @@ export class SuccinixTerminalBackend implements TerminalBackend {
   constructor(private readonly deps: SuccinixTerminalBackendDeps) {}
 
   async spawn(spec: TerminalBackendSpawnSpec): Promise<TerminalBackendSession> {
+    spec.signal?.throwIfAborted();
+    const session = await this.deps.open(spec);
     const capture = new CapturedOutput();
-    const session = this.deps.createSession({
-      cwd: spec.cwd ?? '/workspace',
-      bootGate: false,
-      output: capture,
-    });
-    await session.boot();
-    return new SuccinixBackendSession(session, capture, spec.sessionId);
+    const unsubscribe = session.onData((data) => capture.append(data));
+    try {
+      // The initial shell prompt is useful session metadata, but the public
+      // interactive transport has no prompt-ready handshake. Do not reject a
+      // usable terminal merely because an already-running Sandbox emitted its
+      // prompt before this device attached.
+      await waitForQuiet(capture, INITIAL_OUTPUT_GRACE_MS, spec.signal, true);
+      spec.signal?.throwIfAborted();
+      return new SuccinixBackendSession(session, capture, unsubscribe, spec.sessionId);
+    } catch (error) {
+      unsubscribe();
+      await session.close();
+      throw error;
+    }
   }
 }
 
@@ -70,9 +112,10 @@ class SuccinixBackendSession implements TerminalBackendSession {
   private readonly syntheticPgid: number;
 
   constructor(
-    private readonly session: SuccinixTerminalSession,
+    private readonly session: InteractiveTerminalSession,
     private readonly capture: CapturedOutput,
-    sessionId: string
+    private readonly unsubscribe: () => void,
+    sessionId: string,
   ) {
     this.motd = capture.textSince(0);
     let hash = 0;
@@ -82,23 +125,9 @@ class SuccinixBackendSession implements TerminalBackendSession {
 
   startSend(request: TerminalSendRequest): TerminalSendOperation {
     let settled = false;
-    let lastRead = this.capture.textSince(0).length;
+    let lastRead = this.capture.length();
     const start = lastRead;
-    const done = (async (): Promise<TerminalSendResult> => {
-      if (!this.closed) {
-        if (request.text) this.session.handleData(request.text);
-        if (request.submit) this.session.handleData('\r');
-      }
-      const idle = await this.session.waitForIdle(SEND_IDLE_TIMEOUT_MS);
-      settled = true;
-      const sessionStatus = this.status();
-      return {
-        viewport: this.capture.textSince(start),
-        waitReason: this.closed ? 'session_exit' : idle ? (request.submit || request.text ? 'inferred_idle' : 'stdin_read') : 'timeout',
-        sessionStatus,
-        truncated: false,
-      };
-    })();
+    const done = this.sendAndWait(request, start).finally(() => { settled = true; });
     return {
       done,
       readOutput: (): TerminalSendRead => {
@@ -108,7 +137,7 @@ class SuccinixBackendSession implements TerminalBackendSession {
       },
       cancel: (): boolean => {
         if (settled || this.closed) return false;
-        this.session.handleData('\u0003');
+        void this.session.signal('SIGINT');
         return true;
       },
     };
@@ -135,18 +164,41 @@ class SuccinixBackendSession implements TerminalBackendSession {
     if (signal === 'SIGHUP' || signal === 'SIGTSTP') {
       throw new Error(`PTY signal ${signal} has no verifiable foreground delivery channel in Succinix`);
     }
-    this.session.handleData('\u0003');
+    await this.session.signal(signal);
     return { delivered: true, targetPgid: this.syntheticPgid };
   }
 
   status(): TerminalSessionStatus {
-    if (this.closed) return { kind: 'exited', exitCode: 0, signal: null };
-    return { kind: 'running' };
+    return this.closed
+      ? { kind: 'exited', exitCode: 0, signal: null }
+      : { kind: 'running' };
   }
 
   async close(_reason: string): Promise<void> {
     if (this.closed) return;
-    this.session.dispose();
     this.closed = true;
+    this.unsubscribe();
+    await this.session.close();
+  }
+
+  private async sendAndWait(request: TerminalSendRequest, start: number): Promise<TerminalSendResult> {
+    const initialRevision = this.capture.currentRevision();
+    if (!this.closed) {
+      const data = `${request.text}${request.submit ? '\r' : ''}`;
+      if (data) await this.session.send(data);
+    }
+    const idle = await waitForQuiet(
+      this.capture,
+      SEND_IDLE_TIMEOUT_MS,
+      request.signal,
+      request.submit || request.text.length > 0,
+      initialRevision,
+    );
+    return {
+      viewport: this.capture.textSince(start),
+      waitReason: this.closed ? 'session_exit' : idle ? (request.submit || request.text ? 'inferred_idle' : 'stdin_read') : 'timeout',
+      sessionStatus: this.status(),
+      truncated: false,
+    };
   }
 }

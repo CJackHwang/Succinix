@@ -4,7 +4,6 @@ import { WebContainer, type WebContainer as WebContainerType } from '@webcontain
 import type { EngineBootHooks } from '../engine/index.js';
 import { pagePorts } from '../engine/ports.js';
 import { instancePorts } from '../instance/ports.js';
-import { clearActivePorts, clearDbActivePorts } from '../services/index.js';
 import { SuccinixCapabilityRegistry } from './capabilities.js';
 import { requiresRestart, type ResolvedSuccinixConfig, type SuccinixConfig } from './config.js';
 import type { HostManager } from './host-manager.js';
@@ -14,8 +13,8 @@ import type {
   BootOptions,
   EnsureInstanceOptions,
   SuccinixInstance,
-  SuccinixPortEvent,
   SuccinixWorkspaceEvent,
+  SuccinixEventMap,
 } from './types.js';
 
 export interface ServiceLifecycleDeps {
@@ -28,7 +27,7 @@ export interface ServiceLifecycleDeps {
   defaultId(): string;
   resolvedConfig(): ResolvedSuccinixConfig;
   emitState(reason: SuccinixStateReason): void;
-  publish<K extends 'succinix/server-ready' | 'succinix/server-closed'>(event: K, payload: SuccinixPortEvent): void;
+  publish<K extends keyof SuccinixEventMap>(event: K, payload: SuccinixEventMap[K]): void;
   publishWorkspace(instanceId: string, reason: SuccinixWorkspaceEvent['reason'], savedAt?: number): void;
 }
 
@@ -72,6 +71,11 @@ export class ServiceLifecycle {
     this.deps.state.containerState = 'ready';
     this.deps.state.lastError = null;
     this.bindPortEvents();
+    this.deps.publish('succinix/runtime-ready', {
+      runtime: 'node',
+      loadedAt: Date.now(),
+      cached: true,
+    });
     this.deps.emitState('ready');
   }
 
@@ -96,6 +100,11 @@ export class ServiceLifecycle {
     this.deps.state.containerState = 'ready';
     this.deps.state.lastError = null;
     this.bindPortEvents();
+    this.deps.publish('succinix/runtime-ready', {
+      runtime: 'node',
+      loadedAt: Date.now(),
+      cached: false,
+    });
     this.deps.emitState('ready');
   }
 
@@ -215,8 +224,6 @@ export class ServiceLifecycle {
     this.deps.state.instances = [];
     for (const id of pending.map((instance) => instance.instanceId)) {
       instancePorts.releaseAll(id);
-      clearActivePorts(id);
-      clearDbActivePorts(id);
     }
   }
 

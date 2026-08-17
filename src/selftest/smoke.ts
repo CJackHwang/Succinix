@@ -1,36 +1,40 @@
-// 自检域：内置命令冒烟 + 已知边界（O5 拆分）。
+// 自检域：执行世界命令冒烟 + 已知边界（O5 拆分）。
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
-import { tryHandleLocalCommand } from '../commands/index.js';
 
 export async function runSmoke(ctx: TestContext): Promise<void> {
-  const { wc, client, ports, term } = ctx;
-  // ─── 内置命令冒烟（Smoke，TASK16）：help 全部条目里浏览器侧命令的取安全形态逐个跑 ───
-  // 只跑非破坏性命令：reboot 会 reload、db start 会装 tinbase、snapshot now/clear 有副作用，均排除；
-  // 其余全部经 tryHandleLocalCommand 分发，断言"被浏览器处理且不抛异常"。
-  const smokeCtx = { wc, client, ports, term, fit: () => {} };
+  const { client, term } = ctx;
+  // 命令冒烟只走 WebContainer/Lifo。这里覆盖标准命令组合和 succinix 管理命名空间，
+  // 浏览器层不再维护第二套命令表。
   const smokeCommands: string[] = [
-    'help', 'clear', 'sysinfo', 'version', 'whoami', 'ports', 'pwd', 'lang',
-    'db status', 'db stop', // db start 排除（重型：安装+spawn）
-    'snapshot', // 状态查看；snapshot now / clear 排除（副作用）
-    'free', 'top', // top 3 次快照，约 4s，可接受
-    'cache', // du 统计，几秒内返回
-    'workspace', 'env', 'settings', 'service', 'log', 'pkg',
-    'netstat', 'ip addr', 'uname -a', 'motd', 'shutdown',
+    'printf smoke',
+    'pwd',
+    'env | sort',
+    'echo smoke | grep smoke',
+    'test 1 = 1',
+    'ls /workspace',
+    'ps | head',
+    'systemctl status | head',
+    'succinix doctor',
+    'succinix capabilities',
+    'succinix runtime',
   ];
   const smokeFails: string[] = [];
   for (const cmd of smokeCommands) {
     try {
-      const handled = await tryHandleLocalCommand(smokeCtx, cmd);
-      if (!handled) smokeFails.push(`${cmd}: not handled locally`);
+      const result = await client.terminal(cmd, undefined, 30000);
+      if (!result.ok) {
+        const detail = String(result.stderr || result.error || `exit ${result.exitCode}`).replace(/\s+/g, ' ').trim();
+        smokeFails.push(`${cmd}: ${detail.slice(0, 100)}`);
+      }
     } catch (e) {
       smokeFails.push(`${cmd}: ${String(e).slice(0, 100)}`);
     }
   }
   if (smokeFails.length === 0) {
-    verdict(term, 'Smoke', `built-in commands dispatch (${smokeCommands.length})`, true, smokeCommands.join(' '));
+    verdict(term, 'Smoke', `execution-world command dispatch (${smokeCommands.length})`, true, smokeCommands.join(' '));
   } else {
-    verdict(term, 'Smoke', 'built-in commands dispatch', false, smokeFails.join('; '));
+    verdict(term, 'Smoke', 'execution-world command dispatch', false, smokeFails.join('; '));
   }
 
   // ─── 已知边界（网络/生态，仅供参考，计入 skipped）───

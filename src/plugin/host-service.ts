@@ -1,20 +1,13 @@
-// invariant: internal succinix-host lifecycle seam, instance registry, and app
+// invariant: internal succinix lifecycle seam, instance registry, and app
 // observability facades. The public service keys are ctx.fs / ctx.sandbox /
 // ctx.terminals / ctx.sessionPersistence; this object is not provided as
 // the legacy single-key service.
 import type { Context } from '@deepseek-ai/cordis';
 import { ValidationError } from '@deepseek-ai/cordis';
 import type { WebContainer as WebContainerType } from '@webcontainer/api';
-import {
-  type TerminalExecutor,
-} from '../engine/index.js';
 import { instanceStateRoot } from '../instance/paths.js';
 import type { PersistContext, SaveResult } from '../persist/index.js';
-import type {
-  SuccinixTerminalSession,
-  TerminalOutput,
-  TerminalSessionOptions,
-} from '../terminal/index.js';
+import type { InteractiveTerminalService } from '../engine/index.js';
 import { SuccinixCapabilityRegistry } from './capabilities.js';
 import {
   resolveConfig,
@@ -24,14 +17,12 @@ import {
   type SuccinixConfig,
 } from './config.js';
 import { defaultInstanceId, defaultInstanceUnavailable } from './default-instance.js';
-import { ensurePythonForCommand, wrapExecutorWithPython } from './executor-runtime.js';
 import { SuccinixHostInstanceManager } from './host-instance-manager.js';
 import { getHostManager, type HostManager } from './host-manager.js';
 import { createPortsService, type SuccinixPortsService } from './ports.js';
 import { checkSync } from './schema.js';
 import { ServiceLifecycle } from './service-lifecycle.js';
 import {
-  createTerminalSession,
   createWorkspaceBackend,
   stateChanged,
 } from './service-runtime.js';
@@ -41,6 +32,9 @@ import { SuccinixSandboxService } from './sandbox-service.js';
 import { SuccinixTerminalService } from './terminal-service.js';
 import { SuccinixTerminalBackend } from './terminal-backend.js';
 import { SuccinixSessionPersistence } from './persistence-service.js';
+import { createCommandEventHelpers } from './host-service-exec.js';
+import { openInstanceInteractiveTerminal } from './host-service-terminal.js';
+import { createSuccinixUserlandService } from './userland-service.js';
 import type {
   Agent,
   FileSystem,
@@ -55,7 +49,6 @@ import {
 import type {
   BootOptions,
   EnsureInstanceOptions,
-  SuccinixCommandEvent,
   SuccinixEventMap,
   SuccinixInstance,
   SuccinixHostService,
@@ -66,7 +59,7 @@ import { createWorkspaceService, type SuccinixWorkspaceService } from './workspa
 
 export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinixConfig, rawConfig: SuccinixConfig = {}): SuccinixHostService {
   const state = createInitialState();
-  state.version = '0.6.0';
+  state.version = '0.7.0';
   state.containerMode = config.container.mode;
   let resolvedConfig = config;
   let raw = rawConfig;
@@ -99,8 +92,7 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     },
   });
   const terminalBackend = new SuccinixTerminalBackend({
-    createSession: (options) =>
-      createTerminalSession(requireDefault(), requireWc(), resolvedConfig.terminal, options.output, options),
+    open: async (spec) => openInteractiveForInstance(defaultId, spec.cwd),
   });
   const unregisterTerminalBackend = terminals.registerBackend(terminalBackend);
   const fileSystem: FileSystem = new SuccinixFileSystem({
@@ -117,11 +109,15 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     getFs: () => manager.handle().wc?.fs,
     getClient: () => instances.get(defaultId)?.client,
     stateRoot: '/workspace/.succinix/sessions',
+    segmented: true,
     onFlush: async () => {
       const wc = manager.handle().wc;
       const instance = instances.get(defaultId);
       if (wc && instance) await instance.persist.force(wc.fs, 'session-persistence');
     },
+  });
+  const userland = createSuccinixUserlandService({
+    getFs: () => manager.handle().wc?.fs ?? null,
   });
 
   const publish = <K extends keyof SuccinixEventMap>(event: K, payload: SuccinixEventMap[K]): void => {
@@ -144,6 +140,11 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
 
   const publishWorkspace = (instanceId: string, reason: SuccinixWorkspaceEvent['reason'], savedAt?: number): void => {
     publish('succinix/workspace', { instanceId, reason, ...(savedAt !== undefined ? { savedAt } : {}) });
+    publish('succinix/persistence', {
+      instanceId,
+      state: reason === 'clear' ? 'clean' : 'saved',
+      ...(savedAt !== undefined ? { savedAt } : {}),
+    });
   };
 
   const lifecycle = new ServiceLifecycle({
@@ -184,6 +185,22 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     return instance;
   };
 
+  const openInteractiveForInstance = async (instanceId: string, cwd?: string) => {
+    const instance = instances.get(instanceId) ?? (instanceId === defaultId ? requireDefault() : undefined);
+    if (!instance) throw new Error(`instance '${instanceId}' is not available`);
+    return openInstanceInteractiveTerminal(instance, cwd);
+  };
+
+  const interactiveTerminal: InteractiveTerminalService = {
+    open: async (options) => {
+      const instance = instances.get(options.instanceId);
+      if (!instance) throw new Error(`instance '${options.instanceId}' is not available`);
+      const interactive = instance.executor.interactive;
+      if (!interactive) throw new Error('interactive terminal is unavailable in this execution world');
+      return interactive.open(options);
+    },
+  };
+
   const containerHandle = () => {
     const handle = manager.handle();
     return {
@@ -195,28 +212,12 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     };
   };
 
-  let commandCounter = 0;
-  const nextCommandId = (instanceId: string): string => `${instanceId}:${++commandCounter}`;
-
-  const publishCommand = (payload: SuccinixCommandEvent): void => {
-    publish('succinix/command', payload);
-  };
-
-  const wrapExecutor = (instanceId: string, executor: TerminalExecutor): TerminalExecutor =>
-    wrapExecutorWithPython({
-      instanceId,
-      executor,
-      nextId: () => nextCommandId(instanceId),
-      publish: (payload) => publishCommand(payload),
-      requireWc,
-      pythonAssetsUrl: resolvedConfig.pythonAssetsUrl,
-    });
-
-  const pythonBeforeRpc = (beforeRpc: TerminalSessionOptions['beforeRpc'] = undefined) =>
-    async (command: string): Promise<void> => {
-      await beforeRpc?.(command);
-      await ensurePythonForCommand(requireWc(), resolvedConfig.pythonAssetsUrl, command);
-    };
+  const { wrapExecutor } = createCommandEventHelpers({
+    publish,
+    requireWc,
+    pythonAssetsUrl: resolvedConfig.pythonAssetsUrl,
+    rubyAssetsUrl: resolvedConfig.rubyAssetsUrl,
+  });
 
   const makeWorkspaceBackend = (instanceId: string) =>
     createWorkspaceBackend(instanceId, {
@@ -242,14 +243,15 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
   });
   let currentPorts: SuccinixPortsService = createPortsService(defaultId);
 
-  const createSession = (output: TerminalOutput, opts: TerminalSessionOptions = {}): SuccinixTerminalSession => {
-    const instance = requireDefault();
-    const wc = requireWc();
-    return createTerminalSession(instance, wc, resolvedConfig.terminal, output, opts);
+  const boot = async (opts: BootOptions = {}): Promise<WebContainerType> => {
+    const wc = await lifecycle.boot(opts);
+    await userland.flush();
+    return wc;
   };
-
-  const boot = (opts: BootOptions = {}): Promise<WebContainerType> => lifecycle.boot(opts);
-  const attach = (wc: WebContainerType, opts: EnsureInstanceOptions = {}): Promise<void> => lifecycle.attach(wc, opts);
+  const attach = async (wc: WebContainerType, opts: EnsureInstanceOptions = {}): Promise<void> => {
+    await lifecycle.attach(wc, opts);
+    await userland.flush();
+  };
 
   const instanceManager = new SuccinixHostInstanceManager({
     instances,
@@ -260,7 +262,6 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     requireWc,
     setError,
     wrapExecutor,
-    pythonBeforeRpc,
     makeWorkspaceBackend,
     publish,
     emitState,
@@ -302,9 +303,7 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     get executor() {
       return requireDefault().executor;
     },
-    terminal: {
-      create: (output, opts) => createSession(output, opts),
-    },
+    terminal: interactiveTerminal,
     get snapshot() {
       const instance = requireDefault();
       return {
@@ -360,6 +359,7 @@ export function createSuccinixHostService(ctx: Context, config: ResolvedSuccinix
     get services() {
       return makeServicesService(requireDefault(), requireWc());
     },
+    userland,
     capabilities,
     get instance() {
       return instances.get(defaultId) ?? null;

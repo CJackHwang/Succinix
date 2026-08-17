@@ -1,7 +1,7 @@
 # Succinix / dsh Cordis Contract Snapshot
 
 This document records the authoritative integration contract for
-`@succinix/engine@0.6.0`. The executable snapshot is
+`@succinix/engine@0.7.0`. The executable snapshot is
 [`examples/cordis-app/src/contract.ts`](../examples/cordis-app/src/contract.ts),
 run in a real browser by
 [`scripts/cordis-app-e2e.mjs`](../scripts/cordis-app-e2e.mjs). The demo depends
@@ -16,7 +16,7 @@ The contract suite covers the required dsh-native areas:
 | --- | --- | --- |
 | 1 | Plugin shape and loading | root export is `{ name: 'succinix', apply, Config }`; fiber reaches `ACTIVE` |
 | 2 | dsh service consumption | `inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']` resolves; uninjected `ctx.get(key, false)` is explicit fallback |
-| 3 | Service surface | `ctx.fs` (12 primitives + `sandboxMode`), `ctx.sandbox.confine`, `ctx.terminals` registry, `ctx.sessionPersistence`; lifecycle and observability live behind `succinix-host` |
+| 3 | Service surface | `ctx.fs` (12 primitives + `sandboxMode`), `ctx.sandbox.confine`, `ctx.terminals` registry, `ctx.sessionPersistence`; lifecycle and observability live behind `succinix` |
 | 4 | Runtime execution | real Node, Lifo, and packaged Pyodide Python commands in the container |
 | 5 | Multi-instance single host | `ensureInstance` reuses the page host; `startedAt` and `wc` stay stable |
 | 6 | Snapshot / workspace | save, restore, flush, list, and explicit `persist.force` work on the shared container filesystem |
@@ -36,7 +36,7 @@ The published package must include:
   `sessionPersistence`;
 - typed `succinix/*` events for state, server-ready/closed, command, instance,
   workspace, and process events;
-- typed `succinix-host` seam for container lifecycle, instance management,
+- typed `succinix` seam for container lifecycle, instance management,
   ports, services, capabilities, and observability;
 - exported types for `SuccinixConfig`, `SuccinixHostService`, dsh service
   interfaces, events, ports, services, capabilities, and terminal
@@ -71,5 +71,5 @@ layout change:
 
 - [SDK.md](SDK.md) — integration reference
 - [PLUGIN.md](PLUGIN.md) — third-party plugin authoring
-- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 to 0.6.0 migration
+- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 to 0.6.0 and 0.6.0 to 0.7.0 migration
 - [PROTOCOL.md](PROTOCOL.md) — file-RPC wire protocol

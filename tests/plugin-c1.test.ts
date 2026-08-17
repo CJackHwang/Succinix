@@ -12,7 +12,7 @@ beforeEach(() => {
   resetPageSingletons();
 });
 
-describe('engine 0.6.0 package shape', () => {
+describe('engine 0.7.0 package shape', () => {
   it('exports only the single-track keys', () => {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'packages/engine/package.json'), 'utf8')) as {
       version: string;
@@ -21,7 +21,7 @@ describe('engine 0.6.0 package shape', () => {
       dependencies: Record<string, string>;
     };
     expect(Object.keys(pkg.exports)).toEqual(['.', './host.js', './lifo-core.js', './assets/*', './package.json']);
-    expect(pkg.version).toBe('0.6.0');
+    expect(pkg.version).toBe('0.7.0');
     expect(pkg.peerDependencies['@deepseek-ai/cordis']).toBe('^4.0.1');
     expect(pkg.dependencies['@standard-schema/spec']).toBe('^1.1.0');
   });
@@ -40,7 +40,7 @@ describe('engine 0.6.0 package shape', () => {
     expect(ctx.sandbox).toBeDefined();
     expect(ctx.terminals).toBeDefined();
     expect(ctx.sessionPersistence).toBeDefined();
-    expect(hostOf(ctx).state.version).toBe('0.6.0');
+    expect(hostOf(ctx).state.version).toBe('0.7.0');
     expect(hostOf(ctx).state.containerMode).toBe('internal');
     await fiber.dispose();
   });

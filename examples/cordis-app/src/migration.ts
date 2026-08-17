@@ -26,8 +26,7 @@ export async function runMigrationSurface(storeKey: string): Promise<MigrationSu
   const fiber = ctx.plugin(enginePlugin, config);
   await fiber;
   try {
-    const legacyGone = ctx.get('succinix', false) === undefined;
-    const host = ctx.get('succinix-host', false) as
+    const host = ctx.get('succinix', false) as
       | { boot: unknown; attach: unknown; ensureInstance: unknown }
       | undefined;
     const fs = ctx.get('fs', false) as { sandboxMode?: string } | undefined;
@@ -38,7 +37,6 @@ export async function runMigrationSurface(storeKey: string): Promise<MigrationSu
       enginePlugin.name === 'succinix' &&
       typeof enginePlugin.apply === 'function' &&
       !!enginePlugin.Config &&
-      legacyGone &&
       !!host &&
       typeof host.boot === 'function' &&
       typeof host.attach === 'function' &&
@@ -49,7 +47,7 @@ export async function runMigrationSurface(storeKey: string): Promise<MigrationSu
       persistence?.supportsRawArtifacts === true;
     return {
       ok,
-      detail: ok ? 'dsh migration surface mapped' : 'old single-key surface removed; dsh keys not fully mapped',
+      detail: ok ? 'Cordis migration surface mapped' : 'Cordis services are not fully mapped',
     };
   } finally {
     await fiber.dispose();

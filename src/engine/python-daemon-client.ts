@@ -5,6 +5,7 @@
 // 协议见 python-daemon.ts；这里负责：spawn → 等 READY → 按 id 匹配响应 → 超时杀进程重生。
 import { spawn, type ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
+import { registerProcess } from './host-procs.js';
 
 // python daemon 脚本在容器内的位置（浏览器首用 python/pip 时懒注入 assets 到同一目录）。
 // TASK24 双根铁律：浏览器 wc.fs 的 `/` == host 进程 cwd，注入到 `/usr/lib/succinix/python/...`
@@ -41,6 +42,10 @@ class PythonDaemonClient {
         return;
       }
       this.child = child;
+      // The daemon is a real execution-world process. Register it once so
+      // `ps`, service status, and host shutdown observe the same lifecycle as
+      // Node children; its command pattern is classified as system scope.
+      registerProcess(`node ${PYTHON_DAEMON_JS}`, child, process.cwd(), 'default', { runtime: 'python' });
       let sawReady = false;
       const rl = readline.createInterface({ input: child.stdout!, terminal: false });
       this.rl = rl;
@@ -97,7 +102,7 @@ class PythonDaemonClient {
 
   // 执行一次 python/pip 命令（args 为 daemon 视角的 argv；cwd 为 host 真实路径）。
   // 超时：杀掉卡死的 daemon（下次命令重生），返回超时结果 —— 不假报成功。
-  async exec(args: string[], cwd: string, timeoutMs: number): Promise<DaemonExecResult> {
+  async exec(args: string[], cwd: string, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<DaemonExecResult> {
     try {
       await this.start();
     } catch (e) {
@@ -113,7 +118,7 @@ class PythonDaemonClient {
       }, timeoutMs);
       this.pending.set(id, { timer, resolve });
       try {
-        this.child?.stdin?.write(JSON.stringify({ id, args, cwd }) + '\n');
+        this.child?.stdin?.write(JSON.stringify({ id, args, cwd, ...(env ? { env } : {}) }) + '\n');
       } catch (e) {
         this.pending.delete(id);
         clearTimeout(timer);

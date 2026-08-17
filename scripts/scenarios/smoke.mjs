@@ -64,39 +64,66 @@ async function s1(h) {
 
 async function s2(h) {
   const checks = [];
-  // 1. pkg install lifo-pkg-git（真实 lifo 通道，网络安装）
-  const inst = await h.run('pkg install lifo-pkg-git', 180000);
-  check(checks, 'pkg install lifo-pkg-git', inst.handled === true && inst.ok === true, inst.output ? inst.output.slice(0, 160) : '');
-  // 真实证明：lifo list 出现 git（Lifo 的 git 不支持 --version，用已装列表断言）
-  const ll = await h.run('lifo list');
-  check(checks, 'git installed (lifo list)', ll.ok === true && String(ll.stdout).includes('git'), String(ll.stdout).trim().split('\n').find((l) => l.includes('git')) || String(ll.stdout).trim().slice(0, 80));
-
-  // 2. 工作目录 + 文件
-  await h.run('mkdir -p /s2-git');
-  await h.run('cd /s2-git');
+  // 1. 直接走 WebContainer host 的 Isomorphic Git adapter，不能被第三方 lifo-pkg-git 覆盖。
+  await h.run('mkdir -p /workspace/s2-git');
+  await h.run('cd /workspace/s2-git');
   const w = await h.run('echo "s2-file-content" > README.md');
   check(checks, 'write file in git dir', w.ok === true, `ok=${w.ok}`);
 
-  // 3. git init
+  // 2. 本地 Git 工作流。
   const gi = await h.run('git init');
   check(checks, 'git init', gi.ok === true, String(gi.stdout || gi.stderr || '').trim().slice(0, 80));
 
-  // 4. identity + add + commit
-  await h.run('git config user.email "s2@succinix.dev"');
-  await h.run('git config user.name "s2"');
   const ga = await h.run('git add README.md');
   check(checks, 'git add', ga.ok === true, `ok=${ga.ok}`);
   const gc = await h.run('git commit -m "s2 initial commit"');
   check(checks, 'git commit', gc.ok === true, String(gc.stdout || gc.stderr || '').trim().slice(0, 120));
 
-  // 5. git log → commit hash 真实产生
+  const gb = await h.run('git branch s2-feature');
+  const gco = await h.run('git checkout s2-feature');
+  check(checks, 'git branch and checkout', gb.ok === true && gco.ok === true && String(gco.stdout).includes('s2-feature'), String(gco.stdout || gco.stderr || '').trim());
+
   const gl = await h.run('git log --oneline');
   const logOut = String(gl.stdout || '');
   check(checks, 'git log shows commit hash', gl.ok === true && /[0-9a-f]{7,}/i.test(logOut), logOut.trim().slice(0, 80));
 
-  // 清理
+  // 3. 脚本入口与直接命令共享相同的 here-document 能力边界。
+  await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/s2-git/s2-heredoc.sh', ${JSON.stringify('#!/bin/sh\ncat <<EOF\ns2\nEOF\n')})`);
+  const scriptResults = [];
+  for (const command of ['sh s2-heredoc.sh', 'bash s2-heredoc.sh', './s2-heredoc.sh']) scriptResults.push(await h.run(command));
+  check(
+    checks,
+    'script here-document has stable unsupported contract',
+    scriptResults.every((result) => result.exitCode === 2 && String(result.stderr).includes('here-document: unsupported')),
+    scriptResults.map((result) => `${result.exitCode}:${String(result.stderr).trim()}`).join(' | '),
+  );
+
+  // 4. HTTPS smart-Git 经过真实 WebContainer 网络与 CORS proxy；远端只读，避免外部写入。
+  const clone = await h.run('git clone https://github.com/octocat/Hello-World.git /workspace/s2-remote', 30000);
+  check(checks, 'git clone HTTPS remote', clone.ok === true, String(clone.stdout || clone.stderr || '').trim().slice(-160));
+  await h.run('cd /workspace/s2-remote');
+  const fetch = await h.run('git fetch', 30000);
+  const pull = await h.run('git pull', 30000);
+  check(
+    checks,
+    'git fetch and pull HTTPS remote',
+    fetch.ok === true && pull.ok === true,
+    `fetch=${fetch.ok} ${String(fetch.stderr || fetch.stdout || '').trim().slice(-80)} pull=${pull.ok} ${String(pull.stderr || pull.stdout || '').trim().slice(-120)}`,
+  );
+
+  // 5. SSH、token 和直接命令的 here-document 都有可重复的边界合同。
+  const ssh = await h.run('git clone git@github.com:octocat/Hello-World.git');
+  check(checks, 'git SSH fails closed', ssh.exitCode === 126 && String(ssh.stderr).includes('SSH transport is unsupported'), String(ssh.stderr).trim());
+  await h.run('env GIT_HTTP_TOKEN=s2-private-token');
+  const envFile = await h.evalValue("window.__succinixScenario.wc.fs.readFile('/etc/succinix.env','utf8').catch(()=>'')");
+  check(checks, 'git token never enters persisted environment', !String(envFile).includes('s2-private-token'), String(envFile).slice(0, 80));
+  const heredoc = await h.run('cat <<EOF\ns2\nEOF');
+  check(checks, 'here-document has stable unsupported contract', heredoc.exitCode === 2 && String(heredoc.stderr).includes('here-document: unsupported'), String(heredoc.stderr).trim());
+
+  // 清理。
   await h.run('cd /');
-  await h.run('rm -rf /s2-git');
+  await h.run('rm -rf /workspace/s2-git /workspace/s2-remote');
+  await h.evalValue("window.__succinixScenario.wc.fs.rm('/s2-git/s2-heredoc.sh').catch(() => undefined)");
   return checks;
 }
 

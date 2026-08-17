@@ -140,15 +140,19 @@ async function main() {
     await sleep(4000);
     const portUnowned = await h.evalValue('window.__succinixScenario.ports.has(3211)');
     check(checks, 'port 3211 (c-2 spawn) not in c-1 instance view', portUnowned === false, `inView=${portUnowned}`);
-    const svcDef = 'web3212|node -e "require(\'http\').createServer((q,s)=>s.end(\'ok\')).listen(3212)"|3212\n';
-    await h.evalValue(`window.__succinixScenario.wc.fs.writeFile('/workspace/.succinix-c-1/etc/succinix.services', ${JSON.stringify(svcDef)})`);
-    const svcStart = await h.run('service start web3212', 60000);
+    const svcUnit = "[Unit]\nDescription=instance routing server\n\n[Service]\nExecStart=node -e require('http').createServer((q,s)=>s.end('ok')).listen(3212)\nType=simple\nWorkingDirectory=/workspace\n\n[Install]\nWantedBy=multi-user.target\n";
+    await h.evalValue(`(async () => { const fs = window.__succinixScenario.wc.fs; await fs.mkdir('/workspace/.succinix-c-1/etc/systemd/system', { recursive: true }); await fs.writeFile('/workspace/.succinix-c-1/etc/systemd/system/web3212.service', ${JSON.stringify(svcUnit)}); return true; })()`);
+    await h.run('succinix service daemon-reload');
+    const svcStart = await h.run('succinix service start web3212', 60000);
     let portOwned = false;
     for (let i = 0; i < 40 && !portOwned; i++) {
       portOwned = (await h.evalValue('window.__succinixScenario.ports.has(3212)')) === true;
       if (!portOwned) await sleep(1000);
     }
-    check(checks, 'service start in c-1 registers port 3212 in c-1 view', portOwned === true, svcStart.output?.trim().slice(0, 100) ?? '');
+    const serviceStatus = await h.run('succinix service status web3212');
+    const previewState = await h.run('succinix net preview');
+    const serviceStartDetail = svcStart.output?.trim() || JSON.stringify({ ok: svcStart.ok, stderr: svcStart.stderr, error: svcStart.error, exitCode: svcStart.exitCode, status: serviceStatus.output, ports: previewState.output });
+    check(checks, 'succinix service start in c-1 registers port 3212 in c-1 view', portOwned === true, serviceStartDetail.slice(0, 180));
     const portUnownedAfter = await h.evalValue('window.__succinixScenario.ports.has(3211)');
     check(checks, 'port 3211 still not in c-1 view after own expectation exists', portUnownedAfter === false, `inView=${portUnownedAfter}`);
 
@@ -166,36 +170,39 @@ async function main() {
     check(checks, 'c-2 reset-instance ok', resetC2.ok === true, `ok=${resetC2.ok}`);
     check(checks, 'c-2 process killed by c-2 reset-instance', (await waitProcStatus(h, C2, p2.pid, true, 20000)) !== 'running');
 
-    // R5-5：同页快照按实例键隔离 —— c-1 快照只写 instance:c-1，不覆盖 instance:c-2。
+    // R5-5：同页快照按实例键隔离 —— c-1 快照只写 instance:c-1，不覆盖 instance:c-2
+    // （v0.7 persist v2：库 succinix-persist-v2，指针存 snapshot-v2-pointers，键 current|instance:<id>）。
     const idbKeys = await h.evalValue(`(async () => {
-      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-      const tx = db.transaction('snapshots', 'readonly');
-      const req = tx.objectStore('snapshots').getAllKeys();
-      return new Promise((res) => { tx.oncomplete = () => res(req.result); });
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist-v2', 2); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const stores = Array.from(db.objectStoreNames);
+      const tx = db.transaction('snapshot-v2-pointers', 'readonly');
+      const req = tx.objectStore('snapshot-v2-pointers').getAllKeys();
+      return new Promise((res) => { tx.oncomplete = () => res({ stores, keys: req.result }); });
     })()`);
-    check(checks, 'page snapshot stored under instance:c-1 key', Array.isArray(idbKeys) && idbKeys.includes('instance:c-1'), JSON.stringify(idbKeys));
+    check(checks, 'persist v2 stores exist', Array.isArray(idbKeys?.stores) && ['snapshot-v2-pointers', 'snapshot-v2-manifests', 'snapshot-v2-chunks'].every((s) => idbKeys.stores.includes(s)), JSON.stringify(idbKeys?.stores));
+    check(checks, 'page snapshot stored under instance:c-1 pointer', Array.isArray(idbKeys?.keys) && idbKeys.keys.includes('instance:c-1'), JSON.stringify(idbKeys?.keys));
     await h.evalValue(`(async () => {
-      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-      const tx = db.transaction('snapshots', 'readwrite');
-      tx.objectStore('snapshots').put({ dummy: 'c2-marker' }, 'instance:c-2');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist-v2', 2); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const tx = db.transaction('snapshot-v2-pointers', 'readwrite');
+      tx.objectStore('snapshot-v2-pointers').put({ current: 0, lastKnownGood: null, updatedAt: 1, dummy: 'c2-marker' }, 'instance:c-2');
       return new Promise((res) => { tx.oncomplete = () => res(true); tx.onerror = () => res(false); });
     })()`);
     const snapOk = await h.evalValue('window.__succinixScenario.saveSnapshot(true).then(() => true).catch(() => false)');
     check(checks, 'c-1 saveSnapshot(true) succeeds', snapOk === true);
     const idbAfter = await h.evalValue(`(async () => {
-      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-      const tx = db.transaction('snapshots', 'readonly');
-      const keysReq = tx.objectStore('snapshots').getAllKeys();
-      const c1Req = tx.objectStore('snapshots').get('instance:c-1');
-      const c2Req = tx.objectStore('snapshots').get('instance:c-2');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('succinix-persist-v2', 2); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const tx = db.transaction('snapshot-v2-pointers', 'readonly');
+      const keysReq = tx.objectStore('snapshot-v2-pointers').getAllKeys();
+      const c1Req = tx.objectStore('snapshot-v2-pointers').get('instance:c-1');
+      const c2Req = tx.objectStore('snapshot-v2-pointers').get('instance:c-2');
       return new Promise((res) => {
         tx.oncomplete = () => res({ keys: keysReq.result, c1: c1Req.result, c2: c2Req.result });
       });
     })()`);
-    const c1Real = idbAfter?.c1 && typeof idbAfter.c1.meta?.fileCount === 'number';
-    check(checks, 'snapshot keys isolated (c-1 + c-2 both present)', Array.isArray(idbAfter?.keys) && idbAfter.keys.includes('instance:c-1') && idbAfter.keys.includes('instance:c-2'), JSON.stringify(idbAfter?.keys));
-    check(checks, 'c-1 snapshot record is real (not the c-2 dummy)', c1Real === true);
-    check(checks, 'c-2 snapshot key not clobbered by c-1 save', idbAfter?.c2?.dummy === 'c2-marker');
+    const c1Real = idbAfter?.c1 && typeof idbAfter.c1.current === 'number' && idbAfter.c1.current > 0 && typeof idbAfter.c1.updatedAt === 'number';
+    check(checks, 'snapshot pointer keys isolated (c-1 + c-2 both present)', Array.isArray(idbAfter?.keys) && idbAfter.keys.includes('instance:c-1') && idbAfter.keys.includes('instance:c-2'), JSON.stringify(idbAfter?.keys));
+    check(checks, 'c-1 snapshot pointer is real (not the c-2 dummy)', c1Real === true);
+    check(checks, 'c-2 snapshot pointer not clobbered by c-1 save', idbAfter?.c2?.dummy === 'c2-marker');
 
     // 汇总
     console.log('\n=== INSTANCE ROUTING SUMMARY ===');

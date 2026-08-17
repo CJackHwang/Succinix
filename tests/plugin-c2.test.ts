@@ -133,6 +133,8 @@ describe('config schema (C2)', () => {
 
   it('rejects invalid nested persistence and lifecycle values', () => {
     expect('issues' in checkSync(Config, { defaultInstance: { persistence: { dbName: 1 } } })).toBe(true);
+    expect('issues' in checkSync(Config, { defaultInstance: { persistence: { includeGit: 'yes' } } })).toBe(true);
+    expect('issues' in checkSync(Config, { defaultInstance: { persistence: { includeGit: true } } })).toBe(false);
     expect('issues' in checkSync(Config, { lifecycle: { disposeMode: 'nuclear' } })).toBe(true);
     expect('issues' in checkSync(Config, { assets: { integrity: 'yes' } })).toBe(true);
   });
@@ -351,7 +353,7 @@ describe('lifecycle and single host (C2)', () => {
     await fiber.dispose();
     expect(manager.handle().state).toBe('ready');
     expect(wc.hostProc.kill).not.toHaveBeenCalled();
-    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('succinix', false)).toBeUndefined();
   });
 
   it('reload restores the service without restarting the host', async () => {
@@ -472,12 +474,26 @@ describe('service surface (C2)', () => {
     expect(hostOf(ctx).executor).toBe(recreated.executor);
   });
 
-  it('terminal.create returns a session bound to the default instance', async () => {
-    const { ctx } = await bootInternal();
+  it('releasing an instance resets its execution-world state before disposal', async () => {
+    const { ctx, wc } = await bootInternal();
+    await hostOf(ctx).ensureInstance('released', {
+      persistence: { dbName: 'plugin-c2', storeKey: 'release-reset-key' },
+      executor: BOOT_HOOKS,
+    });
+    await hostOf(ctx).releaseInstance('released');
+    expect(wc.fs.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ cmd: 'reset-instance', instanceId: 'released' }),
+    ]));
+    expect(hostOf(ctx).getInstance('released')).toBeUndefined();
+  });
+
+  it('terminal.open returns an execution-world session bound to the default instance', async () => {
+    const { ctx, wc } = await bootInternal();
     await ensureDefault(ctx);
-    const session = hostOf(ctx).terminal.create({ write() {}, clear() {} });
-    expect(session.getPrompt()).toContain('guest@succinix');
-    session.dispose();
+    const session = await hostOf(ctx).terminal.open({ instanceId: 'default', cols: 100, rows: 30 });
+    const openFrame = JSON.parse(String(wc.fs.raw(`/.succinix-terminal/default/${session.id}/open.json`)));
+    expect(openFrame).toMatchObject({ instanceId: 'default', cols: 100, rows: 30, type: 'open' });
+    await session.close();
   });
 
   it('snapshot save/meta/clear work', async () => {
@@ -532,7 +548,7 @@ describe('service surface (C2)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('raw instance terminal injects python assets and chains user beforeRpc', async () => {
+  it('instance executor injects python assets and preserves the command hook', async () => {
     const urls: string[] = [];
     const order: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -540,12 +556,11 @@ describe('service surface (C2)', () => {
       return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) } as Response;
     }));
     const { ctx } = await bootInternal({ pythonAssetsUrl: '/custom-py/' });
-    await hostOf(ctx).ensureInstance('default', {
+    const instance = await hostOf(ctx).ensureInstance('default', {
       persistence: { dbName: 'plugin-c2', storeKey: 'python-terminal-url-key' },
-      executor: BOOT_HOOKS,
-      terminal: { beforeRpc: async () => { order.push('user'); } },
+      executor: { ...BOOT_HOOKS, onCommand: () => { order.push('user'); } },
     });
-    const result = await hostOf(ctx).instance!.terminal.rpcExec('python --version', 30000);
+    const result = await instance.executor.exec('python --version', { timeoutMs: 30000 });
     expect('error' in result).toBe(false);
     expect(order).toEqual(['user']);
     expect(urls).toContain('/custom-py/python-daemon.js');
@@ -564,7 +579,7 @@ describe('service surface (C2)', () => {
     expect(stopped.ok).toBe(false);
   });
 
-  it('services honors the default instance statePrefix', async () => {
+  it('services use the execution-world command regardless of browser statePrefix', async () => {
     const { ctx, wc } = await bootInternal({
       defaultInstance: { instanceId: 'demo', statePrefix: '/custom' },
     });
@@ -574,8 +589,8 @@ describe('service surface (C2)', () => {
       executor: BOOT_HOOKS,
     });
     await hostOf(ctx).services.ensureFiles();
-    expect(wc.fs.raw('/customdemo/etc/succinix.services')).toBeDefined();
-    expect(wc.fs.raw('/workspace/.succinix-demo/etc/succinix.services')).toBeUndefined();
+    expect(wc.fs.requests.some((request) => String(request.opts?.command).includes("succinix service 'daemon-reload'"))).toBe(true);
+    expect(wc.fs.raw('/customdemo/etc/succinix.services')).toBeUndefined();
   });
 
   it('listProcesses returns the process table and emits process event', async () => {
@@ -659,7 +674,7 @@ describe('service consumption and reload (C2)', () => {
 
   it('ctx.get fallback is undefined when the provider is absent', () => {
     const ctx = new Context();
-    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('succinix', false)).toBeUndefined();
     expect(ctx.get('fs', false)).toBeUndefined();
     expect(ctx.get('sandbox', false)).toBeUndefined();
     expect(ctx.get('terminals', false)).toBeUndefined();
@@ -679,7 +694,7 @@ describe('service consumption and reload (C2)', () => {
     const consumerFiber = ctx.plugin(consumer);
     await consumerFiber;
     await fiber.dispose();
-    expect(ctx.get('succinix-host', false)).toBeUndefined();
+    expect(ctx.get('succinix', false)).toBeUndefined();
     expect(ctx.get('fs', false)).toBeUndefined();
     expect(ctx.get('sandbox', false)).toBeUndefined();
     expect(ctx.get('terminals', false)).toBeUndefined();
@@ -705,7 +720,7 @@ describe('service consumption and reload (C2)', () => {
     const providerFiber2 = ctx.plugin(plugin, {});
     await providerFiber2;
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(ctx.get('succinix-host', false)).toBeTruthy();
+    expect(ctx.get('succinix', false)).toBeTruthy();
     expect(values.length).toBeGreaterThanOrEqual(2);
   });
 });

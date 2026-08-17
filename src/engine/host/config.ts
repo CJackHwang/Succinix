@@ -1,7 +1,7 @@
 // host config 域（O3 拆分）：引擎配置 / 实例会话 cwd / env 合并 / 在途实例上下文。
 import fs from 'node:fs';
 import path from 'node:path';
-import { instanceStateRootFor, instanceStateFile, vfsToReal, spawnCwdFor, DEFAULT_INSTANCE_ID } from '../host-route.js';
+import { browserPathToLifoCwd, canonicalizeVirtualPath, instanceStateRootFor, instanceStateFile, vfsToReal, spawnCwdFor, DEFAULT_INSTANCE_ID } from '../host-route.js';
 
 // 陈旧结果文件（浏览器已放弃的请求）存活上限。可被 /etc/succinix.engine.json 的
 // { resultTtlMs } 覆盖（TASK21：引擎选项经容器内小配置文件传给 host，浏览器侧 boot 时写入）。
@@ -72,13 +72,13 @@ function loadSessionCwd(instanceId: string): string {
     if (saved) {
       const real = vfsToReal(saved, process.cwd());
       if (fs.existsSync(real) && fs.statSync(real).isDirectory()) {
-        return saved; // 返回持久化的会话 cwd（显示语义不变，spawn 时再映射）
+        return canonicalizeVirtualPath(saved); // 返回持久化的会话 cwd（显示语义不变，spawn 时再映射）
       }
     }
   } catch {
     /* 文件缺失 / 不可读：回落默认 */
   }
-  return process.cwd();
+  return instanceId === DEFAULT_INSTANCE_ID ? '/workspace' : browserPathToLifoCwd(`/workspace/.succinix-${instanceId}`);
 }
 
 const sessionCwdByInstance = new Map<string, string>();
@@ -105,8 +105,10 @@ function persistSessionCwd(instanceId: string, cwd: string): void {
 }
 
 export function setSessionCwd(instanceId: string, cwd: string): void {
-  sessionCwdByInstance.set(instanceId, cwd);
-  persistSessionCwd(instanceId, cwd);
+  let normalized: string;
+  try { normalized = canonicalizeVirtualPath(cwd); } catch { return; }
+  sessionCwdByInstance.set(instanceId, normalized);
+  persistSessionCwd(instanceId, normalized);
 }
 
 // D3：实例级重置时清该实例的会话 cwd 缓存（host 侧内存态）。
@@ -119,6 +121,46 @@ export function clearSessionCwd(instanceId: string): void {
 // { cwd: '/workspace' } 会因 chdir 失败在 WebContainer 里挂起（spawn 不报 ENOENT）。
 export function spawnCwd(instanceId: string): string {
   return spawnCwdFor(getSessionCwd(instanceId), process.cwd());
+}
+
+/** Resolve a caller supplied cwd using the same virtual-path rules as the
+ * interactive shell.  Real child processes may only run in the shared
+ * /workspace mount; private Lifo paths fail closed instead of silently
+ * falling back to a different directory. */
+export function resolveRequestCwd(instanceId: string, raw: unknown): { cwd: string; virtualCwd: string } | { error: string } {
+  if (raw === undefined || raw === null || raw === '') {
+    const virtualCwd = getSessionCwd(instanceId).startsWith('/workspace') ? getSessionCwd(instanceId) : '/workspace';
+    return { cwd: spawnCwdFor(virtualCwd, process.cwd()), virtualCwd };
+  }
+  if (typeof raw !== 'string') return { error: 'cwd must be a string' };
+  if (!raw.startsWith('/')) return { error: `cwd must be an absolute path: ${raw}` };
+  let normalized: string;
+  try { normalized = canonicalizeVirtualPath(raw); } catch { return { error: `cwd must be an absolute path: ${raw}` }; }
+  const virtualCwd = normalized === '/' ? '/workspace' : normalized;
+  if (!virtualCwd.startsWith('/workspace') || (virtualCwd.length > '/workspace'.length && !virtualCwd.startsWith('/workspace/'))) {
+    return { error: `cwd is outside the shared workspace: ${raw}` };
+  }
+  const cwd = spawnCwdFor(virtualCwd, process.cwd());
+  try {
+    if (!fs.statSync(cwd).isDirectory()) return { error: `cwd is not a directory: ${raw}` };
+  } catch {
+    return { error: `cwd does not exist: ${raw}` };
+  }
+  return { cwd, virtualCwd };
+}
+
+/** Merge request-local environment values without mutating host process.env.
+ * An explicit undefined value removes an inherited key, matching Node's
+ * child_process semantics while keeping the JSON RPC representation small. */
+export function mergedEnvFor(instanceId: string, override: unknown): NodeJS.ProcessEnv {
+  const base = mergedEnv(instanceId);
+  if (!override || typeof override !== 'object' || Array.isArray(override)) return base;
+  for (const [key, value] of Object.entries(override as Record<string, unknown>)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (value === undefined || value === null) delete base[key];
+    else base[key] = String(value);
+  }
+  return base;
 }
 
 // ─── /etc/succinix.env 合并（TASK10）───
@@ -144,9 +186,27 @@ function loadEnvFile(instanceId: string): Record<string, string> {
   }
 }
 
+/** 已持久化的实例环境，仅用于重建同一实例的 Lifo Sandbox。 */
+export function persistedEnv(instanceId: string): Record<string, string> {
+  return loadEnvFile(instanceId);
+}
+
 // 子进程环境 = host 自身环境 + 该实例 env 文件覆盖（文件是配置的权威来源；M2 按实例分键）。
 export function mergedEnv(instanceId: string): NodeJS.ProcessEnv {
-  return { ...process.env, ...loadEnvFile(instanceId) };
+  return mergeExecutionEnvironment(process.env, loadEnvFile(instanceId));
+}
+
+export function mergeExecutionEnvironment(
+  hostEnv: NodeJS.ProcessEnv,
+  persistedEnv: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const merged = { ...hostEnv, ...persistedEnv };
+  if (hostEnv.PATH !== undefined && persistedEnv.PATH !== undefined) {
+    const entries = [...persistedEnv.PATH.split(path.delimiter), ...hostEnv.PATH.split(path.delimiter)]
+      .filter((entry) => entry.length > 0);
+    merged.PATH = [...new Set(entries)].join(path.delimiter);
+  }
+  return merged;
 }
 
 // 当前在途请求的实例（M2）：单 host 串行处理 /cmd.json，handleCommand 期间恒为请求所属

@@ -1,6 +1,6 @@
 // src/engine/tokenize.ts 单元测试：shlex 语义转义引号 + 元字符检测。
 import { describe, it, expect } from 'vitest';
-import { tokenize, hasShellMetaToken } from '../src/engine/tokenize.js';
+import { tokenize, hasShellMetaToken, hasUnsupportedHereDocument } from '../src/engine/tokenize.js';
 
 describe('tokenize — shlex escape semantics', () => {
   it('preserves inner double quotes inside a quoted -e code (no boundary confusion)', () => {
@@ -94,5 +94,18 @@ describe('hasShellMetaToken — node command shell-meta fallback detection', () 
   it('does NOT flag a plain node command without metachars', () => {
     expect(hasShellMetaToken(tokenize('node -e "console.log(1)"'))).toBe(false);
     expect(hasShellMetaToken(tokenize('npm --version'))).toBe(false);
+  });
+});
+
+describe('here-document capability boundary', () => {
+  it('detects unquoted here-document operators, including fd and tab-stripping forms', () => {
+    expect(hasUnsupportedHereDocument('cat <<EOF\nhello\nEOF')).toBe(true);
+    expect(hasUnsupportedHereDocument('node tool.js 2<<-EOF\nhello\nEOF')).toBe(true);
+  });
+
+  it('does not reject quoted or escaped literal input', () => {
+    expect(hasUnsupportedHereDocument("printf '%s\\n' '<<EOF'")).toBe(false);
+    expect(hasUnsupportedHereDocument('printf "%s\\n" "<<EOF"')).toBe(false);
+    expect(hasUnsupportedHereDocument('printf \\<<EOF')).toBe(false);
   });
 });

@@ -131,6 +131,19 @@ export function setPythonCwd(realCwd: string | undefined): void {
   }
 }
 
+export function setPythonEnv(env: Record<string, string | undefined> | undefined): void {
+  if (!env) return;
+  try {
+    const updates = Object.entries(env)
+      .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+      .map(([key, value]) => `${JSON.stringify(key)}: ${value === undefined ? 'None' : JSON.stringify(String(value))}`)
+      .join(', ');
+    if (updates) getPyodide().runPython(`import os; os.environ.update({${updates}})`);
+  } catch {
+    /* Environment overrides are best effort; command semantics stay intact. */
+  }
+}
+
 // daemon.log 随快照持久累积 → 简单轮转（TASK27 复审项 4）：超过 256KB 先截断再追加，
 // 量小但避免无界增长（刷新后仍在，不清理会一直膨胀）。
 const DAEMON_LOG = path.join(PERSIST_DIR, 'daemon.log');

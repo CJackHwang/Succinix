@@ -12,6 +12,7 @@ import {
   mapDataDirArgs,
   lifoSpawndCwd,
   lifoCwdToSessionCwd,
+  browserPathToLifoCwd,
   sessionCwdToBrowserPath,
   sessionCwdPromptLabel,
   canKillProcess,
@@ -126,6 +127,13 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(lifoSpawndCwd('/workspace/sub', '/workspace', ROOT)).toBe(`${ROOT}/sub`);
     expect(lifoSpawndCwd('/tmp', '/workspace', ROOT)).toBe(spawnCwdFor('/workspace', ROOT)); // 回落会话 cwd
     expect(lifoSpawndCwd('/tmp', '/workspace/x', ROOT)).toBe(spawnCwdFor('/workspace/x', ROOT));
+  });
+
+  it('browserPathToLifoCwd：浏览器状态根映射到同一宿主目录的 Lifo cwd', () => {
+    const browserStateRoot = '/workspace/.succinix-c-1';
+    const lifoCwd = browserPathToLifoCwd(browserStateRoot);
+    expect(lifoCwd).toBe('/workspace/workspace/.succinix-c-1');
+    expect(lifoSpawndCwd(lifoCwd, lifoCwd, ROOT)).toBe(`${ROOT}/workspace/.succinix-c-1`);
   });
 
   it('sessionCwdToBrowserPath：会话 cwd（Lifo 视图）→ 浏览器可读路径（P5-16 复审，Tab 补全用）', () => {

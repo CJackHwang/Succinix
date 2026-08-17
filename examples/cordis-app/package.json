@@ -1,9 +1,9 @@
 {
   "name": "cordis-app",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
-  "description": "External dsh consumer demo for @succinix/engine 0.6.0.",
+  "description": "External dsh consumer demo for @succinix/engine 0.7.0.",
   "scripts": {
     "prepare": "node scripts/prepare-assets.mjs",
     "dev": "npm run prepare && vite",

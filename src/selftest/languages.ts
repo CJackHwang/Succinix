@@ -2,13 +2,10 @@
 import { verdict, boundary } from './runner.js';
 import type { TestContext } from './runner.js';
 import { ensurePythonRuntime } from '@succinix/engine';
-import { tryHandleLocalCommand } from '../commands/index.js';
-import { captureTerm, makeDispatchBase } from './info.js';
 
 export async function runLanguages(ctx: TestContext): Promise<void> {
   const { wc, client, term } = ctx;
-  const dispatchBase = makeDispatchBase(ctx);
-  // ─── 内置语言运行时（Languages，TASK27）：python 真实执行 + pip + lang 列表 ───
+  // ─── 内置语言运行时（Languages，TASK27）：python 真实执行 + pip + runtime 列表 ───
   // Pyodide 资产首用懒注入：自检真实跑 python 前先确保运行时已注入（首次注入 ~13MB，稍慢）。
   try {
     await ensurePythonRuntime(wc);
@@ -20,7 +17,7 @@ export async function runLanguages(ctx: TestContext): Promise<void> {
     term,
     'Languages',
     'python -c real execution',
-    py1.ok && String(py1.stdout ?? '').trim() === '42' && py1.runtime === 'node',
+    py1.ok && String(py1.stdout ?? '').trim() === '42' && py1.runtime === 'python',
     `runtime=${py1.runtime} stdout=${String(py1.stdout ?? '').trim()}`
   );
 
@@ -143,25 +140,14 @@ export async function runLanguages(ctx: TestContext): Promise<void> {
     verdict(term, 'Languages', 'npm i -g EACCES + hint', false, `unexpected: exit=${eacces.exitCode} ${eaccesErr.trim().slice(0, 80)}`);
   }
 
-  // lang 列表经命令分发路径断言（浏览器侧命令）。
-  const capLang = captureTerm();
-  const handledLang = await tryHandleLocalCommand({ ...dispatchBase, term: capLang.term }, 'lang');
-  const langText = capLang.lines.join('\n');
+  // 运行时视图由 WebContainer/Lifo 的 succinix 管理命令提供。
+  const runtimeList = await client.terminal('succinix runtime');
+  const runtimeText = String(runtimeList.stdout ?? '');
   verdict(
     term,
     'Languages',
-    'lang list',
-    handledLang && langText.includes('python') && langText.includes('node') && langText.includes('typescript'),
-    langText.replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)
-  );
-
-  const capLangPy = captureTerm();
-  const handledLangPy = await tryHandleLocalCommand({ ...dispatchBase, term: capLangPy.term }, 'lang python');
-  verdict(
-    term,
-    'Languages',
-    'lang python version',
-    handledLangPy && capLangPy.lines.join('').includes('Python 3.14'),
-    capLangPy.lines.join('').trim()
+    'succinix runtime list',
+    runtimeList.ok && ['node', 'lifo', 'python', 'ruby', 'wasi'].every((name) => runtimeText.includes(name)),
+    runtimeText.replace(/\s+/g, ' ').trim().slice(0, 100)
   );
 }

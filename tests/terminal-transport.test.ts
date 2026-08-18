@@ -130,6 +130,26 @@ describe('terminal mailbox transport', () => {
     }
   });
 
+  it('fans output out to the xterm renderer and interactive subscribers', async () => {
+    vi.useFakeTimers();
+    try {
+      const fs = new MemoryFs();
+      const rendered: string[] = [];
+      const subscribed: string[] = [];
+      const client = new RpcTerminalClient({ fs, identity: identity(), onOutput: (data) => rendered.push(data), pollMs: 1 });
+      client.onOutput((data) => subscribed.push(data));
+      await client.open();
+      fs.writeFileSync(mailboxPath(identity(), 'out-000000000001.json'), JSON.stringify({ ...identity(), type: 'output', seq: 1, data: 'frame-0' }));
+      await vi.advanceTimersByTimeAsync(2);
+
+      expect(rendered).toEqual(['frame-0']);
+      expect(subscribed).toEqual(['frame-0']);
+      await client.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('auto-opens before flushing input when device data arrives first', async () => {
     const fs = new MemoryFs();
     const client = new RpcTerminalClient({ fs, identity: identity(), pollMs: 1 });

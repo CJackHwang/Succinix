@@ -127,21 +127,18 @@ export class RpcTerminalClient implements ITerminal {
   }
 
   write(data: string): void {
+    const dataBytes = byteLength(data);
+    this.receivedOutputBytes += dataBytes;
     if (this.output) {
-      this.receivedOutputBytes += byteLength(data);
       this.output(data);
-      return;
     }
     if (!this.output && this.outputListeners.size === 0) {
-      const dataBytes = byteLength(data);
       const availableBytes = Math.max(0, this.maxBufferedBytes - this.pendingInitialOutputBytes);
       if (dataBytes > availableBytes) throw new TerminalBackpressureError(dataBytes, availableBytes);
       this.pendingInitialOutput.push(data);
       this.pendingInitialOutputBytes += dataBytes;
-      this.receivedOutputBytes += dataBytes;
       return;
     }
-    this.receivedOutputBytes += byteLength(data);
     for (const listener of [...this.outputListeners]) listener(data);
   }
   writeln(data: string): void { this.write(`${data}\r\n`); }

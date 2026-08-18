@@ -1,18 +1,13 @@
 {
   "schemaVersion": 1,
   "status": "verified",
-  "recordedAt": "2026-08-18T15:37:58.774Z",
+  "recordedAt": "2026-08-18T19:47:09.138Z",
   "method": "Three independent headless Chrome runs; medians and per-run p95 values are retained in this artifact.",
   "inputs": {
     "package": "succinix@0.7.0",
-    "packageJsonSha256": "505d3709844e1bb20a5c7d0ecd24864f4cc24a3ddbaa18e1e3b5fd3a478e851f",
-    "packageLockSha256": "f9c010beb0026b0f56e6c2b77a2fd40f3ad1acd5a0fbaf6d0d9e773e95903777",
+    "packageJsonSha256": "7e1e3112b900bbbf7220f0ed508c0f3bdbe724663574eaa8bca0223c27dbf5f3",
+    "packageLockSha256": "8b98780bc98e681e6022dc924dd38545beba8611861941bcecefdf2770f4d987",
     "dependencies": {
-      "@cordisjs/plugin-database-memory": "4.1.1",
-      "@cordisjs/plugin-hmr": "1.0.15",
-      "@cordisjs/plugin-loader": "1.0.0-rc.5",
-      "@cordisjs/plugin-logger-console": "1.0.0",
-      "@cordisjs/plugin-timer": "1.1.2",
       "@deepseek-ai/cordis": "4.0.1",
       "@eslint/js": "10.0.1",
       "@fontsource/jetbrains-mono": "5.3.0",
@@ -25,7 +20,6 @@
       "@webcontainer/api": "1.6.4",
       "@xterm/addon-fit": "0.11.0",
       "@xterm/xterm": "6.0.0",
-      "cordis": "4.0.0-rc.8",
       "esbuild": "0.28.2",
       "eslint": "10.8.1",
       "globals": "17.11.0",
@@ -47,8 +41,8 @@
       }
     },
     "bundles": {
-      "indexHtml": "97b9aa02448022e3a948496d366328d116c9574c75d581c85b3cb56373a287be",
-      "main": "f393806383b536bb1f0e524a7bfbdeaafd4e293a82c7a870c3003b3ccac6b15f",
+      "indexHtml": "bb34180ec6707c024bc86969f96ba98c739ae3f7b26d729c5b2a120188306e47",
+      "main": "08a065232a7d386b3ff8cf28e7e92f245680c24e73c6b4223a21540df6684dd3",
       "host": "5b906806acc53b87fffcc8e52a3142c6e159871c5a6f054aa6f397438c0a2092",
       "lifoCore": "a9c694722ff20878184973bcf04434a57305a1e86cf7c8107580321ed6db13df"
     }
@@ -66,93 +60,93 @@
   "metrics": {
     "cmd_lifo_ms.p95": {
       "samples": [
-        68.9,
-        56.84,
-        58.25
+        55.8,
+        66.67,
+        55.7
       ],
-      "median": 58.25,
+      "median": 55.8,
       "stabilityKey": "cmd_lifo_ms.p50",
       "stabilitySamples": [
-        52.74,
-        52.82,
-        52.43
+        51.08,
+        50.77,
+        52.32
       ],
-      "maxDeviationPct": 0.59
+      "maxDeviationPct": 2.43
     },
     "cmd_node_ms.p95": {
       "samples": [
-        118.2,
-        112.41,
-        112.91
+        110.58,
+        118.85,
+        195.75
       ],
-      "median": 112.91,
+      "median": 118.85,
       "stabilityKey": "cmd_node_ms.mean",
       "stabilitySamples": [
-        81.89,
-        80.36,
-        81.33
+        78.11,
+        83.88,
+        81.59
       ],
-      "maxDeviationPct": 1.19
+      "maxDeviationPct": 4.27
     },
     "snapshot1000.snapshotMs": {
       "samples": [
-        206.71999990940094,
-        212.8550000190735,
-        201.40000009536743
+        206.3049999475479,
+        209.5200001001358,
+        207.875
       ],
-      "median": 206.72,
+      "median": 207.88,
       "stabilityKey": "snapshot1000.snapshotMs",
       "stabilitySamples": [
-        206.71999990940094,
-        212.8550000190735,
-        201.40000009536743
+        206.3049999475479,
+        209.5200001001358,
+        207.875
       ],
-      "maxDeviationPct": 2.97
+      "maxDeviationPct": 0.79
     },
     "xterm_big.renderP95": {
       "samples": [
-        16.07,
-        16.74,
-        15.89
+        16.64,
+        16.46,
+        15.54
       ],
-      "median": 16.07,
+      "median": 16.46,
       "stabilityKey": "xterm_big.renderP95",
       "stabilitySamples": [
-        16.07,
-        16.74,
-        15.89
+        16.64,
+        16.46,
+        15.54
       ],
-      "maxDeviationPct": 4.17
+      "maxDeviationPct": 5.59
     },
     "interactive_key_to_frame_ms.p95": {
       "samples": [
-        23.23,
-        23.13,
-        22.95
+        22.43,
+        23.55,
+        22.54
       ],
-      "median": 23.13,
+      "median": 22.54,
       "stabilityKey": "interactive_key_to_frame_ms.p50",
       "stabilitySamples": [
-        19.78,
-        19.84,
-        20.06
+        19.58,
+        19.45,
+        19.76
       ],
-      "maxDeviationPct": 1.11
+      "maxDeviationPct": 0.92
     },
     "session_append_ms.p95": {
       "samples": [
-        1.38,
-        1.41,
-        1.39
+        1.44,
+        1.39,
+        1.37
       ],
       "median": 1.39,
       "stabilityKey": "session_append_ms.p95",
       "stabilitySamples": [
-        1.38,
-        1.41,
-        1.39
+        1.44,
+        1.39,
+        1.37
       ],
-      "maxDeviationPct": 1.44
+      "maxDeviationPct": 3.6
     }
   }
 }

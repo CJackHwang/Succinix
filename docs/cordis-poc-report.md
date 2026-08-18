@@ -55,23 +55,13 @@ WebContainer node output: poc:node-ok
 WebContainer + Cordis coexistence: PASS
 ```
 
-## Historical upstream plugin probe
+## Harness runtime probe
 
-`scripts/cordis-browser-probe.mjs` is retained for historical context. It
-bundles the official upstream plugins so the browser-safety conclusions remain
-reproducible, but those plugins are not part of Succinix's default composition:
-
-| Plugin | Result | Evidence |
-| --- | --- | --- |
-| `@deepseek-ai/cordis` core | available | bundles successfully |
-| `@cordisjs/plugin-logger-console` | available | browser entry bundles successfully |
-| `@cordisjs/plugin-database-memory` | available | bundles successfully |
-| `@cordisjs/plugin-loader` | unavailable | `Could not resolve "node:module"` |
-| `@cordisjs/plugin-hmr` | unavailable | `node:path`, `node:fs`, `node:url` imports fail |
-
-Neither the loader nor HMR is browser-safe, so Succinix uses static,
-programmatic plugin composition and Cordis fiber reload for development
-reloads.
+`scripts/cordis-browser-probe.mjs` checks that the exact
+`@deepseek-ai/cordis@4.0.1` baseline bundles for the browser. Succinix does
+not install a parallel upstream `cordis` line or unrelated `@cordisjs/*`
+plugins; browser composition remains static and programmatic, with fiber
+reload used for development reloads.
 
 ## Decisions
 

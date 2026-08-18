@@ -1,12 +1,8 @@
-// C0: probe official Cordis plugins for browser bundling safety.
+// Probe the DeepSeek Harness Cordis runtime for browser bundling safety.
 import { build } from 'esbuild';
 
 const probes = [
-  ['core', '@deepseek-ai/cordis'],
-  ['logger-console', '@cordisjs/plugin-logger-console'],
-  ['database-memory', '@cordisjs/plugin-database-memory'],
-  ['loader', '@cordisjs/plugin-loader'],
-  ['hmr', '@cordisjs/plugin-hmr'],
+  ['dsh-cordis', '@deepseek-ai/cordis'],
 ];
 
 const results = [];

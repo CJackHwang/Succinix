@@ -27,7 +27,7 @@
 <!-- STATUS_EVIDENCE
 {
   "schemaVersion": 2,
-  "head": "72ed861521c2acbf3cae3069733f85a3b3ef32b8",
+  "head": "d040673e75e9a69dc88c2d5255f6e12dd693b5a5",
   "recordedAt": "2026-08-18T20:08:41.000Z",
   "environment": {
     "node": "v22.23.1",
@@ -121,7 +121,7 @@
       "exitCode": 0,
       "completedAt": "2026-08-18T15:37:00.000Z",
       "outputSha256": "57b6985eb3a5f8e8c3d75bd2e3acdf826ab8c3bd80e70bfa33ac413285e2c0f9",
-      "summary": "Three benchmark runs recorded and three independent runs revalidated the current verified baseline."
+      "summary": "Three independent headless Chrome benchmark runs recorded the dependency-cleanup baseline and retained per-run p95 metrics."
     },
     {
       "command": "npm run test:bench:soak",

@@ -643,7 +643,7 @@ async function main() {
     if (failure) console.error('[terminal-e2e] failure diagnostics were retained in the temporary directory above');
   }
   console.log(`[terminal-e2e] RESULT: ${failures === 0 ? 'PASSED' : 'FAILED'}`);
-  process.exitCode = failures === 0 ? 0 : 1;
+  process.exit(failures === 0 ? 0 : 1);
 }
 
 async function stopPreview(preview) {

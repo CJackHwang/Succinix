@@ -12,22 +12,20 @@
 //   5. 启动 headless Chrome -> 打开 /?test=1 -> 捕获自检汇总行 -> 断言 >=71 passed 且 0 failed
 //
 // 用法：
-//   node scripts/verify-deploy.mjs [--skip-build] [--port 7892]
+//   node scripts/verify-deploy.mjs [--skip-build] [--port <port>]
 //   （CI 中可直接作为部署就绪 job；无 headless Chrome 时 ?test=1 自检 fail-closed 报 FAIL，
 //    不会静默降级 —— 与"部署就绪"门禁语义一致。）
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { findChrome, launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import { allocateBrowserPorts, findChrome, launchChrome, cleanupChrome } from './lib/chrome.mjs';
 import { connectPageCDP, evalValue } from './lib/cdp.mjs';
 import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
 const portIdx = args.indexOf('--port');
-const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7892;
-const BASE = `http://127.0.0.1:${PORT}`;
-const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口，避开 preview 端口
+const REQUESTED_PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 0;
 const MIN_PASSED = 71; // TASK25 门禁：preview 模式下 ?test=1 必须 >=71 passed（0 failed）
 
 let exitCode = 0;
@@ -80,18 +78,18 @@ const INJECT_SCRIPT = `(() => {
   else start();
 })();`;
 
-async function runHeadlessSelfTest() {
+async function runHeadlessSelfTest(base, debugPort) {
   const chromePath = findChrome();
   if (!chromePath) {
-    fail('headless Chrome not found — ?test=1 self-test must be run manually in a browser at ' + `${BASE}/?test=1`);
+    fail('headless Chrome not found — ?test=1 self-test must be run manually in a browser at ' + `${base}/?test=1`);
     return null;
   }
-  const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'verify');
+  const { chrome, profileDir } = launchChrome(debugPort, `verify-${process.pid}`);
   let cdp = null;
   try {
-    cdp = await connectPageCDP(DEBUG_PORT);
+    cdp = await connectPageCDP(debugPort);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SCRIPT });
-    await cdp.send('Page.navigate', { url: `${BASE}/?test=1` });
+    await cdp.send('Page.navigate', { url: `${base}/?test=1` });
 
     // 轮询自检结果；结果来自 main.ts 写入的 window.__succinixResult（终端 canvas 无法读文本）。
     const testStart = Date.now();
@@ -150,6 +148,8 @@ async function main() {
     fail('dist/index.html missing — run npm run build first');
     return;
   }
+  const { previewPort, debugPort } = await allocateBrowserPorts(REQUESTED_PORT);
+  const base = `http://127.0.0.1:${previewPort}`;
 
   // 2) vercel.json 静态断言：preview 的头来自 vite.config.ts，这里单独验证部署配置本身
   // （消除"门禁测 vite.config.ts 而非 vercel.json"的缺口 —— Vercel 实际读的是 vercel.json）。
@@ -169,20 +169,20 @@ async function main() {
   }
 
   // 3) vite preview（COOP/COEP 头来自 vite.config.ts preview.headers，与 vercel.json 一致）
-  note(`step 3/5: starting 'vite preview' on port ${PORT}...`);
+  note(`step 3/5: starting 'vite preview' on port ${previewPort}; Chrome DevTools on ${debugPort}...`);
   const preview = spawn(process.execPath, [
-    'node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1',
+    'node_modules/vite/bin/vite.js', 'preview', '--port', String(previewPort), '--strictPort', '--host', '127.0.0.1',
   ], { stdio: 'ignore' });
   try {
-    await waitForHttp(BASE, 20000);
-    ok(`vite preview reachable at ${BASE}`);
+    await waitForHttp(base, 20000);
+    ok(`vite preview reachable at ${base}`);
 
     // 4) 头断言：覆盖根路径与静态资源（assets/host.js），与 vercel.json 的 /(.*) 一致
     note('step 4/5: COOP/COEP header assertion');
     const entryJs = readdirSync(join(process.cwd(), 'dist', 'assets'))
       .find((f) => f.startsWith('index-') && f.endsWith('.js')) || 'index.js';
     for (const path of ['/', '/host.js', `/assets/${entryJs}`]) {
-      const r = await fetch(BASE + path, { method: 'GET' });
+      const r = await fetch(base + path, { method: 'GET' });
       const coop = r.headers.get('cross-origin-opener-policy');
       const coep = r.headers.get('cross-origin-embedder-policy');
       check(r.ok && coop === 'same-origin' && coep === 'credentialless',
@@ -191,7 +191,7 @@ async function main() {
 
     // 5) headless Chrome 自检（?test=1 >=71 passed）
     note('step 5/5: headless Chrome ?test=1 self-test');
-    const result = await runHeadlessSelfTest();
+    const result = await runHeadlessSelfTest(base, debugPort);
     if (result) {
       check(result.passed >= MIN_PASSED && result.failed === 0,
         `?test=1 self-test: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped ` +

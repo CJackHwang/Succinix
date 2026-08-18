@@ -69,6 +69,12 @@ describe('浏览器诊断生命周期', () => {
       expect(readFileSync(join(process.cwd(), file), 'utf8')).toMatch(/await cleanupChrome\(/);
     }
   });
+
+  it('部署门禁为 preview 和 DevTools 分配独立端口', () => {
+    const source = readFileSync(join(process.cwd(), 'scripts/verify-deploy.mjs'), 'utf8');
+    expect(source).toContain('allocateBrowserPorts(REQUESTED_PORT)');
+    expect(source).toContain('runHeadlessSelfTest(base, debugPort)');
+  });
 });
 
 function readChildPid(child: ReturnType<typeof spawn>): Promise<number> {

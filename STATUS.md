@@ -5,11 +5,11 @@
 - 模块总数：核心 12 个（`app`、`commands`、`engine`（含 `host`、`python-daemon`、`ruby-runtime`）、`host`、`instance`、`persist`、`pkg`、`plugin`、`services`、`terminal`、`userland`、`theme`）。
 - host epoch、终端回压、实例 canonicalization、服务生命周期、staging restore、进程退出清理和交互终端调度均有源码及单测证据。
 - Cordis 运行时唯一基线为 DeepSeek Harness 的 `@deepseek-ai/cordis@4.0.1`；根依赖图不再包含上游 `cordis` 或 `@cordisjs/*` 平行链。
-- 全部可编辑文档先说明读者、用途和最短做法；协议、类型快照和发布契约保留必要的精确细节，并明确不是新手教程。
+- 全部公开文档以英文主文档和完整简体中文对应页成对维护；协议、类型快照和发布契约保留必要的精确细节，并明确不是新手教程。
 
 ## 二、本次变更影响范围
 
-- 重写入口、接入、插件、迁移、协议、契约、贡献和示例文档，统一按“是什么、有什么用、怎么用”组织；更新日志只保留当前版本的使用者影响。
+- 恢复入口、接入、插件、迁移、协议、契约、贡献和示例文档的英文正文，并补齐完整简体中文对应页；两种语言均按“是什么、有什么用、怎么用”组织。
 - 修正文档中的旧 Cordis 服务命名、`terminal.create`、缺失的引擎静态资产前提和漂移的协议描述；第三方接入示例现与打包资产和 `host.attach` / `ensureInstance` 一致。
 - 保留 DeepSeek Harness 的 dsh 类型、许可和版本快照，并在外层说明其只供维护者校验；性能基线继续保留，因为 `bench-gate` 直接读取它。
 - 未改变 `@succinix/engine` 的 peer 契约、RPC v2、Lifo terminal seam、实例隔离、service snapshot 或 package integrity 接口。
@@ -20,19 +20,19 @@
 - WebContainer、micropip 和虚拟 preview 依赖浏览器/运行时提供方；这些是设计边界，不是本轮门禁失败。
 - benchmark 指标是当前 macOS + Chromium 环境的性能样本，不代表其他设备的绝对性能。
 - 本轮 `test:e2e` 与 `test:bench:soak` 均在 Chrome 清理阶段悬挂：前者已通过 deploy 与 terminal-interactive，后者在浏览器压力运行后无计算活动但未退出。两项不能视为本轮通过，需先修复浏览器进程回收再重跑。
-- 本轮为文档与检查规则变更，已运行类型检查、lint、构建、688 个单元测试、文档完整性、dsh 形状、旧键扫描、插件边界和打包 dry-run；没有重跑已知会挂起的完整浏览器端到端门禁。
+- 本轮为纯文档变更，重新运行文档完整性与 dsh 形状检查；代码、打包和浏览器门禁沿用上一轮已记录的结果，没有伪称重跑。
 
 ## 四、下次最该做的事
 
 1. 修复 `test:e2e` 和 `test:bench:soak` 的 Chrome 清理悬挂，再重跑完整浏览器门禁。
-2. 新增文档时，先写清读者、用途和最短做法；只有协议、类型快照和契约保留逐字段技术细节。
+2. 新增或修改公开文档时，同时维护英文主文档和完整简体中文对应页；只有协议、类型快照和契约保留逐字段技术细节。
 3. 后续只以 DeepSeek Harness 发布的 `@deepseek-ai/cordis` 与其 `master` 源码作为 Cordis 对齐基线。
 
 <!-- STATUS_EVIDENCE
 {
   "schemaVersion": 2,
-  "head": "00681cc74c0658b35aa68d16a6464875143fe648",
-  "recordedAt": "2026-08-18T21:24:17.000Z",
+  "head": "eb179b4c51ff85463df969113e7004e5fef4187c",
+  "recordedAt": "2026-08-18T21:35:42.000Z",
   "environment": {
     "node": "v22.23.1",
     "platform": "darwin",
@@ -91,9 +91,9 @@
       "command": "npm run check:docs",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T15:50:00.000Z",
-      "outputSha256": "5da9f92b8a8603e82e37e83ab894f73f1233ea917c19c4250b6edd4bba695f33",
-      "summary": "25 markdown files passed local-reference validation."
+      "completedAt": "2026-08-18T21:35:42.000Z",
+      "outputSha256": "c0224a7543ef60c136eda26684ea95a41587c70274d74bf3cbe65b92a8b361bc",
+      "summary": "27 markdown files passed local-reference validation after bilingual pages were restored."
     },
     {
       "command": "npm run check:plugin-boundaries",

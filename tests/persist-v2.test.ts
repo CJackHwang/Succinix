@@ -248,6 +248,32 @@ describe('binary persistence v2', () => {
     }
   });
 
+  it('ignores WebContainer staging metadata while validating the snapshot inventory', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    const source = new FakeFS();
+    await source.writeFile('/saved.txt', 'snapshot');
+    const target = new FakeFS();
+    const container = {
+      fs: source as unknown as FileSystemAPI,
+      export: async () => new Uint8Array([8]),
+      mount: async (_data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        if (root.includes('.succinix-restore-stage-')) {
+          await target.writeFile(`${root}/saved.txt`, 'snapshot');
+          await target.mkdir(`${root}/.succinix-snapshot-meta`, { recursive: true });
+        }
+      },
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-stage-meta-${Math.random()}` } });
+      await persist.save(source as unknown as FileSystemAPI, true);
+      await expect(persist.load(target as unknown as FileSystemAPI)).resolves.not.toThrow();
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
   it('maps fs-space scopeRoot to the container workdir for export while keeping mount at the scope root', async () => {
     const previousIndexedDB = globalThis.indexedDB;
     Object.assign(globalThis, { indexedDB: fakeIndexedDB() });

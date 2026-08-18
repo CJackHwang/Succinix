@@ -34,6 +34,11 @@ function stagedManifest(manifest: BinarySnapshotManifest, stageRoot: string, sco
   };
 }
 
+function isGeneratedStagePath(path: string, stageRoot: string): boolean {
+  if (path === stageRoot || !path.startsWith(`${stageRoot}/`)) return false;
+  return path.slice(stageRoot.length + 1).split('/').some((segment) => segment.startsWith('.succinix-'));
+}
+
 async function removeTree(fs: FileSystemAPI, path: string): Promise<void> {
   try { await fs.rm(path, { recursive: true, force: true }); } catch { /* 临时导入目录清理失败不应掩盖原始恢复错误 */ }
 }
@@ -51,7 +56,7 @@ export async function importVerifiedBinary(
     await container.mount(data.slice(), { mountPoint: stageRoot });
     const actual = await listSnapshotTreePaths(restoreFs, stageRoot, () => false);
     const expected = [...(staged.filePaths ?? [])].sort();
-    const actualFiles = actual.files.slice().sort();
+    const actualFiles = actual.files.filter((path) => !isGeneratedStagePath(path, stageRoot)).sort();
     if (actualFiles.join('\u0000') !== expected.join('\u0000')) {
       const missing = expected.find((path) => !actualFiles.includes(path));
       const unexpected = actualFiles.find((path) => !expected.includes(path));
@@ -62,6 +67,7 @@ export async function importVerifiedBinary(
     if (manifest.emptyDirs !== undefined) {
       const expectedEmptyDirs = [...(staged.emptyDirs ?? [])].sort();
       const actualEmptyDirs = actual.emptyDirs
+        .filter((path) => !isGeneratedStagePath(path, stageRoot))
         .filter((path) => path !== stageRoot || expectedEmptyDirs.includes(stageRoot))
         .sort();
       if (actualEmptyDirs.join('\u0000') !== expectedEmptyDirs.join('\u0000')) {

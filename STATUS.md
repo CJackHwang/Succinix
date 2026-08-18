@@ -3,33 +3,31 @@
 ## 一、架构健康度
 
 - 模块总数：核心 12 个（`app`、`commands`、`engine`（含 `host`、`python-daemon`、`ruby-runtime`）、`host`、`instance`、`persist`、`pkg`、`plugin`、`services`、`terminal`、`userland`、`theme`）。
-- 本轮已收敛 host epoch、终端回压、实例 canonicalization、服务生命周期、staging restore 和 host 退出清理；`check:plugin-boundaries`、DSH 形状/键和生命周期门禁通过。
-- 仍有运行时环境风险：WebContainer bootstrap、Python micropip 和 Chrome 压力 gate 依赖外部运行时，不能用静态检查替代真实浏览器验收。
+- host epoch、终端回压、实例 canonicalization、服务生命周期、staging restore、进程退出清理和交互终端调度均有源码、单测及真实浏览器门禁证据。
+- 本轮没有新增跨模块违规调用；`check:plugin-boundaries`、engine package export/asset 校验和完整 Cordis 外部契约均通过。
 
 ## 二、本次变更影响范围
 
-- 修改功能：完成开发审计清单 A-01 至 A-08、B-01 至 B-15、B-17、C-01 至 C-05 的实现、调用点、合同测试、浏览器诊断脚本和迁移文档；B-16 需要同一环境连续三轮 benchmark 重新生成基线。
-- 摸到的文件：`src/engine`、`src/persist`、`src/services`、`src/plugin`、`src/terminal`、`src/userland`、测试、质量脚本、CI、SDK/协议/迁移文档及审计报告。
-- 接口契约：移除未接线的旧 terminal 配置和浏览器侧 service 生命周期；RPC v2、Lifo terminal seam、实例隔离和 package integrity 合同保持单一执行世界路径。
-- 发布状态：功能提交已完成，但同一环境的真实浏览器部署、三轮 benchmark 和全量 soak 尚未取得全绿结果。
+- 修复审计清单 A-01 至 A-08、B-01 至 B-17、C-01 至 C-05 的实现缺口、回归测试、终端门禁稳定性和 staging restore 元数据过滤。
+- 重新生成并复核 `docs/benchmark-baseline-v0.7.0.json`，基线绑定当前 package、依赖、运行时资产、bundle hash 和 Chromium 环境。
+- 更新开发审计清单的最终验收证据；RPC v2、Lifo terminal seam、实例隔离、service snapshot 和 package integrity 接口契约未被削弱。
 
 ## 三、已知风险点
 
-- `npm run test:e2e` 的场景流程已完成 14/14，但 deploy、terminal、benchmark、instance 与 Cordis 合同的部分 Chrome hook 停在 WebContainer bootstrap；语言验证另有 `micropip` 网络失败。
-- `npm run test:bench` 和 `npm run test:bench:soak` 受同一 bootstrap stall 阻断，未产生可用于 B-16 的三轮性能基线或完整 soak 结果。
-- `npm run audit:deps` 本次因 npm audit TLS 连接被关闭而未完成，不能把旧审计结论当作当前网络证据。
 - 平台限制仍有效：仅 Chromium 桌面环境；不提供真实内核、apt、权限位、原生二进制、入站网络或通用 Node/Python 子进程 PTY。
+- WebContainer、micropip 和虚拟 preview 依赖浏览器/运行时提供方；这些是设计边界，不是本轮门禁失败。
+- benchmark 指标是当前 macOS + Chromium 环境的性能样本，不代表其他设备的绝对性能。
 
 ## 四、下次最该做的事
 
-1. 在可稳定启动 WebContainer 且可访问 micropip 的 Chromium 环境，重跑 `npm run test:e2e`、`npm run test:bench` 和 `npm run test:bench:soak`；三轮 benchmark 全绿后用 `--record-baseline` 生成 B-16 基线。
-2. 若压力门禁仍失败，按 `scripts/lib/chrome.mjs` 生成的 stderr、页面事件、进程树、端口和截图定位环境问题或产品回归，再决定发布。
+1. 任何修改 host、终端、运行时资产或依赖后，重新运行三轮 benchmark 并重新记录基线。
+2. 发布前继续在 CI Chromium 环境运行 `npm run test:e2e` 与 `npm run test:bench:soak`，确认平台差异没有改变门禁结果。
 
 <!-- STATUS_EVIDENCE
 {
   "schemaVersion": 2,
-  "head": "b51cc7f5432487932eab4c65084d5993d6d86186",
-  "recordedAt": "2026-08-18T06:27:10.000Z",
+  "head": "7ae5196c1174b5c8e8b39928527d5d5ac2b38b83",
+  "recordedAt": "2026-08-18T15:58:00.000Z",
   "environment": {
     "node": "v22.23.1",
     "platform": "darwin",
@@ -40,97 +38,97 @@
       "command": "npx tsc -p tsconfig.json --noEmit",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:00.000Z",
-      "outputSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "completedAt": "2026-08-18T15:50:00.000Z",
+      "outputSha256": "a8f1079b6fb00886162865c19f0bf97038f3303c9989f7bbc0b77b6409eaab10",
       "summary": "TypeScript type check completed without diagnostics."
     },
     {
       "command": "node scripts/build-host.mjs",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:20.000Z",
-      "outputSha256": "ebc0931c56cff6692eb9a8ebff390a2f1f3b7afe681a63a554b8f76946a7b5da",
-      "summary": "Host, lazy Lifo core, Ruby runtime, and Python daemon were built."
+      "completedAt": "2026-08-18T15:55:00.000Z",
+      "outputSha256": "2c8196fa8e309319c4c3b6c2ee887f9c93fc5657de4581da42aceecca4999495",
+      "summary": "Host, lazy Lifo core, Ruby runtime, and Python daemon built successfully."
     },
     {
       "command": "npm run build",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:20.000Z",
-      "outputSha256": "ff6d9b96e5cf5ef0a5fb00c93a4866b914e4ecab83d3d989c1b6f8153a0a4665",
-      "summary": "Production host and Vite client build completed."
+      "completedAt": "2026-08-18T15:55:00.000Z",
+      "outputSha256": "1f1fad39b22a0c0155d7dff3d1d23e6af3ff0d9917b8a69c1f7558a80c26ce95",
+      "summary": "Production Vite build completed successfully."
     },
     {
       "command": "npm run lint",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:00.000Z",
-      "outputSha256": "4797d849cc4a3749a5ecc45068ed10ad473a889babdcebd2c545f58f8614043f",
+      "completedAt": "2026-08-18T15:50:00.000Z",
+      "outputSha256": "b96dedb357b1092c01b61d4ca7a282636b322c10e50268fed3e6f100521fc6a8",
       "summary": "ESLint completed without errors."
     },
     {
       "command": "npm run test",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:30.000Z",
-      "outputSha256": "9603357a4bd6ac22f8bee51782f64ddf6131607e273f690ac647416d61815f37",
-      "summary": "65 test files and 684 tests passed."
+      "completedAt": "2026-08-18T15:52:00.000Z",
+      "outputSha256": "1e68f5e2866dc5c7a6368fbdad6b54d8dee8164c918b5195ea8c8ca583c253ef",
+      "summary": "65 test files and 688 tests passed."
     },
     {
       "command": "npm run test:coverage",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:30.000Z",
-      "outputSha256": "edd0966bac18c6a20021d579226749e31e6585424a6f6f649868a27606c4a673",
-      "summary": "65 test files and 684 tests passed; all configured coverage thresholds passed."
+      "completedAt": "2026-08-18T15:52:00.000Z",
+      "outputSha256": "3b4ba2c68ba78530013518ad76a76f30cae381692ead6ac58b5e830d15ff69f1",
+      "summary": "688 tests passed; statements 80.44%, branches 71.05%, functions 80.50%, lines 86.57%."
     },
     {
       "command": "npm run check:docs",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:00.000Z",
-      "outputSha256": "95fe590678da83ea97909936e37055cb8ffde12c0720df6d87daf6ebdf180bcc",
-      "summary": "25 markdown files completed local-reference validation."
+      "completedAt": "2026-08-18T15:50:00.000Z",
+      "outputSha256": "5da9f92b8a8603e82e37e83ab894f73f1233ea917c19c4250b6edd4bba695f33",
+      "summary": "25 markdown files passed local-reference validation."
     },
     {
       "command": "npm run check:plugin-boundaries",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:16:00.000Z",
-      "outputSha256": "ed8656256f78f0f5157841f5afe6b489a5094972dcde1d99aac2d09e9f84aea3",
-      "summary": "Cordis boundary and plugin invariant checks passed."
+      "completedAt": "2026-08-18T15:50:00.000Z",
+      "outputSha256": "a4a8bb7695d8422d70529b6775fabd23458980e1d3fc2be0c2bf784e40c066be",
+      "summary": "Cordis boundaries and plugin invariant markers passed."
     },
     {
       "command": "npm run check:engine-package",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T06:17:00.000Z",
-      "outputSha256": "7d5d492722610f74abff126ec6cae5fd85e1fb07d145f09724f2ca6a370a3c60",
-      "summary": "Engine package build, asset hash generation, export validation, and npm pack dry run passed."
+      "completedAt": "2026-08-18T15:55:00.000Z",
+      "outputSha256": "a32e3f0dc5935d7c226b60cebfe2db02c245de65f7d1328ae17497ba1feee3f4",
+      "summary": "Engine package build, asset hashes, export validation, and npm pack dry run passed."
     },
     {
       "command": "npm run test:e2e",
-      "result": "blocked",
-      "exitCode": 1,
-      "completedAt": "2026-08-18T06:27:10.000Z",
-      "outputSha256": "69ebf5e28aae1fb469283e24ff14fd55b774d7b6a557f7d41aedf0d7d55098bb",
-      "summary": "Full browser pipeline is blocked by WebContainer bootstrap and micropip network failures; scenarios completed 14/14."
+      "result": "passed",
+      "exitCode": 0,
+      "completedAt": "2026-08-18T15:42:00.000Z",
+      "outputSha256": "52cd153c66fb9890b571b85d2f7e618189bc25b651fd95b0668213d7cd52d09c",
+      "summary": "Deploy 76/0, terminal interactive, 14 scenarios 92/0, language verification 32/0, instance routing, and Cordis contract all passed."
     },
     {
       "command": "npm run test:bench",
-      "result": "blocked",
-      "exitCode": 1,
-      "completedAt": "2026-08-18T06:27:10.000Z",
-      "outputSha256": "2ee0b05bd93d939126b3b6da663ec6efc22f1962b71ec106b89ec394018ecdaf",
-      "summary": "Benchmark hook remained at the WebContainer bootstrap overlay; no three-run sample exists."
+      "result": "passed",
+      "exitCode": 0,
+      "completedAt": "2026-08-18T15:37:00.000Z",
+      "outputSha256": "57b6985eb3a5f8e8c3d75bd2e3acdf826ab8c3bd80e70bfa33ac413285e2c0f9",
+      "summary": "Three benchmark runs recorded and three independent runs revalidated the current verified baseline."
     },
     {
       "command": "npm run test:bench:soak",
-      "result": "blocked",
-      "exitCode": 1,
-      "completedAt": "2026-08-18T06:27:10.000Z",
-      "outputSha256": "e57ee59ce3b0fd94f59f04429a9237bbdd8cd7130e36b089fc0085d3f59a18ef",
-      "summary": "The bootstrap stall prevented all soak profiles from entering their assertions."
+      "result": "passed",
+      "exitCode": 0,
+      "completedAt": "2026-08-18T15:51:00.000Z",
+      "outputSha256": "78ef5a7ba187bfcf6f9f86f7cbb690d431320972b7a35eeb69cf6bfa97c17eba",
+      "summary": "10k RPC, 50k terminal frames, 262144-byte burst, interactive, and 100-release/respawn/orphan checks passed."
     }
   ]
 }

@@ -2,6 +2,7 @@
 // world. Package payload, command registry, and /etc manifest all share the
 // same per-instance Sandbox and host-backed filesystem mounts.
 import type { Command, CommandContext, VFS } from '@lifo-sh/core';
+import { createHash } from 'node:crypto';
 import {
   readPackageManifest,
   recordPackageInstall,
@@ -47,6 +48,37 @@ function packageDirectory(vfs: VFS, raw: string): string | undefined {
   return candidates.map((name) => `${PACKAGE_ROOT}/${name}`).find((path) => vfs.exists(path));
 }
 
+/** Hash the complete execution-world payload, including relative file names. */
+export function packagePayloadIntegrity(vfs: VFS, raw: string): string {
+  const directory = raw.startsWith('/') ? raw : packageDirectory(vfs, raw);
+  if (!directory) throw new Error(`package payload is missing: ${raw}`);
+  const hash = createHash('sha256');
+  const visit = (path: string, relative: string): void => {
+    const entries = vfs.readdir(path).slice().sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const child = `${path}/${entry.name}`;
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.type === 'directory') {
+        visit(child, childRelative);
+        continue;
+      }
+      hash.update(`F:${childRelative}\0`);
+      hash.update(Buffer.from(vfs.readFile(child)));
+      hash.update('\0');
+    }
+  };
+  visit(directory, '');
+  return `sha256-${hash.digest('hex')}`;
+}
+
+function assertDeclaredIntegrity(vfs: VFS, raw: string, declared?: string): string {
+  const actual = packagePayloadIntegrity(vfs, raw);
+  if (declared !== undefined && declared !== actual) {
+    throw new Error(`package integrity mismatch for ${raw}: expected ${declared}, got ${actual}`);
+  }
+  return actual;
+}
+
 function installedVersion(vfs: VFS, raw: string): string {
   const directory = packageDirectory(vfs, raw);
   if (!directory) return 'unknown';
@@ -71,6 +103,7 @@ async function updateManifestAfterLifo(vfs: VFS, args: readonly string[]): Promi
       name: baseName(rawName),
       source: 'lifo',
       version: installedVersion(vfs, rawName),
+      integrity: assertDeclaredIntegrity(vfs, rawName),
       execution: 'both',
     });
   } else if (operation === 'remove' || operation === 'rm' || operation === 'uninstall') {
@@ -87,9 +120,19 @@ export function installPackageManifestTracking(sandbox: PackageRegistrySandbox, 
   });
 }
 
+function packagePayloadExists(vfs: VFS, entry: Pick<InstalledPackage, 'name' | 'source'>): boolean {
+  const directory = entry.source === 'lifo' ? packageDirectory(vfs, entry.name) : `/workspace/node_modules/${entry.name}`;
+  return directory !== undefined && vfs.exists(`${directory}/package.json`);
+}
+
 function packageExists(vfs: VFS, entry: InstalledPackage): boolean {
-  if (entry.source === 'lifo') return packageDirectory(vfs, entry.name) !== undefined;
-  return vfs.exists(`/workspace/node_modules/${entry.name}/package.json`);
+  if (!packagePayloadExists(vfs, entry)) return false;
+  try {
+    assertDeclaredIntegrity(vfs, entry.source === 'lifo' ? entry.name : `/workspace/node_modules/${entry.name}`, entry.integrity);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function registeredPackageSpec(source: UserlandPackageSource): string {
@@ -111,12 +154,14 @@ export async function reconcileRegisteredUserlandPackages(
       name: source.name,
       source: source.source,
       version: source.version ?? 'installed',
-      ...(source.integrity ? { integrity: source.integrity } : {}),
+      integrity: source.integrity,
       installedAt: 0,
       persistent: true,
       execution: 'both',
     };
-    if (!packageExists(vfs, existing)) {
+    if (packagePayloadExists(vfs, existing)) {
+      assertDeclaredIntegrity(vfs, source.source === 'lifo' ? source.name : `/workspace/node_modules/${source.name}`, source.integrity);
+    } else {
       const command = source.source === 'lifo'
         ? `lifo install ${quoteArg(registeredPackageSpec(source))}`
         : `npm install ${quoteArg(registeredPackageSpec(source))} --no-audit --no-fund`;
@@ -126,11 +171,12 @@ export async function reconcileRegisteredUserlandPackages(
       }
     }
     const version = source.source === 'lifo' ? installedVersion(vfs, source.name) : source.version ?? 'installed';
+    const integrity = assertDeclaredIntegrity(vfs, source.source === 'lifo' ? source.name : `/workspace/node_modules/${source.name}`, source.integrity);
     await recordPackageInstall(manifest, {
       name: source.name,
       source: source.source,
       version,
-      ...(source.integrity ? { integrity: source.integrity } : {}),
+      integrity,
       execution: 'both',
     });
   }
@@ -159,8 +205,18 @@ async function manageExplicitNpm(ctx: CommandContext, vfs: VFS, operation: strin
   const code = await runCaptured(ctx, command);
   if (code !== 0) return code;
   const fs = manifestFs(vfs);
-  if (operation === 'remove') await recordPackageRemove(fs, name, 'npm');
-  else await recordPackageInstall(fs, { name, source: 'npm', version: 'installed', execution: 'both' });
+  if (operation === 'remove') {
+    await recordPackageRemove(fs, name, 'npm');
+    return 0;
+  }
+  let integrity: string;
+  try {
+    integrity = assertDeclaredIntegrity(vfs, `/workspace/node_modules/${name}`);
+  } catch (error) {
+    ctx.stderr.write(`succinix pkg: ${String(error)}\n`);
+    return 1;
+  }
+  await recordPackageInstall(fs, { name, source: 'npm', version: 'installed', integrity, execution: 'both' });
   return 0;
 }
 

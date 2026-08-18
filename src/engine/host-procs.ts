@@ -50,11 +50,15 @@ interface ProcEntry extends Omit<ProcInfo, 'scope' | 'containerId' | 'state' | '
   /** 启动时工作目录（host 真实路径，spawn 的 cwd 选项）；归属判定的依据 */
   /** 可选的 SIGKILL 兜底定时器（killProcess 的 forceAfterMs 使用） */
   forceKillTimer?: ReturnType<typeof setTimeout>;
+  /** Exited entries are a short diagnostic history, never an unbounded registry. */
+  expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
 const table = new Map<number, ProcEntry>();
 const MAX_ENTRIES = 100;
 const OUTPUT_TAIL_MAX_BYTES = 64 * 1024;
+export const EXITED_PROCESS_TTL_MS = 30_000;
+export const PROCESS_TERMINATION_GRACE_MS = 2_000;
 
 export interface RegisterProcessOptions {
   runtime?: ProcessRuntime;
@@ -140,17 +144,34 @@ export function registerProcess(
     internal: options.internal ?? false,
     ...(options.terminalSessionId ? { terminalSessionId: options.terminalSessionId } : {}),
   };
+  const previous = table.get(pid);
+  if (previous) removeProcess(previous);
   table.set(pid, entry);
-  child.on('close', (code) => {
-    entry.status = 'exited';
-    entry.exitCode = code;
-    if (entry.forceKillTimer) {
-      clearTimeout(entry.forceKillTimer);
-      entry.forceKillTimer = undefined;
-    }
-  });
+  child.on('close', (code) => finishProcess(entry, code));
+  child.on('error', () => finishProcess(entry, null));
   prune();
   return pid;
+}
+
+function finishProcess(entry: ProcEntry, code: number | null): void {
+  if (entry.status === 'exited') return;
+  entry.status = 'exited';
+  entry.exitCode = code;
+  if (entry.forceKillTimer) {
+    clearTimeout(entry.forceKillTimer);
+    entry.forceKillTimer = undefined;
+  }
+  if (entry.expiryTimer) clearTimeout(entry.expiryTimer);
+  entry.expiryTimer = setTimeout(() => {
+    if (table.get(entry.pid) === entry && entry.status === 'exited') removeProcess(entry);
+  }, EXITED_PROCESS_TTL_MS);
+  prune();
+}
+
+function removeProcess(entry: ProcEntry): void {
+  if (entry.forceKillTimer) clearTimeout(entry.forceKillTimer);
+  if (entry.expiryTimer) clearTimeout(entry.expiryTimer);
+  if (table.get(entry.pid) === entry) table.delete(entry.pid);
 }
 
 // 上限保护：超过 MAX_ENTRIES 时清掉最老的已退出条目，避免进程表无限增长。
@@ -160,7 +181,7 @@ function prune(): void {
     .filter((e) => e.status === 'exited')
     .sort((a, b) => a.startTime - b.startTime);
   for (const e of exited.slice(0, table.size - MAX_ENTRIES)) {
-    table.delete(e.pid);
+    removeProcess(e);
   }
 }
 
@@ -233,9 +254,8 @@ function utf8Tail(value: string, maxBytes: number): string {
 // 进程表条目会永远停在 running；配合 dispatchSpawn 的 error 处理把状态纠正为 exited）。
 export function markProcessExited(pid: number, code?: number | null): void {
   const entry = table.get(pid);
-  if (!entry || entry.status === 'exited') return;
-  entry.status = 'exited';
-  entry.exitCode = code ?? null;
+  if (!entry) return;
+  finishProcess(entry, code ?? null);
 }
 
 export interface KillResult {
@@ -268,4 +288,17 @@ export function killProcess(
   return ok
     ? { killed: true, message: `${signal} sent to process ${pid}` }
     : { killed: false, message: `failed to send signal to process ${pid}` };
+}
+
+/** Terminate every real child owned by one execution-world instance. */
+export function terminateProcessesForInstance(
+  instanceId: string,
+  graceMs = PROCESS_TERMINATION_GRACE_MS,
+): number[] {
+  const killed: number[] = [];
+  for (const entry of table.values()) {
+    if (entry.instanceId !== instanceId || entry.status === 'exited') continue;
+    if (killProcess(entry.pid, graceMs, 'SIGTERM').killed) killed.push(entry.pid);
+  }
+  return killed;
 }

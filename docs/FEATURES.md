@@ -1,9 +1,9 @@
 # SuccinixOS — Supported Features & Capabilities
 
-> **Authoritative inventory of what SuccinixOS supports today.** Every capability below is
-> implemented and verified — nothing here is aspirational or speculative. The **Source** column
-> cites the implementing TASK (see the CHANGELOG for details) or the authoritative document that
-> records it. 中文版：[FEATURES.zh-CN.md](FEATURES.zh-CN.md).
+> **Implementation inventory, not a release certificate.** The **Source** column identifies
+> the implementation or measurement evidence for each entry. Entries with `LV`, `S`, or `ST`
+> cite reproducible browser measurements; other entries describe the current source contract and
+> still require the release gates named in section 11. 中文版：[FEATURES.zh-CN.md](FEATURES.zh-CN.md).
 
 ## 1. System overview
 
@@ -15,18 +15,18 @@ Postgres database (tinbase), and persistence.
 
 The execution-world rule is normative: WebContainer/Lifo owns userland commands, runtimes,
 packages, services, editors, TUIs, and third-party extensions. The browser is only the control/device
-plane (boot, xterm, keyboard/resize events, unavoidable Web APIs, and thin transport). The current
-host uses Lifo headless `commands.run()`; v0.7 will connect the browser terminal to Lifo's exported
-`ITerminal` and public `CommandContext.stdin`/`setRawMode` seam inside WebContainer instead of implementing parallel browser-side
-applications. See [PLAN-v0.7.0.md](PLAN-v0.7.0.md).
+plane (boot, xterm, keyboard/resize events, unavoidable Web APIs, and thin transport). v0.7
+connects the browser terminal to Lifo's exported `ITerminal` and public
+`CommandContext.stdin`/`setRawMode` seam inside WebContainer instead of implementing parallel
+browser-side applications. See [PLAN-v0.7.0.md](PLAN-v0.7.0.md).
 
 | Item | Value | Source |
 | ---- | ----- | ------ |
 | Product | SuccinixOS (formerly WebUnix) — unified brand, zero functional change | TASK26 |
 | Engine | dsh Cordis plugin: `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, `ctx.sessionPersistence` (unified routing: `node|npm|npx` → real Node child; everything else → Lifo sandbox) | TASK1, C2 |
 | Runtime | WebContainer + Lifo, shared virtualized `node:fs` (browser `wc.fs`, Node children, Lifo — one tree) | TASK1, README |
-| Succinix app version | **0.6.0** | CHANGELOG |
-| Engine package | **`@succinix/engine` 0.6.0** — dsh Cordis plugin (`@deepseek-ai/cordis@4.0.1`) | CHANGELOG, cordis-contract.md |
+| Succinix app version | **0.7.0** | `src/plugin/host-service.ts` |
+| Engine package | **`@succinix/engine` 0.7.0** — dsh Cordis plugin (`@deepseek-ai/cordis@4.0.1`) | `packages/engine/package.json`, cordis-contract.md |
 | License | **MIT** © 2026 CJackHwang | README |
 | Browser | Chromium family only (Chrome/Edge) + COOP/COEP cross-origin isolation + SharedArrayBuffer | TASK4, README |
 
@@ -81,7 +81,8 @@ Command logs and Cordis command events redact secrets by default: tokens, passwo
 
 ## 3. Language runtimes
 
-Measured in a real browser/container — the authoritative, measurement-backed matrix is
+Measured in a real browser/container where an `LV`, `S`, or `ST` source is listed; the
+measurement-backed matrix is
 [docs/LANGUAGES.md](LANGUAGES.md) (中文: [docs/LANGUAGES.zh-CN.md](LANGUAGES.zh-CN.md)). Status
 legend: `[OK]` measured working · `[x]` confirmed absent · text = partial/probe.
 
@@ -92,7 +93,7 @@ legend: `[OK]` measured working · `[x]` confirmed absent · text = partial/prob
 | **Node.js** | `node` | real Node.js (WebContainer runtime) | 22.22.3 | `[OK]` npm, local per-project installs | `[OK]` | TASK1, TASK24, `LV·N1–N5` |
 | **npm** | `npm` | real npm (ships with node) | 10.8.2 | `[OK]` local; `[x]` global (`/usr/local` read-only → EACCES + hint) | `[OK]` | TASK24, `LV·N4` |
 | **TypeScript** | `npx tsc`, `tsx`, `vitest` | npm-installed toolchain; node 22 `--experimental-strip-types` | latest via npm | `[OK]` via npm | `[OK]` | TASK25, `LV·N3`, `S13`, `S14` |
-| **Ruby** | `ruby` | Lazily injected WASM runtime (browser asset bridge → `@ruby/wasm-wasi` adapter in a real Node child) | head ruby.wasm | `[OK]` npm install; `[x]` **no gem** | `[OK]` — integrated, lazy (first run slow) | v0.7, `LV·R1` |
+| **Ruby** | `ruby` | Registered Lifo command; browser asset bridge lazily installs a WASM adapter run by a real Node child | head ruby.wasm | npm install; no gem | implementation present; direct WASM probe measured | `src/engine/host/runtime-commands.ts`, `LV·R1` |
 | **C** | `gcc` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
 | **Rust** | `rustc`, `cargo` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
 | **Go** | `go` | none | — | — | `[x]` confirmed absent | TASK25, `LV·R2` |
@@ -114,9 +115,10 @@ Key measured facts:
   compiled wheels (e.g. numpy) persist across refresh — the v0.7 binary export keeps their `.so` files.
 - **TypeScript ecosystem** closed loop: `npm i -D typescript tsx vitest` → `npx tsc` →
   `node dist/*.js` → `npx vitest run` (1 passed) — measured in scenarios S13/S14.
-- **Ruby** is probe-only: the v2 `@ruby/wasm-wasi` API runs Ruby WASM in-container (`6*7` → 42)
-  but is not a routed/built-in runtime and has no gem installer. **C/Rust/Go** compilers are
-  confirmed absent; precompiled **WASI** modules do run via `node:wasi`.
+- **Ruby** is a registered Lifo command. On first use it requests a browser-provided WASM runtime,
+  then runs the installed adapter in a real Node child. `LV·R1` measures the underlying WASM API
+  (`6*7` → 42), not the complete routed command; there is no gem installer. **C/Rust/Go**
+  compilers are confirmed absent; precompiled **WASI** modules do run via `node:wasi`.
 
 ## 4. Persistence
 
@@ -211,10 +213,11 @@ Key measured facts:
 
 - **Decoupled engine, dsh single-track**: the command-execution core lives in
   `src/engine/` and stays Cordis-free; `src/plugin/` is the thin Cordis layer.
-  `@succinix/engine@0.6.0` is the only public form: a plugin registered as
+  `@succinix/engine@0.7.0` is the only public form: a plugin registered as
   `succinix`, consumed through `ctx.fs` / `ctx.sandbox` / `ctx.terminals` /
   `ctx.sessionPersistence`. | C1–C6, AGENTS.md
-- **Authoritative protocol**: `docs/PROTOCOL.md` is the file-RPC wire contract (version 1) —
+- **Protocol contract**: `docs/PROTOCOL.md` defines batch file RPC v2 and the independent
+  interactive-terminal mailbox v1 —
   request/response shapes, command routing, process model, port events, timeouts; an ecosystem
   consumer can build an alternative client/host from it alone. | TASK21, PROTOCOL.md
 - **Published package exports**: `.` (plugin entry `{ name, apply, Config }` + types),
@@ -242,7 +245,7 @@ Key measured facts:
   the app as a named instance: state files (`/workspace/.succinix-<id>`),
   IndexedDB snapshot keys, env, services/ports views and process views are
   per-instance; cross-instance `kill` is rejected. Two tabs with different ids
-  are fully isolated (separate hosts — e2e verified). | M1–M5, PROTOCOL.md
+  use separate hosts. | M1–M5, PROTOCOL.md
 - **Multi-user (0.6.0+)** — `?user=<id>` (alias of `?instance=<id>`) seeds a per-user home
   (`/workspace/users/<id>`): session starts in the home (prompt `~`, node/python spawns there),
   `whoami`/prompt show the user, and state/snapshots/process views are per-user with `ps`
@@ -272,24 +275,24 @@ Accepted environment constraints — not bugs, and never simulated:
 
 ## 11. Self-test & testing
 
-- **`?test=1` self-test** — runs the full diagnostic suite in the browser: **76 passed, 0 failed,
-  5 skipped** (the 5 skips are documented known boundaries, not silent failures). | TASK1, TASK3,
-  TASK20, TASK25
+- **`?test=1` self-test** — runs the browser diagnostic suite. Its current counts are command
+  output, not a static documentation fact; retain the output with the release evidence. | TASK1,
+  TASK3, TASK20, TASK25
 - **Scenario suite** — `scripts/scenarios.mjs` (headless Chrome + CDP): 14 real workflows S1–S14
   (npm dev loop, git via lifo-pkg-git, tinbase lifecycle, service enablement, workspace isolation,
   queue serialization, big output, persistence stress, error paths, reboot boundary, python
   workflow, cd-synced install, TS ecosystem, language regression). | TASK19, TASK23, TASK25
-- **Language verification** — `scripts/lang-verify.mjs`: 28 CDP-driven checks
-  (`LV·P1–P9`, `N1–N5`, `R1–R3`) backing the LANGUAGES matrix. | TASK25
+- **Language verification** — `scripts/lang-verify.mjs` is the measurement source for the `LV`
+  entries in LANGUAGES. | TASK25
 - **Bench** — `scripts/bench.mjs`: reproducible headless-Chrome benchmark (boot, command
   round-trip, snapshot, big output) with JSON output for CI. | TASK18
-- **CI** — GitHub Actions (`.github/workflows/ci.yml`): `check` job (lint → typecheck → unit tests
-  + coverage → build → `verify-deploy` headless self-test) on push/PR, plus a scheduled
-  `nightly-scenarios` job. | TASK20
+- **CI** — GitHub Actions (`.github/workflows/ci.yml`) runs `check` on push/PR and a scheduled
+  `nightly-scenarios` job. A release result must cite the specific workflow run and environment. | TASK20
 - **Unit tests** — Vitest (node) covering pure-logic modules with an in-memory mock FS / fake
   IndexedDB; v8 coverage gate **>=70%** on core files. | TASK20
-- **e2e pipeline** — `npm run test:e2e` builds once, then runs `verify-deploy` → `bench` →
-  `scenarios` → `lang-verify` → `instance-demo` → `instance-routing` → `cordis-app`. | TASK20, TASK25
+- **e2e pipeline** — `npm run test:e2e` builds once, then invokes `verify-deploy`, benchmark,
+  scenarios, language verification, instance checks, and the Cordis app contract. Treat its
+  output as current evidence rather than inferring pass status from this document. | TASK20, TASK25
 
 ## 12. Quick start & docs index
 
@@ -304,10 +307,10 @@ Type `help` in the shell for the full command list. Documentation family (Englis
 - **README** — overview, usage, architecture: [English](../README.md) · [中文](README.zh-CN.md)
 - **FEATURES** — this document: [English](FEATURES.md) · [中文](FEATURES.zh-CN.md)
 - **LANGUAGES** — measured language support matrix: [English](LANGUAGES.md) · [中文](LANGUAGES.zh-CN.md)
-- **PROTOCOL** — file-RPC wire contract (v1): [English](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
+- **PROTOCOL** — batch file-RPC v2 and interactive-terminal v1 contract: [English](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
 - **SDK** — Cordis plugin integration: [English](SDK.md) · [中文](SDK.zh-CN.md)
 - **PLUGIN** — third-party Cordis plugin authoring: [English](PLUGIN.md)
-- **MIGRATION** — 0.4.0/0.5.0 to 0.6.0 guide: [English](MIGRATION.md)
+- **MIGRATION** — 0.4.0/0.5.0 and 0.6.0 to 0.7.0 guide: [English](MIGRATION.md)
 - **cordis-contract** — contract snapshot and runner: [English](cordis-contract.md)
 - **AGENTS** — agent & design guidelines: [English](../AGENTS.md) · [中文](../AGENTS.zh-CN.md)
 - **CHANGELOG** — change history: [English](../CHANGELOG.md) · [中文](../CHANGELOG.zh-CN.md)

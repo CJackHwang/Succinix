@@ -21,6 +21,8 @@ import {
   withEaccesHint,
   parseKillPid,
   shouldRemoveCmdFile,
+  isValidInstanceId,
+  normalizeInstanceId,
   CD_PREFIX_RE,
 } from '../src/engine/host-route.js';
 
@@ -94,11 +96,13 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(resolveBrowserPath('rel/script.py', ROOT)).toBe('rel/script.py'); // 相对路径原样
   });
 
-  it('pythonRuntimeArgs：脚本模式映射绝对路径，-c/--version 原样', () => {
+  it('pythonRuntimeArgs：脚本模式映射绝对路径，解释器选项原样', () => {
     expect(pythonRuntimeArgs(['/script.py', '--arg'], ROOT)).toEqual([`${ROOT}/script.py`, '--arg']);
     expect(pythonRuntimeArgs(['/workspace/x.py'], ROOT)).toEqual([`${ROOT}/x.py`]);
     expect(pythonRuntimeArgs(['-c', 'print(1)'], ROOT)).toEqual(['-c', 'print(1)']);
+    expect(pythonRuntimeArgs(['-m', 'pip', '--version'], ROOT)).toEqual(['-m', 'pip', '--version']);
     expect(pythonRuntimeArgs(['--version'], ROOT)).toEqual(['--version']);
+    expect(pythonRuntimeArgs(['-V'], ROOT)).toEqual(['-V']);
     expect(pythonRuntimeArgs(['script.py'], ROOT)).toEqual(['script.py']); // 相对路径不映射
   });
 
@@ -122,11 +126,11 @@ describe('路径映射（TASK23/TASK24 双根）', () => {
     expect(mapDataDirArgs(['start', '--port', '3001'], ROOT)).toEqual(['start', '--port', '3001']);
   });
 
-  it('lifoSpawndCwd：Lifo VFS cwd → host 真实路径，非 /workspace 回落会话 cwd', () => {
+  it('lifoSpawndCwd：Lifo VFS cwd → host 真实路径，私有 cwd fail-closed', () => {
     expect(lifoSpawndCwd('/workspace', '/workspace', ROOT)).toBe(ROOT);
     expect(lifoSpawndCwd('/workspace/sub', '/workspace', ROOT)).toBe(`${ROOT}/sub`);
-    expect(lifoSpawndCwd('/tmp', '/workspace', ROOT)).toBe(spawnCwdFor('/workspace', ROOT)); // 回落会话 cwd
-    expect(lifoSpawndCwd('/tmp', '/workspace/x', ROOT)).toBe(spawnCwdFor('/workspace/x', ROOT));
+    expect(lifoSpawndCwd('/tmp', '/workspace', ROOT)).toBeNull();
+    expect(lifoSpawndCwd('/tmp', '/workspace/x', ROOT)).toBeNull();
   });
 
   it('browserPathToLifoCwd：浏览器状态根映射到同一宿主目录的 Lifo cwd', () => {
@@ -203,6 +207,27 @@ describe('capOutput（输出截断）', () => {
   it('自定义上限（测试/小缓冲场景）', () => {
     expect(capOutput('abcdef', 4)).toBe('cdef');
     expect(capOutput('abc', 4)).toBe('abc');
+  });
+
+  it('按 UTF-8 字节而不是 UTF-16 代码单元截断', () => {
+    expect(capOutput('a中b', 4)).toBe('中b');
+    expect(capOutput('a😀b', 5)).toBe('😀b');
+  });
+});
+
+describe('instance identity', () => {
+  it('only accepts the canonical instance-id alphabet and length', () => {
+    expect(isValidInstanceId('default')).toBe(true);
+    expect(isValidInstanceId('team_1-a')).toBe(true);
+    for (const invalid of ['', ' with-space', 'a/b', '../a', '%2f', 'a..b', 'a'.repeat(65)]) {
+      expect(isValidInstanceId(invalid)).toBe(false);
+    }
+  });
+
+  it('normalizes only a missing instance id and rejects malformed values', () => {
+    expect(normalizeInstanceId(undefined)).toBe('default');
+    expect(() => normalizeInstanceId('')).toThrow(/invalid instance id/);
+    expect(() => normalizeInstanceId('../other')).toThrow(/invalid instance id/);
   });
 });
 

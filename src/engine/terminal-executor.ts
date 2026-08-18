@@ -30,6 +30,27 @@ import {
   type TerminalExecutorSeed,
 } from './index.js';
 
+const HOST_SHUTDOWN_TIMEOUT_MS = 5000;
+
+function waitForHostExit(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+}
+
+async function stopHost(client: TerminalClient, hostProc: WebContainerProcess | null): Promise<void> {
+  if (!hostProc) return;
+  const fenced = await client.requestHostShutdown(HOST_SHUTDOWN_TIMEOUT_MS);
+  if (!fenced) client.prepareHostEpoch(true);
+  const exit = (hostProc as unknown as { exit?: Promise<number> }).exit;
+  if (exit) {
+    await Promise.race([exit.catch(() => undefined), waitForHostExit(HOST_SHUTDOWN_TIMEOUT_MS)]);
+  }
+  try {
+    hostProc.kill();
+  } catch {
+    /* The process may already have exited after its shutdown acknowledgement. */
+  }
+}
+
 class TerminalExecutorImpl implements TerminalExecutor {
   private wc: WebContainer | null = null;
   private client: TerminalClient | null = null;
@@ -172,8 +193,8 @@ class TerminalExecutorImpl implements TerminalExecutor {
     };
   }
 
-  // 重启 host（P1-3）：kill 旧 host 再 spawn 新 host（单 host 不变量，防双 host 同时轮询
-  // cmd.json），重新注入资产并等待就绪。引擎自包含 —— kill-before-spawn 就地实现，
+  // 重启 host（P1-3）：先请求旧 host 收敛并等待退出，再 spawn 新 host（单 host 不变量，防双 host 同时轮询
+  // cmd.json），重新注入资产并等待就绪。引擎自包含 —— stop-before-spawn 就地实现，
   // 不依赖系统层 host-restart.ts。
   async respawn(): Promise<void> {
     const wc = this.wc;
@@ -183,23 +204,17 @@ class TerminalExecutorImpl implements TerminalExecutor {
     // 资产源：boot 时预取的文本优先，否则按配置 URL 拉取（容器内 host.js 已存在则跳过写入）。
     const hostSrc = hooks.hostSrc ?? (await fetch(hooks.hostJsUrl ?? '/host.js').then((r) => r.text()).catch(() => null));
     const lifoCoreSrc = hooks.lifoCoreSrc ?? (await fetch(hooks.lifoCoreUrl ?? '/lifo-core.js').then((r) => r.text()).catch(() => null));
-    // kill 旧 host 必须在 spawn 新 host 之前（单 host 不变量）。旧句柄失效时 kill 是 no-op。
-    try {
-      this.hostProc?.kill();
-    } catch {
-      /* 旧句柄失效：忽略 */
-    }
+    await stopHost(client, this.hostProc);
+    this.hostProc = null;
+    client.prepareHostEpoch();
     this.hostProc = await bootEngineHost(wc, client, { ...hooks, hostSrc, lifoCoreSrc });
+    client.resumeHostDelivery();
     await waitForHostReady(client);
   }
 
   async dispose(): Promise<void> {
     if (this.hostProc && !this.sharedHost) {
-      try {
-        this.hostProc.kill();
-      } catch {
-        /* 句柄失效：忽略 */
-      }
+      await stopHost(this.requireClient(), this.hostProc);
     }
     this.hostProc = null;
     this.client = null;

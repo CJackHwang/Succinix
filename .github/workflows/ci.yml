@@ -60,6 +60,9 @@ jobs:
       - name: File size audit + static/docs integrity (O12/O14)
         run: npm run audit:files && npm run check:static && npm run check:docs
 
+      - name: Status dashboard evidence
+        run: npm run check:status-evidence
+
       - name: Dependency audit (no high or critical vulnerabilities)
         run: npm run audit:deps
 

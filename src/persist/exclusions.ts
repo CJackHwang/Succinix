@@ -7,8 +7,8 @@
 // snapshots or being restored into a later host boot.
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.succinix-terminal', '.succinix-control', '.succinix-userland']);
 // host.js / lifo-core.js：运行时注入的 host 进程脚本，非用户数据（随 boot 重新注入）；
-// cmd.json：文件 RPC 通道文件；succinix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
-const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'succinix.engine.json']);
+// cmd.json / host-epoch.json：文件 RPC 通道与 boot fence；succinix.engine.json：引擎配置（TASK21，随 boot 重写，非用户数据）。
+const EXCLUDED_FILES = new Set(['host.js', 'lifo-core.js', 'cmd.json', 'host-epoch.json', 'succinix.engine.json']);
 // TASK23：内置语言运行时系统资产（/usr/lib/succinix —— python-runtime.js + wasm/zip，~13MB）。
 // 系统资产懒注入、随 boot 重建，非用户数据；排除避免每次快照遍历读 13MB 二进制。
 const EXCLUDED_PREFIXES = ['/usr/lib/succinix'];

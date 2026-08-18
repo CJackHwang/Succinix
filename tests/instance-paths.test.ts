@@ -35,10 +35,10 @@ describe('browser statePath (M2)', () => {
 });
 
 describe('host instance state paths (M2, host-route)', () => {
-  it('normalizeInstanceId maps missing/empty to the default instance', () => {
+  it('normalizeInstanceId maps only a missing id to the default instance', () => {
     expect(normalizeInstanceId(undefined)).toBe(HOST_DEFAULT_INSTANCE_ID);
-    expect(normalizeInstanceId(null)).toBe(HOST_DEFAULT_INSTANCE_ID);
-    expect(normalizeInstanceId('')).toBe(HOST_DEFAULT_INSTANCE_ID);
+    expect(() => normalizeInstanceId(null)).toThrow(/invalid instance id/);
+    expect(() => normalizeInstanceId('')).toThrow(/invalid instance id/);
     expect(normalizeInstanceId('c-1')).toBe('c-1');
     expect(HOST_DEFAULT_INSTANCE_ID).toBe('default');
   });
@@ -59,13 +59,12 @@ describe('host instance state paths (M2, host-route)', () => {
 });
 
 describe('user home paths (U1)', () => {
-  it('userHomePath follows the /workspace/users/<id> convention with id sanitization', () => {
+  it('userHomePath follows the /workspace/users/<id> convention and rejects nested ids', () => {
     expect(USER_HOME_ROOT).toBe('/workspace/users');
     expect(userHomePath('a')).toBe('/workspace/users/a');
     expect(userHomePath('alice')).toBe('/workspace/users/alice');
-    // 前导/尾随斜杠清理（URL 参数形态容错）。
-    expect(userHomePath('/a/')).toBe('/workspace/users/a');
-    expect(userHomePath('b/')).toBe('/workspace/users/b');
+    expect(() => userHomePath('/a/')).toThrow(/invalid instance id/);
+    expect(() => userHomePath('b/')).toThrow(/invalid instance id/);
   });
 
   it('userHomePath root can be overridden by the host', () => {

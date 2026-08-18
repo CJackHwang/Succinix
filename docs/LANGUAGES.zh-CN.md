@@ -1,13 +1,13 @@
 # Succinix 语言生态 — 实测支持矩阵
 
-> **权威、以实测为准。** 矩阵里的每一项状态都有可复现的实测来源——`scripts/lang-verify.mjs`
-> 的检查 id（`LV·P1` … `LV·R3`）、`?test=1` 自检（`ST`）、或 `scripts/scenarios.mjs`
-> 里的场景（`S11`、`S13`、`S14`）。无编造；跑 `npm run test:e2e` 即可复现全部数字。
+> **以证据为准。** 每项均标明可复现的浏览器实测（`LV`、`ST`、`S`）或源码级实现契约。
+> 实现条目不等于端到端实测；请运行标注命令取得当前证据。
 
 状态图例：
 
 - ✅ **实测可用** —— 真实浏览器/容器执行得到预期结果
 - ⚠️ **部分 / 探测** —— 可用但有明确限制，或可行性探测记录了结果
+- **已实现** —— 路由代码存在，但矩阵尚无完整 E2E 实测
 - ❌ **不可用** —— 确认为缺失（真实执行，非假设）
 
 实测环境：headless Chrome（CDP）驱动 WebContainer；容器内 `node` 22.22.3 / `npm` 10.8.2
@@ -26,7 +26,7 @@ Pyodide 资产变化时会静默漂移。
 | **Node.js** | `node` | 真实 Node.js（WebContainer 运行时） | 22.22.3 | ✅ npm，本地按项目安装 | ✅ | `LV·N1–N5`、`S13`、`S14`、`ST` |
 | **npm** | `npm` | 真实 npm（随 node 自带） | 10.8.2 | ✅ 本地；❌ 全局（`/usr/local` 只读 → EACCES + hint） | ✅ | `LV·N1`、`LV·N4`、`S14`、`ST` |
 | **TypeScript** | `npx tsc`、`tsx`、`vitest` | npm 安装工具链；node 22 `--experimental-strip-types` | npm 最新版 | ✅ 经 npm | ✅ | `LV·N3`、`S13`、`S14` |
-| **Ruby** | `ruby` | 懒注入 WASM 运行时：浏览器资产桥 → 真实 Node 子进程内 `@ruby/wasm-wasi` adapter | head ruby.wasm | ✅ npm 安装；❌ **无 gem** | ✅ 已集成、懒加载（首跑慢） | v0.7, `LV·R1` |
+| **Ruby** | `ruby` | 已注册的 Lifo 命令；浏览器资产桥懒注入真实 Node 子进程内的 `@ruby/wasm-wasi` adapter | adapter 运行时版本尚未作为发布门禁实测 | npm 包；❌ **无 gem** | 已实现；仅有底层 WASM API 探测 | `src/engine/host/runtime-commands.ts`、`tests/ruby-wasi.test.ts`、`LV·R1` |
 | **C** | `gcc` | 无 | — | — | ❌ 确认缺失 | `LV·R2` |
 | **Rust** | `rustc`、`cargo` | 无 | — | — | ❌ 确认缺失 | `LV·R2` |
 | **Go** | `go` | 无 | — | — | ❌ 确认缺失 | `LV·R2` |
@@ -64,7 +64,7 @@ Pyodide 资产变化时会静默漂移。
 | TypeScript 全流程开发闭环（安装 → 编译 → 测试 → 运行） | Node/TS | **~80%+** | `npm i -D typescript tsx vitest` → `tsc` → `node dist/*.js` → `vitest run 1 passed`（`LV·N3`、`S13`）；`node -e` 嵌套引号写文件穿透 tokenize 与 tsc（`LV·N2`、`S14`）；npm 装进会话 cwd（`LV·N5`、`S14`）。 |
 | 前端/服务运行时（http 服务、package 脚本） | Node | **~85%+** | 真实 node spawn + 预览 URL 注册 + `ps`/`kill` 生命周期（`S1`、`ST`）；`node --version && npm --version` 链可用（`LV·N1`、`S14`）。 |
 | 全局 CLI 工具（`npm i -g`） | npm | **❌** | `/usr/local` 只读；EACCES 并带可操作 hint（`LV·N4`、`S14`）。请改本地安装。 |
-| Ruby 脚本 | Ruby | **~60%+** | `ruby` 是已注册的 Lifo 命令；浏览器资产桥懒注入 WASM 运行时并在真实 Node 子进程中运行（`6*7` → `42`）。无 gem 安装器；首跑慢（`v0.7`，`LV·R1`）。 |
+| Ruby 脚本 | Ruby | 暂不评级 | `ruby` 是已注册的 Lifo 命令；资产桥会懒注入 WASM adapter，随后在真实 Node 子进程中运行。`LV·R1` 仅测得底层 API（`6*7` → `42`），未测完整路由命令。无 gem 安装器；首跑慢。 |
 | 原生编译（C/Rust/Go） | C/Rust/Go | **❌** | 无编译器（`LV·R2`）。预编译 **WASI** 二进制经 `wasi-run` / `wasi-info` Lifo adapter 运行（`v0.7`，`LV·R3`）；沙箱内仍无构建工具链。 |
 
 ---
@@ -91,8 +91,9 @@ Pyodide 资产变化时会静默漂移。
 - **无 C/Rust/Go 编译器**：`which gcc/rustc/go` 均报 not found（`LV·R2`）。
 - **WASI**：已集成（v0.7）。`wasi-run <file>` / `wasi-info` 经 `node:wasi` adapter 运行
   预编译 WASI 模块（`LV·R3`）；构建仍需外部工具链，沙箱内无。
-- **Ruby**：已集成（v0.7）。`ruby` 命令首次使用经资产桥懒注入 WASM 运行时，在真实
-  Node 子进程中执行；仍无 gem 安装器（`LV·R1`）。
+- **Ruby**：`ruby` 命令已通过 Lifo runtime-command registry 路由，首次使用时向浏览器资产桥
+  请求 WASM adapter。`LV·R1` 仅探测底层 `@ruby/wasm-wasi` API；完整路由命令尚无 E2E
+  实测。仍无 gem 安装器。
 - **外网**：`urllib` / `curl` 访问无 CORS 头站点失败；请用 CORS 友好代理
   （如 `https://r.jina.ai/<url>`）（AGENTS.md 边界；`ST`）。
 - **`/workspace` 路径映射**：Lifo 的 `/workspace` 是浏览器 FS 根的 VFS 视图；真实
@@ -110,5 +111,5 @@ node scripts/scenarios.mjs --only S11  # python 工作流 + pip + 持久化，�
 # 自检：打开 <deploy>/?test=1 → "7? passed, 0 failed, ? skipped"（门禁 >= 71）
 ```
 
-这些文件是本矩阵的唯一事实来源——支持矩阵的任何改动必须来自 `lang-verify.mjs`、自检或
-场景的更新实测，绝不来自假设。
+矩阵更新必须关联具名实测，或实现测试/源码的变更；没有可复现 E2E 检查时，不得把“已实现”
+提升为“实测可用”。

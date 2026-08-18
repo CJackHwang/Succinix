@@ -22,7 +22,12 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import {
+  attachPageDiagnostics,
+  cleanupChrome,
+  launchChrome,
+  writeBrowserFailureDiagnostics,
+} from './lib/chrome.mjs';
 import { connectPageCDP } from './lib/cdp.mjs';
 import { run, waitForHttp, makeHarness, note, printChecks, scenarioStats, resetScenarioStats } from './lib/harness.mjs';
 import { scenarios as smoke } from './scenarios/smoke.mjs';
@@ -70,16 +75,22 @@ async function main() {
   note(`starting vite preview on :${PORT}...`);
   const preview = spawn(process.execPath, [join(ROOT, 'node_modules/vite/bin/vite.js'), 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
   let chrome = null;
+  let chromeRun = null;
   let cdp = null;
   let profileDir = null;
+  let pageDiagnostics = null;
+  let failure = null;
   try {
     await waitForHttp(BASE, 20000);
     note(`preview reachable at ${BASE}`);
 
     const launched = launchChrome(DEBUG_PORT, 'scenarios');
+    chromeRun = launched;
     chrome = launched.chrome;
     profileDir = launched.profileDir;
     cdp = await connectPageCDP(DEBUG_PORT);
+    await cdp.send('Log.enable');
+    pageDiagnostics = attachPageDiagnostics(cdp);
     await cdp.send('Page.navigate', { url: `${BASE}/?scenario=1` });
     note('waiting for boot + scenario handle...');
     const h = makeHarness(cdp);
@@ -131,9 +142,29 @@ async function main() {
     }
     console.log(`\nScenarios: ${passedScenarios}/${SCENARIOS.length} passed | checks: ${stats.pass} ok, ${stats.fail} fail`);
     process.exitCode = stats.fail === 0 && passedScenarios === SCENARIOS.length ? 0 : 1;
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
+    if (failure) {
+      try {
+        const diagnostics = await writeBrowserFailureDiagnostics({
+          label: 'scenarios',
+          error: failure,
+          cdp,
+          pageDiagnostics,
+          chromeRun,
+          previewPort: PORT,
+          debugPort: DEBUG_PORT,
+        });
+        note(`failure diagnostics: ${diagnostics.reportPath}`);
+      } catch (diagnosticError) {
+        note(`failed to collect diagnostics: ${String(diagnosticError)}`);
+      }
+    }
+    pageDiagnostics?.dispose();
     cdp?.close();
-    cleanupChrome(chrome, profileDir);
+    await cleanupChrome(chrome, profileDir);
     preview.kill('SIGTERM');
   }
 }

@@ -51,7 +51,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     if (cdp) cdp.close();
-    if (chrome) cleanupChrome(chrome, profileDir);
+    if (chrome) await cleanupChrome(chrome, profileDir);
     vite.kill('SIGTERM');
   }
 }

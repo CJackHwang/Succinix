@@ -117,20 +117,21 @@ export function mapDataDirArgs(tokens: string[], root: string): string[] {
 // 真实路径，否则 `python /script.py` 在真实容器根找不到浏览器写入的脚本。
 export function pythonRuntimeArgs(rawArgs: string[], root: string): string[] {
   const first = rawArgs[0];
-  if (first !== undefined && first !== '-c' && first !== '--version') {
+  if (first !== undefined && first !== '-c' && first !== '-m' && first !== '--version' && first !== '-V') {
     return [resolveBrowserPath(first, root), ...rawArgs.slice(1)];
   }
   return rawArgs;
 }
 
 // Lifo 混合链内真实二进制命令的 spawn cwd：Lifo 命令上下文的 VFS cwd 映射回 host 真实路径
-// （链内 `cd /workspace/sub` 也能跟随）；非 /workspace 的 Lifo 私有路径回落会话 cwd。
-export function lifoSpawndCwd(vfsCwd: string, sessionCwd: string, root: string): string {
+// （链内 `cd /workspace/sub` 也能跟随）。Lifo 私有路径没有共享的真实映射，必须拒绝，不能
+// 静默在会话 cwd 执行另一个命令。
+export function lifoSpawndCwd(vfsCwd: string, _sessionCwd: string, root: string): string | null {
   if (vfsCwd === WORKSPACE_MOUNT) return root;
   if (vfsCwd.startsWith(WORKSPACE_MOUNT + '/')) {
     return root + vfsCwd.slice(WORKSPACE_MOUNT.length);
   }
-  return spawnCwdFor(sessionCwd, root);
+  return null;
 }
 
 // P5-16 复审：会话 cwd（Lifo 视图）→ 浏览器 wc.fs 可读路径。浏览器 `/` == host 进程
@@ -181,6 +182,7 @@ export const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 // 输出截断：超出上限保留尾部（用户关心结尾）。在 settle 时应用最终截断。
 export function capOutput(s: string, maxBytes: number = MAX_OUTPUT_BYTES): string {
+  if (maxBytes <= 0) return '';
   const bytes = new TextEncoder().encode(s);
   if (bytes.byteLength <= maxBytes) return s;
   let start = bytes.byteLength - maxBytes;
@@ -230,9 +232,20 @@ export function shouldRemoveCmdFile(processedId: number, currentJson: string | n
 
 export const DEFAULT_INSTANCE_ID = 'default';
 
-/** 协议请求的 instanceId 归一化：缺失/空串 → 'default'（additive 向后兼容）。 */
+// Instance ids become directory names, mailbox path components, and process
+// ownership keys. Keep one canonical ASCII form at every boundary.
+const INSTANCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+export function isValidInstanceId(value: unknown): value is string {
+  return typeof value === 'string' && INSTANCE_ID_RE.test(value);
+}
+
+/** Protocol requests may omit instanceId for the default instance. Every
+ * supplied value must be canonical before it is used in a path or registry. */
 export function normalizeInstanceId(raw: unknown): string {
-  return typeof raw === 'string' && raw.length > 0 ? raw : DEFAULT_INSTANCE_ID;
+  if (raw === undefined) return DEFAULT_INSTANCE_ID;
+  if (!isValidInstanceId(raw)) throw new Error('invalid instance id');
+  return raw;
 }
 
 /** host 侧实例状态根（DM-12：/workspace/.succinix-<id> 的 host 真实路径视图）。 */

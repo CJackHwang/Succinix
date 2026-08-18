@@ -7,6 +7,7 @@ import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 import type { ProcInfo } from './host-procs.js';
 import { DEFAULT_INSTANCE_ID, instanceStateFile } from './host-route.js';
+import { RPC_HOST_EPOCH_FILE, RPC_PROTOCOL_VERSION } from './rpc-v2.js';
 import { pagePorts } from './ports.js';
 import { sleep } from './sleep.js';
 import type { UserlandCapabilitySnapshot } from '../userland/index.js';
@@ -182,6 +183,8 @@ export async function bootEngineHost(
   client: TerminalClient,
   hooks: EngineBootHooks = {}
 ): Promise<WebContainerProcess> {
+  const bootNonce = client.takeHostEpoch();
+  await writeHostEpoch(wc, bootNonce);
   // 引擎配置（仅显式传 resultTtlMs 时写）：host 启动读取 /etc/succinix.engine.json 覆盖默认 TTL。
   // 默认不写 —— 全新工作区零额外文件，行为不变。
   // M2/M5：多实例下 host 按请求 instanceId 解析自身配置路径（全局单份 /etc 配置会串扰），
@@ -222,6 +225,15 @@ export async function bootEngineHost(
   return hostProc;
 }
 
+async function writeHostEpoch(wc: WebContainer, bootNonce: string): Promise<void> {
+  const payload = JSON.stringify({ protocolVersion: RPC_PROTOCOL_VERSION, bootNonce, createdAt: Date.now() });
+  const temp = `${RPC_HOST_EPOCH_FILE}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  await wc.fs.writeFile(temp, payload);
+  const fs = wc.fs as unknown as { rename?: (from: string, to: string) => Promise<void>; writeFile(path: string, data: string): Promise<void> };
+  if (fs.rename) await fs.rename(temp, RPC_HOST_EPOCH_FILE);
+  else await fs.writeFile(RPC_HOST_EPOCH_FILE, payload);
+}
+
 // WebContainer 子进程的输出流必须持续消费；否则启动失败的堆栈会被静默丢失，
 // 也可能因未消费的输出产生背压。正常 host 不输出，故只在异常时写入浏览器控制台。
 function forwardHostOutput(hostProc: WebContainerProcess): void {
@@ -236,16 +248,35 @@ function forwardHostOutput(hostProc: WebContainerProcess): void {
   });
 }
 
+export interface HostReadyWaitOptions {
+  /** 兼容旧调用的最多探测次数；未设置 deadline 时默认 60 次。 */
+  attempts?: number;
+  /** 从调用开始计算的硬截止时间，避免每次 ping 的超时累加突破配置上限。 */
+  deadlineMs?: number;
+}
+
 // 等 host 就绪：命令轮询循环可响应（pong）。TASK18：重试间隔 300ms → 100ms。
-export async function waitForHostReady(client: TerminalClient, attempts = 60): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
+export async function waitForHostReady(
+  client: TerminalClient,
+  options: number | HostReadyWaitOptions = 60,
+): Promise<void> {
+  const attempts = typeof options === 'number' ? options : options.attempts;
+  const deadline = typeof options === 'number' || options.deadlineMs === undefined
+    ? undefined
+    : Date.now() + options.deadlineMs;
+  let count = 0;
+  while (attempts === undefined || count < attempts) {
+    const remaining = deadline === undefined ? 2_000 : deadline - Date.now();
+    if (remaining <= 0) break;
+    count += 1;
     try {
-      const p = await client.exec('ping', undefined, 2000);
+      const p = await client.exec('ping', undefined, Math.min(2_000, remaining));
       if (p.kind === 'pong') return;
     } catch {
       /* host 未就绪 */
     }
-    await sleep(100);
+    const retryDelay = deadline === undefined ? 100 : Math.min(100, Math.max(0, deadline - Date.now()));
+    if (retryDelay > 0) await sleep(retryDelay);
   }
   throw new Error('host did not respond');
 }

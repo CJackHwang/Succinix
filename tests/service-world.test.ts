@@ -1,8 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import { Sandbox, VFS } from '@lifo-sh/core';
-import { createSystemctlCommand, decodeServiceCommand, installServiceTemplates, serviceExecStart } from '../src/engine/host/service-world.js';
+import {
+  SERVICE_ENABLEMENT_ROOT,
+  createSystemctlCommand,
+  decodeServiceCommand,
+  installServiceTemplates,
+  serviceEnablementMarker,
+  serviceExecStart,
+} from '../src/engine/host/service-world.js';
 import { registerRealBinaryCommands } from '../src/engine/host/real-binaries.js';
 import { createServiceCommandBridge } from '../src/engine/host/service-command-bridge.js';
+
+const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  spawnMock.mockImplementation(actual.spawn);
+  return { ...actual, spawn: spawnMock };
+});
 
 function context(args: string[]) {
   const stdout: string[] = [];
@@ -145,6 +162,202 @@ describe('execution-world service bridge', () => {
     expect(await command(list.ctx as never)).toBe(0);
     expect(list.stdout.join('')).toContain('No units found.');
     expect(status.stdout.join('')).not.toMatch(/[●✅❌]/u);
+  });
+
+  it('covers help, validation, populated listing, status, and enablement command paths', async () => {
+    const unavailable = context(['start', 'api']);
+    expect(await createSystemctlCommand(null)(unavailable.ctx as never)).toBe(1);
+    expect(unavailable.stderr.join('')).toContain('service manager unavailable');
+
+    const enablement = vi.fn(async (_name: string, _enabled: boolean) => {});
+    const manager = {
+      status: vi.fn(() => ({ name: 'api', description: '', loaded: false, active: 'failed', sub: 'failed', enabled: false, pid: null, startedAt: null, exitCode: 2 })),
+      enable: vi.fn(() => ({ ok: true, message: 'enabled api' })),
+      disable: vi.fn(() => ({ ok: true, message: 'disabled api' })),
+      listUnits: vi.fn(() => [{ name: 'api', description: 'API', loaded: true, active: 'active', sub: 'running', enabled: true, pid: null, startedAt: 1, exitCode: null }]),
+      daemonReload: vi.fn(),
+    };
+    const command = createSystemctlCommand(manager as never, { onEnablementChange: enablement });
+
+    const usage = context([]);
+    expect(await command(usage.ctx as never)).toBe(1);
+    expect(usage.stdout.join('')).toContain('Usage: systemctl');
+    const help = context(['--help']);
+    expect(await command(help.ctx as never)).toBe(0);
+    const list = context(['list-units']);
+    expect(await command(list.ctx as never)).toBe(0);
+    expect(list.stdout.join('')).toContain('1 unit(s) listed.');
+    const status = context(['status', 'api']);
+    expect(await command(status.ctx as never)).toBe(0);
+    expect(status.stdout.join('')).toContain('Exit code: 2');
+    const enabled = context(['enable', 'api.service']);
+    expect(await command(enabled.ctx as never)).toBe(0);
+    const disabled = context(['disable', 'api']);
+    expect(await command(disabled.ctx as never)).toBe(0);
+    expect(enablement.mock.calls.map(([name, state]) => [name, state])).toEqual([['api', true], ['api', false]]);
+    const missing = context(['start']);
+    expect(await command(missing.ctx as never)).toBe(1);
+    const unknown = context(['reload']);
+    expect(await command(unknown.ctx as never)).toBe(1);
+  });
+
+  it('rejects invalid additions, returns a missing inspection, and removes active units after cleanup', async () => {
+    const manager = {
+      status: vi.fn(() => ({ name: 'api', description: 'API', loaded: true, active: 'active', sub: 'running', enabled: true, pid: null, startedAt: 1, exitCode: null })),
+      stop: vi.fn(async () => ({ ok: true, message: 'Stopped api' })),
+      disable: vi.fn(() => ({ ok: true, message: 'disabled api' })),
+      daemonReload: vi.fn(),
+      listUnits: vi.fn(() => []),
+    };
+    const afterStop = vi.fn(async () => {});
+    const changed = vi.fn(async () => {});
+    const command = createSystemctlCommand(manager as never, { afterStop, onEnablementChange: changed });
+
+    const invalid = contextWithVfs(['add', 'not-base64']);
+    expect(await command({ ...invalid.ctx, vfs: invalid.vfs } as never)).toBe(1);
+    const missing = contextWithVfs(['inspect', 'missing']);
+    expect(await command({ ...missing.ctx, vfs: missing.vfs } as never)).toBe(3);
+    expect(missing.stdout.join('')).toBe('null\n');
+
+    const remove = contextWithVfs(['remove', 'api']);
+    remove.vfs.mkdir('/etc/systemd/system', { recursive: true });
+    remove.vfs.writeFile('/etc/systemd/system/api.service', 'ExecStart=node api.js\n');
+    expect(await command({ ...remove.ctx, vfs: remove.vfs } as never)).toBe(0);
+    expect(remove.vfs.exists('/etc/systemd/system/api.service')).toBe(false);
+    expect(manager.stop).toHaveBeenCalledWith('api');
+    expect(afterStop).toHaveBeenCalledWith('api', expect.anything());
+    expect(changed).toHaveBeenCalledWith('api', false, expect.anything());
+  });
+
+  it('projects service PIDs into the public ps namespace', async () => {
+    const manager = {
+      status: vi.fn((name: string) => ({ name, description: 'Worker', loaded: true, active: 'active', sub: 'running', enabled: false, pid: 42, startedAt: 1, exitCode: null })),
+      listUnits: vi.fn(() => []),
+    };
+    const command = createSystemctlCommand(manager as never, { projectPid: (pid) => pid + 1_000_000_000 });
+    const status = context(['status', 'worker']);
+    expect(await command(status.ctx as never)).toBe(0);
+    expect(status.stdout.join('')).toContain('Main PID: 1000000042');
+
+    const inspect = contextWithVfs(['inspect']);
+    inspect.vfs.mkdir('/etc/systemd/system', { recursive: true });
+    inspect.vfs.writeFile('/etc/systemd/system/worker.service', 'ExecStart=node worker.js\n');
+    expect(await command({ ...inspect.ctx, vfs: inspect.vfs } as never)).toBe(0);
+    expect(JSON.parse(inspect.stdout.join(''))).toEqual([
+      expect.objectContaining({ name: 'worker', pid: 1_000_000_042 }),
+    ]);
+  });
+
+  it('keeps enablement markers inside the instance-mounted /etc state tree', () => {
+    expect(SERVICE_ENABLEMENT_ROOT).toBe('/etc/succinix/service-state');
+    expect(serviceEnablementMarker('api')).toBe('/etc/succinix/service-state/api.enabled');
+  });
+
+  it.each([
+    ['beforeStart throws', 'start', 'throw-before'],
+    ['manager start fails', 'start', 'result-failure'],
+    ['readiness times out', 'start', 'ready-failure'],
+    ['manager restart fails', 'restart', 'result-failure'],
+  ] as const)('cleans port ownership after %s', async (_label, operation, failure) => {
+    const manager = {
+      start: vi.fn(async () => failure === 'result-failure' ? { ok: false, message: 'start failed' } : { ok: true, message: 'started' }),
+      restart: vi.fn(async () => failure === 'result-failure' ? { ok: false, message: 'restart failed' } : { ok: true, message: 'restarted' }),
+      stop: vi.fn(async () => ({ ok: true, message: 'stopped' })),
+      status: vi.fn(() => ({ active: 'active' })),
+    };
+    const afterStop = vi.fn(async () => {});
+    const command = createSystemctlCommand(manager as never, {
+      beforeStart: failure === 'throw-before' ? vi.fn(async () => { throw new Error('port reservation failed'); }) : vi.fn(async () => {}),
+      waitForReady: failure === 'ready-failure' ? vi.fn(async () => false) : vi.fn(async () => true),
+      afterStop,
+    });
+    const result = context([operation, 'api']);
+
+    expect(await command(result.ctx as never)).toBe(1);
+    expect(afterStop).toHaveBeenCalledWith('api', result.ctx);
+    if (failure === 'throw-before') expect(manager.stop).not.toHaveBeenCalled();
+    else expect(manager.stop).toHaveBeenCalledWith('api');
+  });
+
+  it.each([
+    ['returns a failure', vi.fn(async () => ({ ok: false, message: 'stop failed' }))],
+    ['throws', vi.fn(async () => { throw new Error('stop crashed'); })],
+  ])('releases port ownership when systemctl stop %s', async (_label, stop) => {
+    const manager = { stop };
+    const afterStop = vi.fn(async () => {});
+    const command = createSystemctlCommand(manager as never, { afterStop });
+    const result = context(['stop', 'api']);
+
+    expect(await command(result.ctx as never)).toBe(1);
+    expect(afterStop).toHaveBeenCalledWith('api', result.ctx);
+  });
+
+  it('terminates a timed-out service package install through the shared process policy', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as unknown as ChildProcess;
+      Object.assign(child, {
+        pid: 3009,
+        kill: vi.fn((signal: string) => {
+          if (signal === 'SIGKILL') child.emit('close', null);
+          return true;
+        }),
+      });
+      spawnMock.mockImplementationOnce(() => child);
+      const manager = {
+        start: vi.fn(async () => ({ ok: true, message: 'started' })),
+        stop: vi.fn(async () => ({ ok: true, message: 'stopped' })),
+      };
+      const command = createServiceCommandBridge(manager as never, 'install-timeout', vi.fn() as never);
+      const result = contextWithVfs(['start', 'api']);
+      result.vfs.mkdir('/etc/systemd/system', { recursive: true });
+      result.vfs.writeFile('/etc/systemd/system/api.service', 'ExecStart=npx succinix-missing-package-for-timeout-test\n');
+
+      const pending = command({ ...result.ctx, vfs: result.vfs } as never);
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(await pending).toBe(1);
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      await vi.advanceTimersByTimeAsync(2001);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('escalates a cancelled Lifo real-binary command through the shared process policy', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as unknown as ChildProcess;
+      Object.assign(child, {
+        pid: 3010,
+        kill: vi.fn((signal: string) => {
+          if (signal === 'SIGKILL') child.emit('close', null);
+          return true;
+        }),
+      });
+      spawnMock.mockImplementationOnce(() => child);
+      const commands = new Map<string, (ctx: Record<string, unknown>) => Promise<number>>();
+      registerRealBinaryCommands({
+        commands: { register: (name: string, handler: (ctx: Record<string, unknown>) => Promise<number>) => { commands.set(name, handler); } },
+        kernel: { vfs: new VFS(), serviceManager: null },
+      } as never, 'abort-test');
+      const abort = new AbortController();
+      const run = commands.get('node')!({
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        cwd: '/workspace',
+        signal: abort.signal,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+
+      abort.abort();
+      expect(child.kill).toHaveBeenCalledWith('SIGINT');
+      await vi.advanceTimersByTimeAsync(2001);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(await run).toBe(-1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps SDK service definitions and inspection inside Lifo units', async () => {

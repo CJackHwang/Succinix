@@ -43,6 +43,10 @@ const EXPECTED_CAPABILITIES = [
 // does not export the value. Keep the comparison type-safe with the literal.
 const FIBER_STATE_ACTIVE: FiberState = 2;
 
+function markProgress(step: string): void {
+  (globalThis as typeof globalThis & { __cordisProgress?: string }).__cordisProgress = step;
+}
+
 function add(checks: ContractCheck[], name: string, ok: boolean, detail = ''): void {
   checks.push({ name, ok, detail });
 }
@@ -118,7 +122,6 @@ function baseConfig(storeKey: string): SuccinixConfig {
       home: '/workspace/demo',
       persistence: { dbName: 'cordis-app-contract', storeKey },
     },
-    terminal: { timeoutMs: 120000, bootGate: false },
     assets: { integrity: true },
     lifecycle: { disposeMode: 'soft', flushOnPageHide: false },
   };
@@ -137,6 +140,7 @@ async function withSection(
 }
 
 export async function runContract(): Promise<ContractResult> {
+  markProgress('plugin: initialize');
   const checks: ContractCheck[] = [];
   const storeKey = `contract-${Date.now()}`;
   const config = baseConfig(storeKey);
@@ -145,6 +149,7 @@ export async function runContract(): Promise<ContractResult> {
   let engineFiber: Fiber | null = null;
 
   await withSection(checks, 'plugin', async () => {
+    markProgress('plugin: install');
     const fiber = ctx.plugin(enginePlugin, config);
     engineFiber = fiber;
     await fiber;
@@ -198,6 +203,7 @@ export async function runContract(): Promise<ContractResult> {
     );
     await fallbackFiber.dispose();
 
+    markProgress('plugin: migration');
     const migration = await runMigrationSurface(`${storeKey}-migration`);
     add(checks, 'migration example runs', migration.ok, migration.detail);
 
@@ -227,12 +233,14 @@ export async function runContract(): Promise<ContractResult> {
 
   await withSection(checks, 'container', async () => {
     const host = hostOf(ctx);
+    markProgress('container: boot');
     const booted = await host.boot();
     wc = booted;
     startedAt = host.state.host.startedAt;
     add(checks, 'internal boot reaches ready', host.state.containerState === 'ready' && host.container.state === 'ready');
     add(checks, 'state event includes ready', stateEvents.includes('ready'));
 
+    markProgress('container: ensure default instance');
     await host.ensureInstance('demo', {
       persistence: { dbName: 'cordis-app-contract', storeKey },
       home: '/workspace/demo',
@@ -277,6 +285,7 @@ export async function runContract(): Promise<ContractResult> {
       typeof ctx.sessionPersistence.listSnapshots === 'function';
     add(checks, 'dsh service surface is complete', surfaceOk);
 
+    markProgress('container: node execution');
     const node = await host.executor.exec('node -e "console.log(21*2)"', { timeoutMs: 30000 });
     add(
       checks,
@@ -287,6 +296,7 @@ export async function runContract(): Promise<ContractResult> {
         : `exit=${String(node.exitCode)} runtime=${String(node.runtime)} stderr=${String(node.stderr ?? '').trim()} error=${String(node.error ?? '').trim()}`
     );
 
+    markProgress('container: lifo execution');
     const lifo = await host.executor.exec('echo lifo-ok', { timeoutMs: 30000 });
     add(checks, 'lifo executes in the container', lifo.ok && String(lifo.stdout ?? '').includes('lifo-ok'), String(lifo.stdout ?? '').trim());
 
@@ -297,6 +307,7 @@ export async function runContract(): Promise<ContractResult> {
       execution: 'batch',
       source: { kind: 'shell', command: 'echo contract-userland-ok', appendArgs: false },
     });
+    markProgress('container: userland registration');
     await host.userland.flush();
     const userland = await host.executor.exec('contract-userland', { timeoutMs: 30000 });
     add(
@@ -309,7 +320,9 @@ export async function runContract(): Promise<ContractResult> {
     await host.userland.flush();
 
     if (!wc) throw new Error('boot did not return a WebContainer');
+    markProgress('container: inject python assets');
     await ensurePythonRuntime(wc, config.pythonAssetsUrl);
+    markProgress('container: python execution');
     const python = await host.executor.exec('python -c "print(6*7)"', { timeoutMs: 120000 });
     add(checks, 'python executes via packaged assets', python.ok && String(python.stdout ?? '').includes('42'), String(python.stdout ?? '').trim());
 
@@ -317,12 +330,14 @@ export async function runContract(): Promise<ContractResult> {
     host.registerAgent(agent);
     const backends = ctx.terminals.listBackends();
     add(checks, 'terminals registers the succinix backend', backends.includes('succinix'), backends.join(','));
+    markProgress('container: terminal spawn');
     const spawnedTerminal = await ctx.terminals.spawn(agent, { type: 'succinix', name: 'dsh-terminal' });
     add(checks, 'terminals spawn publishes a session', spawnedTerminal.sessionId.startsWith('pty-') && spawnedTerminal.type === 'succinix');
     const send = ctx.terminals.startSend(agent, spawnedTerminal.sessionId, {
       text: 'echo terminal-dsh-ok',
       submit: true,
     });
+    markProgress('container: terminal send');
     const sendResult = await send.done;
     const terminalText = ctx.terminals.read(agent, spawnedTerminal.sessionId, { count: 100 }).text;
     add(
@@ -338,6 +353,7 @@ export async function runContract(): Promise<ContractResult> {
 
     // ctx.fs displays Lifo /workspace paths; the browser wc.fs root maps
     // /workspace/demo to /demo.
+    markProgress('container: filesystem');
     await wc.fs.mkdir('/demo', { recursive: true });
     const fileTarget = await ctx.fs.resolve('/workspace/demo/dsh-contract.txt');
     const created = await ctx.fs.writeText(fileTarget, 'alpha\n');
@@ -381,6 +397,7 @@ export async function runContract(): Promise<ContractResult> {
     const sessionId = SessionId('contract-session');
     const sessionMeta: SessionHeader = { version: 0, id: sessionId, createdAt: Date.now() };
     const sessionEvent: SessionEvent = { type: 'turn/start', seq: 0, time: Date.now(), data: { turn: 0 } };
+    markProgress('container: session persistence');
     await ctx.sessionPersistence.create(sessionMeta);
     await ctx.sessionPersistence.append(sessionId, [sessionEvent]);
     const persistedList = await ctx.sessionPersistence.list();
@@ -397,6 +414,7 @@ export async function runContract(): Promise<ContractResult> {
         location?.path.includes('.jsonl') === true
     );
 
+    markProgress('container: second instance');
     const second = await host.ensureInstance('second', {
       persistence: { dbName: 'cordis-app-contract', storeKey: `${storeKey}-second` },
       home: '/workspace/second',
@@ -416,6 +434,7 @@ export async function runContract(): Promise<ContractResult> {
       (payload) => payload.port === port,
       30000
     );
+    markProgress('container: port subscription');
     const spawned = await host.executor.spawn(
       `node -e "require('http').createServer((q,s)=>s.end('ok')).listen(${port})"`,
       { timeoutMs: 15000 }
@@ -425,6 +444,7 @@ export async function runContract(): Promise<ContractResult> {
     add(checks, 'ports view contains the ready port', host.ports.ready(port) !== undefined);
     if (spawned.ok && spawned.pid) await host.executor.kill(spawned.pid);
 
+    markProgress('container: snapshot restore');
     await wc.fs.mkdir('/workspace/demo', { recursive: true });
     await wc.fs.writeFile('/workspace/demo/contract.txt', 'original');
     const saveResult = await host.snapshot.save(true);
@@ -439,6 +459,7 @@ export async function runContract(): Promise<ContractResult> {
     await host.persist.force(host.container.wc!.fs, 'contract');
     add(checks, 'persist.force executes explicitly', true);
 
+    markProgress('container: declarative service');
     await host.services.ensureFiles();
     await host.services.add(
       'contract-svc',
@@ -455,12 +476,13 @@ export async function runContract(): Promise<ContractResult> {
   });
 
   await withSection(checks, 'reload', async () => {
+    markProgress('reload: reconfigure');
     if (!engineFiber) throw new Error('engine fiber is not loaded');
     const beforeRevision = hostOf(ctx).state.configRevision;
     const beforeStartedAt = hostOf(ctx).state.host.startedAt;
-    await hostOf(ctx).reconfigure({ ...config, terminal: { timeoutMs: 45000, bootGate: false } });
+    await hostOf(ctx).reconfigure({ ...config, resultTtlMs: 45000 });
     add(checks, 'reconfigure increments configRevision', hostOf(ctx).state.configRevision === beforeRevision + 1, `rev=${hostOf(ctx).state.configRevision}`);
-    await engineFiber.update({ ...config, terminal: { timeoutMs: 45000, bootGate: false } });
+    await engineFiber.update({ ...config, resultTtlMs: 45000 });
     add(
       checks,
       'fiber.update increments configRevision',
@@ -486,6 +508,7 @@ export async function runContract(): Promise<ContractResult> {
   });
 
   await withSection(checks, 'restart-required fiber update', async () => {
+    markProgress('restart-required: update');
     if (!engineFiber) throw new Error('engine fiber is not loaded');
     const beforeRevision = hostOf(ctx).state.configRevision;
     await engineFiber.update({ ...config, hostJsUrl: '/host.js?restart=1' });
@@ -501,6 +524,7 @@ export async function runContract(): Promise<ContractResult> {
   });
 
   await withSection(checks, 'shutdown and external mode', async () => {
+    markProgress('shutdown: internal');
     if (!engineFiber) throw new Error('engine fiber is not loaded');
     await hostOf(ctx).shutdown();
     add(checks, 'shutdown disposes container state', hostOf(ctx).state.containerState === 'disposed');
@@ -514,12 +538,16 @@ export async function runContract(): Promise<ContractResult> {
 
     const externalConfig: SuccinixConfig = {
       ...config,
-      container: { ...config.container, mode: 'external' },
+      // 合约失败必须及时可观测；host 正常启动只需数秒，单次 30 秒探测足够。
+      container: { ...config.container, mode: 'external', bootRetries: 1, hostReadyDeadlineMs: 30000 },
       defaultInstance: { ...config.defaultInstance, persistence: { dbName: 'cordis-app-contract', storeKey: `${storeKey}-external` } },
     };
+    markProgress('shutdown: switch to external mode');
     await engineFiber.update(externalConfig);
     if (!wc) throw new Error('external mode needs the booted WebContainer');
+    markProgress('shutdown: attach external host');
     await hostOf(ctx).attach(wc);
+    markProgress('shutdown: external host ready');
     add(checks, 'external attach reaches ready', hostOf(ctx).state.containerState === 'ready');
     await expectMismatch(() => hostOf(ctx).boot(), checks, 'boot after attach throws ERR_MODE_MISMATCH');
     await hostOf(ctx).shutdown();
@@ -534,6 +562,7 @@ export async function runContract(): Promise<ContractResult> {
         ctx.get('sessionPersistence', false) === undefined
     );
 
+    markProgress('shutdown: reapply');
     const restoredCtx = new Context();
     const restoredFiber = restoredCtx.plugin(enginePlugin, baseConfig(`${storeKey}-restored`));
     await restoredFiber;
@@ -551,5 +580,6 @@ export async function runContract(): Promise<ContractResult> {
 
   const passed = checks.filter((item) => item.ok).length;
   const failed = checks.length - passed;
+  markProgress('complete');
   return { checks, passed, failed };
 }

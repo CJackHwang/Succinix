@@ -28,15 +28,6 @@ export interface SuccinixConfig {
     home?: string;
     persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
-  terminal?: {
-    cwd?: string;
-    timeoutMs?: number;
-    bootGate?: boolean;
-    history?: boolean;
-    tabComplete?: boolean;
-    interrupt?: boolean;
-    promptPrefix?: string;
-  };
   capabilities?: {
     defaultAllow?: boolean;
     rules?: Array<{ pattern: string; allow: boolean }>;
@@ -67,15 +58,6 @@ export interface ResolvedSuccinixConfig {
     statePrefix?: string;
     home?: string;
     persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
-  };
-  terminal: {
-    cwd: string;
-    timeoutMs: number;
-    bootGate: boolean;
-    history: boolean;
-    tabComplete: boolean;
-    interrupt: boolean;
-    promptPrefix: string;
   };
   capabilities: {
     defaultAllow: boolean;
@@ -183,33 +165,6 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
     }
     return rejectUnknownKeys(d as Record<string, unknown>, ['instanceId', 'statePrefix', 'home', 'persistence'], 'defaultInstance');
   }),
-  terminal: optional((v) => {
-    if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'terminal must be an object';
-    const t = v as { cwd?: unknown; timeoutMs?: unknown; bootGate?: unknown; history?: unknown; tabComplete?: unknown; interrupt?: unknown; promptPrefix?: unknown };
-    if (t.cwd !== undefined) {
-      const error = isString(t.cwd, 'terminal.cwd');
-      if (error) return error;
-    }
-    if (t.timeoutMs !== undefined) {
-      const error = isIntegerRange(t.timeoutMs, 'terminal.timeoutMs', 1, 600000);
-      if (error) return error;
-    }
-    for (const key of ['bootGate', 'history', 'tabComplete', 'interrupt'] as const) {
-      if (t[key] !== undefined) {
-        const error = isBoolean(t[key], `terminal.${key}`);
-        if (error) return error;
-      }
-    }
-    if (t.promptPrefix !== undefined) {
-      const error = isString(t.promptPrefix, 'terminal.promptPrefix');
-      if (error) return error;
-    }
-    return rejectUnknownKeys(
-      t as Record<string, unknown>,
-      ['cwd', 'timeoutMs', 'bootGate', 'history', 'tabComplete', 'interrupt', 'promptPrefix'],
-      'terminal'
-    );
-  }),
   capabilities: optional((v) => {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) return 'capabilities must be an object';
     const c = v as { defaultAllow?: unknown; rules?: unknown };
@@ -265,15 +220,6 @@ export function resolveConfig(config: SuccinixConfig): ResolvedSuccinixConfig {
       statePrefix: config.defaultInstance?.statePrefix,
       home: config.defaultInstance?.home,
       persistence: config.defaultInstance?.persistence,
-    },
-    terminal: {
-      cwd: config.terminal?.cwd ?? '/workspace',
-      timeoutMs: config.terminal?.timeoutMs ?? 120_000,
-      bootGate: config.terminal?.bootGate ?? true,
-      history: config.terminal?.history ?? true,
-      tabComplete: config.terminal?.tabComplete ?? true,
-      interrupt: config.terminal?.interrupt ?? true,
-      promptPrefix: config.terminal?.promptPrefix ?? 'guest@succinix:',
     },
     capabilities: {
       defaultAllow: config.capabilities?.defaultAllow ?? true,

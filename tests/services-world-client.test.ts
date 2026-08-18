@@ -11,9 +11,30 @@ import {
   stopExecutionService,
 } from '../src/services/world-client.js';
 import { instancePorts } from '../src/instance/ports.js';
+import * as engineApi from '@succinix/engine';
 import type { ServiceContext } from '../src/services/types.js';
 
 describe('execution-world services client', () => {
+  it('does not expose the retired browser-side service lifecycle', () => {
+    for (const name of [
+      'addServiceDef',
+      'clearActivePorts',
+      'disableAutostart',
+      'enableAutostart',
+      'ensureServicesFiles',
+      'getServiceState',
+      'listServiceStates',
+      'readAutostart',
+      'readServices',
+      'removeServiceDef',
+      'restartService',
+      'startService',
+      'stopService',
+    ]) {
+      expect(engineApi).not.toHaveProperty(name);
+    }
+  });
+
   it('uses only succinix service commands for definitions, state, and enablement', async () => {
     const calls: string[] = [];
     let enabled = false;
@@ -40,7 +61,7 @@ describe('execution-world services client', () => {
     const context = { wc: {} as ServiceContext['wc'], client, ports: new Map([[4321, 'https://api.preview']]) } as unknown as ServiceContext;
 
     expect((await listExecutionServiceStates(context))[0]).toMatchObject({ state: 'stopped', effectivePort: 4321 });
-    expect(await startExecutionService(context, 'api')).toMatchObject({ ok: true, pid: 42 });
+    expect(await startExecutionService(context, 'api')).toMatchObject({ ok: true, pid: 42, port: 4321 });
     expect(await executionServiceState(context, 'api')).toMatchObject({ state: 'running', url: 'https://api.preview' });
     expect(await enableExecutionService(context, 'api')).toBe(true);
     expect(await executionAutostart(context)).toEqual(['api']);

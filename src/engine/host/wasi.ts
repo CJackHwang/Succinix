@@ -37,7 +37,9 @@ function realModulePath(file: string, cwd: string, hostRoot: string): string {
   if (file === '/workspace') return hostRoot;
   if (file.startsWith('/workspace/')) return path.join(hostRoot, file.slice('/workspace/'.length));
   if (file.startsWith('/')) throw new Error(`wasi-run: path is not mapped to the shared workspace: ${file}`);
-  return path.resolve(lifoSpawndCwd(cwd, hostRoot, hostRoot), file);
+  const realCwd = lifoSpawndCwd(cwd, hostRoot, hostRoot);
+  if (!realCwd) throw new Error(`wasi-run: cwd is outside the shared workspace: ${cwd}`);
+  return path.resolve(realCwd, file);
 }
 
 function capUtf8(value: string, limit = MAX_WASI_OUTPUT_BYTES): string {

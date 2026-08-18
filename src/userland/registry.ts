@@ -19,7 +19,7 @@ export interface UserlandPackageSource {
   name: string;
   source: 'lifo' | 'npm';
   version?: string;
-  integrity?: string;
+  integrity: string;
   manifest?: unknown;
 }
 
@@ -84,8 +84,8 @@ function assertPackageSource(source: UserlandPackageSource): void {
   if (source.version !== undefined && (typeof source.version !== 'string' || source.version.length > 256)) {
     throw new TypeError('package.version must be a short string');
   }
-  if (source.integrity !== undefined && (typeof source.integrity !== 'string' || source.integrity.length > 512)) {
-    throw new TypeError('package.integrity must be a short string');
+  if (typeof source.integrity !== 'string' || !/^sha256-[0-9a-f]{64}$/.test(source.integrity)) {
+    throw new TypeError('package.integrity must be a sha256 payload digest');
   }
 }
 
@@ -102,9 +102,10 @@ function assertServiceTemplate(template: UserlandServiceTemplate): void {
 }
 
 function capabilityOf(command: UserlandCommandDefinition): UserlandCommandCapability {
-  const { name, status, runtime, execution, supportedFlags, exitCodeContract, limitations } = command;
+  const { name, contractId, status, runtime, execution, supportedFlags, exitCodeContract, limitations } = command;
   return {
     name,
+    ...(contractId ? { contractId } : {}),
     status,
     runtime,
     execution,

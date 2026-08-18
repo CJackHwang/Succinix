@@ -26,6 +26,14 @@ function makeFakeWc(
   const hostOutput = (options.hostOutput ?? { pipeTo: vi.fn(async () => {}) }) as ReadableStream<string>;
   const hostProc: WebContainerProcess = { kill: vi.fn(), output: hostOutput } as unknown as WebContainerProcess;
 
+  const handleRpcRequest = (content: string) => {
+    const req = JSON.parse(content) as CmdReq;
+    files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
+    const payload = respond?.(req);
+    // undefined = host 不响应（模拟挂起/超时）
+    if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
+  };
+
   const fs = {
     readFile: async (path: string) => {
       const v = files.get(path);
@@ -34,11 +42,7 @@ function makeFakeWc(
     },
     writeFile: async (path: string, content: string) => {
       if (path === '/cmd.json') {
-        const req = JSON.parse(content) as CmdReq;
-        files.set(`/ack-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', acceptedAt: Date.now() }));
-        const payload = respond?.(req);
-        // undefined = host 不响应（模拟挂起/超时）
-        if (payload !== undefined) files.set(`/result-${req.id}.json`, JSON.stringify({ protocolVersion: 2, id: req.id, bootNonce: req.bootNonce, instanceId: req.instanceId ?? 'default', ...(payload as object) }));
+        handleRpcRequest(content);
         return;
       }
       files.set(path, content);
@@ -61,6 +65,10 @@ function makeFakeWc(
       const value = files.get(from);
       if (value === undefined) throw new Error(`ENOENT: ${from}`);
       files.delete(from);
+      if (to === '/cmd.json') {
+        handleRpcRequest(value);
+        return;
+      }
       files.set(to, value);
     },
   };
@@ -232,6 +240,33 @@ describe('createTerminalExecutor pingDirect / respawn（P1-3）', () => {
     expect(fake.spawnCalls.length).toBe(2); // spawn 新 host
     const res = await ex.exec('echo hi');
     expect(res.ok).toBe(true);
+  });
+
+  it('waits for the old host exit acknowledgement before spawning its replacement', async () => {
+    let exitRequested = false;
+    let releaseExit: ((code: number) => void) | undefined;
+    const fake = makeFakeWc((req) => {
+      if (req.cmd === 'exit') {
+        exitRequested = true;
+        return { ok: true, kind: 'bye' };
+      }
+      return PONG();
+    });
+    Object.assign(fake.hostProc, {
+      exit: new Promise<number>((resolve) => { releaseExit = resolve; }),
+    });
+    const ex = createTerminalExecutor();
+    await ex.boot(fake.wc, { hostSrc: '// host.js', lifoCoreSrc: '// lifo-core.js' });
+
+    const respawning = ex.respawn();
+    await vi.waitFor(() => expect(exitRequested).toBe(true));
+    expect(fake.spawnCalls).toHaveLength(1);
+    expect(fake.hostProc.kill).not.toHaveBeenCalled();
+
+    releaseExit?.(0);
+    await respawning;
+    expect(fake.hostProc.kill).toHaveBeenCalledTimes(1);
+    expect(fake.spawnCalls).toHaveLength(2);
   });
 
   it('未 boot 就 respawn 抛错', async () => {

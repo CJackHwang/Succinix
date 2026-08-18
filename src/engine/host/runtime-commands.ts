@@ -95,7 +95,7 @@ function registerSandboxWrapper(sandbox: LifoSandbox): void {
 export function registerRuntimeCommands(
   sandbox: LifoSandbox,
   instanceId: string,
-  lifoSpawnCwd: (cwd: string) => string,
+  lifoSpawnCwd: (cwd: string) => string | null,
   forward: Forward,
 ): void {
   for (const name of USERLAND_DENYLIST) {
@@ -129,6 +129,10 @@ export function registerRuntimeCommands(
       return 69;
     }
     const realCwd = lifoSpawnCwd(ctx.cwd);
+    if (!realCwd) {
+      ctx.stderr.write(`ruby: cwd is outside the shared workspace: ${ctx.cwd}\n`);
+      return 1;
+    }
     const child = spawn(process.execPath, [runtimePath, ...ctx.args], { cwd: realCwd, env: mergedEnv(instanceId) });
     return forward(ctx, child, ['ruby', ...ctx.args].join(' '), realCwd, 'ruby');
   });

@@ -7,12 +7,15 @@ import type { AppShell, AppTerminalService } from '../types.js';
 export const name = 'succinix-app-terminal';
 
 export function apply(ctx: Context): void {
+  let disposeWire: (() => void) | undefined;
   // 预热 xterm 懒加载 chunk；container start 时 await 同一 promise 保证就绪。
   void ensureTerminal();
   const service: AppTerminalService = {
     getTerm: () => getXtermTerm(),
     fit: () => getFitAddon().fit(),
     wire(shell: AppShell) {
+      disposeWire?.();
+      let current = true;
       // xterm is only the device plane.  The Lifo Shell (inside WebContainer)
       // owns line editing, history, completion, raw mode, and job control;
       // this bridge forwards bytes and live dimensions without interpreting
@@ -23,20 +26,28 @@ export function apply(ctx: Context): void {
         bootNonce: shell.interactive.bootNonce,
       });
       void shell.interactive.open()
-        .then(() => ctx.emit('succinix/terminal-open', terminalEvent()))
+        .then(() => { if (current) ctx.emit('succinix/terminal-open', terminalEvent()); })
         .catch((error) => {
-          shell.term.writeln(`\r\n${AMBER}[terminal]${RESET} transport unavailable: ${String(error)}`);
+          if (current) shell.term.writeln(`\r\n${AMBER}[terminal]${RESET} transport unavailable: ${String(error)}`);
         });
-      shell.term.onData?.((data) => { void shell.interactive.sendData(data); });
+      const dataListener = shell.term.onData?.((data) => { if (current) void shell.interactive.sendData(data); });
       // Older embedders/tests may expose only xterm's onData surface.  Resize
       // is additive and must not prevent the execution-world shell from booting.
-      shell.term.onResize?.(({ cols, rows }) => { void shell.interactive.resize(cols, rows); });
-      shell.wc.on('server-ready', (port, url) => {
+      const resizeListener = shell.term.onResize?.(({ cols, rows }) => { if (current) void shell.interactive.resize(cols, rows); });
+      const removeServerReady = shell.wc.on('server-ready', (port, url) => {
+        if (!current) return;
         shell.term.writeln(`\r\n${AMBER}[preview]${RESET} Port ${port} ready -> ${url}`);
       });
+      disposeWire = () => {
+        current = false;
+        dataListener?.dispose();
+        resizeListener?.dispose();
+        removeServerReady();
+      };
     },
   };
   ctx.provide('succinix-app-terminal', service);
+  ctx.effect(() => () => disposeWire?.());
   if (typeof window !== 'undefined') {
     const onResize = () => {
       try { service.fit(); } catch { /* 终端尚未完成挂载时无需处理 */ }

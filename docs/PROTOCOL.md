@@ -14,7 +14,7 @@ history, implement standard commands, or own editor/TUI state.
 
 Two filesystem transports cross that boundary:
 
-- **Batch RPC v2**: `/cmd.json` -> `/ack-<id>.json` ->
+- **Batch RPC v2**: atomically publish `/cmd.json` -> `/ack-<id>.json` ->
   `/result-<id>.json`.
 - **Interactive terminal v1**: session-scoped frames under
   `/.succinix-terminal/<instance>/<session>/`.
@@ -29,7 +29,7 @@ lifecycle frames into the same Lifo Shell.
 
 ```text
 Browser TerminalClient                    WebContainer host
-        | write /cmd.json                         |
+        | write + rename /cmd.json                |
         |---------------------------------------->|
         | poll /ack-<id>.json                     | validate + accept
         |<----------------------------------------|
@@ -40,9 +40,11 @@ Browser TerminalClient                    WebContainer host
 
 `/cmd.json` remains a single-slot mailbox. All `TerminalClient` instances that
 share one WebContainer also share one FIFO delivery queue, request prefix,
-sequence, and boot nonce. Each accepted request has independent acknowledgement
-and result files, so a late asynchronous result cannot overwrite another
-request.
+sequence, and batch host epoch. Each accepted request has independent
+acknowledgement and result files, so a late asynchronous result cannot
+overwrite another request. The client writes a request to a unique temporary
+file and renames it into the mailbox; readers therefore never observe partial
+JSON.
 
 ### 2.2 Request envelope
 
@@ -66,6 +68,21 @@ invalid ids fail before any path is constructed.
 The host requires `protocolVersion === 2`, a valid `id`, a non-empty
 `bootNonce`, and a string `cmd`. Protocol v1 and missing version fields are
 rejected with `UNSUPPORTED_PROTOCOL`; there is no silent compatibility mode.
+Before each host spawn, the client atomically writes this current epoch:
+
+```ts
+interface RpcHostEpoch {
+  protocolVersion: 2;
+  bootNonce: string;
+  createdAt: number;
+}
+// /host-epoch.json
+```
+
+The host refuses to start without a valid epoch and accepts only envelopes
+whose `bootNonce` equals that epoch for its whole lifetime. A restart fences
+undelivered client work, rotates the request prefix and nonce, and makes an old
+envelope fail with `STALE_BOOT_NONCE`.
 Malformed requests use one of these structured error codes:
 
 ```text
@@ -96,8 +113,9 @@ interface RpcDeliveryAck {
 The browser does not begin result polling until it sees an acknowledgement
 whose `(protocolVersion, id, bootNonce, instanceId)` exactly matches the
 request. The default instance is normalized to the literal `default`. A stale,
-cross-instance, or wrong-nonce acknowledgement is ignored. Delivery times out
-after the smaller of the command timeout and 5 seconds.
+cross-instance, or wrong-nonce acknowledgement is ignored. Delivery uses the
+caller-provided end-to-end command timeout, including a cold lazy Lifo kernel
+load.
 
 The host keeps a bounded set of 4,096 processed ids. A duplicate delivery gets
 another acknowledgement but is never executed twice; its original independent
@@ -233,10 +251,13 @@ Input and output sequences are monotonic. The browser consumes only the next
 contiguous output frame, acknowledges it, and waits when a gap exists so the
 host can replay the missing frame. Reconnect preserves the last output ack.
 Host respawn rotates the terminal boot nonce, drops input queued for the dead
-host, and rejects old-nonce frames.
+host, and rejects old-nonce frames. Heartbeats run every 10 seconds; a missing
+heartbeat expires a disconnected session after 30 seconds.
 
-Frames are flushed every 16 ms and data is split at 32 KiB. Pending device
-input has a 1 MiB backpressure watermark. Resize frames update live `cols` and
+Frames are flushed every 16 ms and data is split at 32 KiB. Browser input,
+host output, and disconnected-session buffers are each capped at 1 MiB. Data
+beyond a cap is discarded at a UTF-8 boundary and reported as `BACKPRESSURE`;
+the transport never grows without bound. Resize frames update live `cols` and
 `rows`; Ctrl+C is transported as `SIGINT`/ETX to the same Lifo foreground
 command. Dispose closes the terminal transport and detaches it from the
 instance Sandbox.

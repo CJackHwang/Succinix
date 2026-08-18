@@ -42,14 +42,14 @@ export class ServiceLifecycle {
     this.shutdownDone = false;
   }
 
-  /** Synchronous hard shutdown for restart-required fiber updates. */
-  shutdownNow(): void {
+  /** Restart-required fiber updates must wait for the old host to release RPC ownership. */
+  async shutdownNow(): Promise<void> {
     if (this.shutdownDone) return;
     this.shutdownDone = true;
     this.clearServiceSubscriptions();
     this.deps.capabilities().reset();
     this.deps.handlers.clear();
-    this.deps.manager.shutdownSync();
+    await this.deps.manager.shutdown();
     this.deps.state.containerState = 'disposed';
     this.deps.state.host = { pid: null, startedAt: null };
     this.deps.state.lastError = null;
@@ -57,10 +57,10 @@ export class ServiceLifecycle {
 
   /** Cordis fiber.update bypasses reconfigure(); guard restart-required configs. */
   bindUpdateGuard(ctx: Context, appliedConfig: () => SuccinixConfig | null): void {
-    ctx.on('internal/update', (nextConfig: SuccinixConfig, _noSave: boolean, next: () => void) => {
+    ctx.on('internal/update', async (nextConfig: SuccinixConfig, _noSave: boolean, next: () => void | Promise<void>) => {
       const previous = appliedConfig();
-      if (previous && requiresRestart(previous, nextConfig)) this.shutdownNow();
-      return next();
+      if (previous && requiresRestart(previous, nextConfig)) await this.shutdownNow();
+      await next();
     });
   }
 

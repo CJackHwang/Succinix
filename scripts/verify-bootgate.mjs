@@ -202,7 +202,7 @@ async function main() {
       process.exitCode = failures === 0 ? 0 : 1;
     } finally {
       cdp?.close();
-      cleanupChrome(chrome, profileDir);
+      await cleanupChrome(chrome, profileDir);
     }
   } finally {
     preview.kill('SIGTERM');

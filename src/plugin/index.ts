@@ -22,8 +22,14 @@ export function apply(ctx: Context, config: SuccinixConfig): void {
   const capabilityDisposers = registerHostCapabilities(ctx, service.capabilities);
   const pageListeners: Array<[EventTarget, string, EventListener]> = [];
   if (typeof window !== 'undefined') {
-    const onPageHide = () => {
-      if (resolved.lifecycle.flushOnPageHide) void service.flush();
+    const onPageHide = (event: Event) => {
+      // bfcache 会保留页面和 host；其余 pagehide 必须在 WebContainer 销毁父页面前
+      // 停止执行世界，否则真实 Node 服务可能在 host 退出后成为孤儿进程。
+      if ('persisted' in event && event.persisted === true) {
+        if (resolved.lifecycle.flushOnPageHide) void service.flush();
+        return;
+      }
+      void service.shutdown();
     };
     const onBeforeUnload = () => {
       void service.shutdown();
@@ -102,26 +108,11 @@ export {
   type SnapshotMeta,
 } from '../persist/index.js';
 export {
-  clearActivePorts,
   clearDbActivePorts,
   dbActivePortFor,
   setDbActivePort,
-  ensureServicesFiles,
-  enableAutostart,
-  disableAutostart,
-  getServiceState,
-  listServiceStates,
-  readAutostart,
-  readServices,
-  removeServiceDef,
-  addServiceDef,
-  startService,
-  stopService,
-  restartService,
-  waitForProcessExit,
   SERVICE_TEMPLATES,
   serviceTemplate,
-  type ServiceContext,
 } from '../services/index.js';
 export {
   PACKAGE_MANIFEST_PATH,

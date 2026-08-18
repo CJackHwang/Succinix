@@ -1,6 +1,6 @@
 // host ps/kill 域（O3 拆分）：进程表快照 / 终止 / 实例级重置 / interrupt / setCwd。
 import fs from 'node:fs';
-import { listProcesses, killProcess } from '../host-procs.js';
+import { PROCESS_TERMINATION_GRACE_MS, listProcesses, killProcess, terminateProcessesForInstance } from '../host-procs.js';
 import { filterProcessesForInstance, canKillProcess, processesOwnedByInstance, parseKillPid, vfsToReal } from '../host-route.js';
 import { setSessionCwd, clearSessionCwd, currentInstanceId } from './config.js';
 import { currentRunByInstance } from './spawn.js';
@@ -59,11 +59,7 @@ export async function dispatchKill(req: CommandRequest): Promise<void> {
 // 默认实例 = 整页刷新语义（浏览器侧 location.reload），host 侧只清缓存不批量 kill。
 export async function dispatchResetInstance(req: CommandRequest): Promise<void> {
   const inst = instanceOf(req);
-  const killed: number[] = [];
-  for (const p of processesOwnedByInstance(listProcesses(), inst)) {
-    const r = killProcess(p.pid);
-    if (r.killed) killed.push(p.pid);
-  }
+  const killed = terminateProcessesForInstance(inst, PROCESS_TERMINATION_GRACE_MS);
   const lifo = await listLifoProcesses(inst, false);
   for (const p of processesOwnedByInstance(lifo, inst)) {
     const r = await killLifoProcess(p.pid, 'SIGKILL');
@@ -85,7 +81,7 @@ export function dispatchInterrupt(req: CommandRequest): void {
   const inst = instanceOf(req);
   const runPid = currentRunByInstance.get(inst);
   if (runPid !== null) {
-    const r = killProcess(runPid);
+    const r = killProcess(runPid, PROCESS_TERMINATION_GRACE_MS, 'SIGINT');
     writeResult(req.id, {
       ok: true,
       kind: 'interrupted',

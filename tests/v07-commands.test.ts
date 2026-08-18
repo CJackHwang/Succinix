@@ -188,7 +188,21 @@ describe('project detection and succinix init/run/serve/open (v0.7)', () => {
     const fs = new FakeFS();
     await fs.writeFile('/workspace/index.html', '<html></html>');
     const wc = { fs } as unknown as WebContainer;
-    const ctx = ctxOf({ wc, ports: new Map([[3001, 'https://preview/3001']]) });
+    const client = new FakeClient({
+      terminal: (command) => {
+        if (command.includes("'inspect'")) {
+          return {
+            ok: true,
+            stdout: JSON.stringify({
+              name: 'static-http', command: 'npx serve -s . -l ${PORT}', port: 3001,
+              description: 'Static HTTP server', enabled: false, state: 'running', pid: 123,
+            }),
+          };
+        }
+        return { ok: true, stdout: 'ok' };
+      },
+    });
+    const ctx = ctxOf({ wc, client: client as unknown as CommandContext['client'], ports: new Map([[3001, 'https://preview/3001']]) });
     await projectCmd(ctx, ['serve']);
     const out = linesOf(ctx).join('\n');
     expect(out).toContain("started 'static-http'");

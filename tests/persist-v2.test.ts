@@ -125,10 +125,11 @@ describe('binary persistence v2', () => {
     const container = {
       fs: source as unknown as FileSystemAPI,
       export: async () => new Uint8Array([1, 2, 3]),
-      mount: async () => {
-        await restoreTarget?.writeFile('/workspace/kept.txt', 'kept');
-        await restoreTarget?.writeFile('/workspace/.tinbase/db', 'tinbase-db');
-        await restoreTarget?.writeFile('/workspace/binary.bin', new Uint8Array([0, 255, 1]));
+      mount: async (_data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        await restoreTarget?.writeFile(`${root === '/' ? '' : root}/workspace/kept.txt`, 'kept');
+        await restoreTarget?.writeFile(`${root === '/' ? '' : root}/workspace/.tinbase/db`, 'tinbase-db');
+        await restoreTarget?.writeFile(`${root === '/' ? '' : root}/workspace/binary.bin`, new Uint8Array([0, 255, 1]));
       },
     };
     try {
@@ -153,6 +154,71 @@ describe('binary persistence v2', () => {
     }
   });
 
+  it('leaves the target byte-for-byte unchanged when stale cleanup fails during restore', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    const target = new FakeFS();
+    await target.writeFile('/saved.txt', 'snapshot');
+    const originalRm = target.rm.bind(target);
+    let rejectStaleDelete = false;
+    target.rm = async (path: string) => {
+      if (rejectStaleDelete && path === '/old.txt') throw new Error('stale delete interrupted');
+      await originalRm(path);
+    };
+    const container = {
+      fs: target as unknown as FileSystemAPI,
+      export: async () => target.has('/old.txt') ? new Uint8Array([0]) : new Uint8Array([1]),
+      mount: async (data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        const file = data[0] === 0 ? 'old.txt' : 'saved.txt';
+        const content = data[0] === 0 ? 'original' : 'snapshot';
+        await target.writeFile(`${root === '/' ? '' : root}/${file}`, content);
+      },
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-rollback-${Math.random()}` } });
+      await persist.save(target as unknown as FileSystemAPI, true);
+      await target.rm('/saved.txt');
+      await target.writeFile('/old.txt', 'original');
+      rejectStaleDelete = true;
+
+      await expect(persist.load(target as unknown as FileSystemAPI)).rejects.toThrow('stale delete interrupted');
+      expect(target.raw('/old.txt')).toBe('original');
+      expect(target.has('/saved.txt')).toBe(false);
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
+  it('keeps the verified generation intact after a staging mount transfers its buffer', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    const source = new FakeFS();
+    await source.writeFile('/saved.txt', 'snapshot');
+    const target = new FakeFS();
+    const container = {
+      fs: source as unknown as FileSystemAPI,
+      export: async () => new Uint8Array([1]),
+      mount: async (data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        if (root.includes('.succinix-restore-stage-')) {
+          await target.writeFile(`${root}/saved.txt`, 'snapshot');
+          data.fill(0);
+          return;
+        }
+        await target.writeFile('/saved.txt', data[0] === 1 ? 'snapshot' : 'corrupted');
+      },
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-transfer-${Math.random()}` } });
+      await persist.save(source as unknown as FileSystemAPI, true);
+      await persist.load(target as unknown as FileSystemAPI);
+      expect(target.raw('/saved.txt')).toBe('snapshot');
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
   it('maps fs-space scopeRoot to the container workdir for export while keeping mount at the scope root', async () => {
     const previousIndexedDB = globalThis.indexedDB;
     Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
@@ -172,8 +238,10 @@ describe('binary persistence v2', () => {
       await persist.save(new FakeFS() as unknown as FileSystemAPI, true);
       const dst = new FakeFS();
       await persist.load(dst as unknown as FileSystemAPI);
-      expect(calls.filter((c) => c.op === 'export').map((c) => c.path)).toEqual(['/home/succinix-app']);
-      expect(calls.filter((c) => c.op === 'mount').map((c) => c.mountPoint)).toEqual(['/']);
+      expect(calls.filter((c) => c.op === 'export').map((c) => c.path)).toEqual(['/home/succinix-app', '/home/succinix-app']);
+      expect(calls.filter((c) => c.op === 'mount').map((c) => c.mountPoint)).toEqual([
+        expect.stringMatching(/^\/.succinix-restore-stage-/), '/',
+      ]);
     } finally {
       Object.assign(globalThis, { indexedDB: previousIndexedDB });
     }
@@ -202,8 +270,36 @@ describe('binary persistence v2', () => {
       await persist.save(new FakeFS() as unknown as FileSystemAPI, true);
       const dst = new FakeFS();
       await persist.load(dst as unknown as FileSystemAPI);
-      expect(calls.filter((c) => c.op === 'export').map((c) => c.path)).toEqual(['/home/succinix-app/workspace']);
-      expect(calls.filter((c) => c.op === 'mount').map((c) => c.mountPoint)).toEqual(['/workspace']);
+      expect(calls.filter((c) => c.op === 'export').map((c) => c.path)).toEqual(['/home/succinix-app/workspace', '/home/succinix-app/workspace']);
+      expect(calls.filter((c) => c.op === 'mount').map((c) => c.mountPoint)).toEqual([
+        expect.stringMatching(/^\/workspace\/.succinix-restore-stage-/), '/workspace',
+      ]);
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
+  it('uses the same runtime-file exclusions for binary export and restore inventory', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    let exportOptions: { format: string; excludes?: string[] } | undefined;
+    const container = {
+      export: async (_path: string, options: { format: string; excludes?: string[] }) => {
+        exportOptions = options;
+        return new Uint8Array([1]);
+      },
+      mount: async () => {},
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-excludes-${Math.random()}` } });
+      await persist.save(new FakeFS() as unknown as FileSystemAPI, true);
+      expect(exportOptions?.excludes).toEqual(expect.arrayContaining([
+        '**/host.js',
+        '**/cmd.json',
+        '**/result-*.json',
+        '**/.succinix-terminal/**',
+        '**/usr/lib/succinix/**',
+      ]));
     } finally {
       Object.assign(globalThis, { indexedDB: previousIndexedDB });
     }

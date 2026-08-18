@@ -1,7 +1,19 @@
 // host-procs.ts 单元测试（TASK-CISOL R1）：进程归属判定 + 登记时记录 cwd → ps() 附加 scope/containerId。
+import { once } from 'node:events';
+import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { describe, it, expect, vi } from 'vitest';
-import { classifyProcess, registerProcess, listProcesses, instanceIdFromPath, killProcess } from '../src/engine/host-procs.js';
+import {
+  EXITED_PROCESS_TTL_MS,
+  appendProcessOutput,
+  classifyProcess,
+  instanceIdFromPath,
+  killProcess,
+  listProcesses,
+  markProcessExited,
+  registerProcess,
+  terminateProcessesForInstance,
+} from '../src/engine/host-procs.js';
 
 /** 最小 ChildProcess 替身（registerProcess 只依赖 pid / on / kill）。 */
 function fakeChild(pid: number): ChildProcess {
@@ -123,6 +135,122 @@ describe('registerProcess + listProcesses（登记记录 cwd → ps 附带归属
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('uses the caller signal before escalating an unresponsive process', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild(2002);
+      registerProcess('node server.js', child);
+      expect(killProcess(2002, 500, 'SIGINT').killed).toBe(true);
+      expect(child.kill).toHaveBeenCalledWith('SIGINT');
+      await vi.advanceTimersByTimeAsync(501);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports missing, exited, and refused process signals without changing ownership', () => {
+    expect(killProcess(999_999)).toMatchObject({ killed: false, message: expect.stringContaining('not in process table') });
+    const child = fakeChild(2007);
+    child.kill = vi.fn(() => false) as unknown as ChildProcess['kill'];
+    registerProcess('node refused.js', child, '', 'signal-test');
+    expect(killProcess(2007)).toMatchObject({ killed: false, message: expect.stringContaining('failed to send') });
+    markProcessExited(2007, 9);
+    expect(killProcess(2007)).toMatchObject({ killed: false, message: expect.stringContaining('already exited') });
+  });
+
+  it('keeps a UTF-8-safe bounded output tail for process inspection', () => {
+    registerProcess('node output.js', fakeChild(2008), '', 'output-test');
+    appendProcessOutput(2008, 'a'.repeat(64 * 1024));
+    appendProcessOutput(2008, '中😀tail');
+    const output = listProcesses().find((entry) => entry.pid === 2008)?.outputTail;
+    expect(output).toContain('中😀tail');
+    expect(Buffer.byteLength(output ?? '', 'utf8')).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('removes exited entries after the bounded diagnostic TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      let close: ((code: number | null) => void) | undefined;
+      const child = fakeChild(2003);
+      child.on = vi.fn((event: string, callback: (code: number | null) => void) => {
+        if (event === 'close') close = callback;
+        return child;
+      });
+      registerProcess('node short-lived.js', child, '', 'ttl-test');
+      close?.(0);
+      expect(listProcesses().some((entry) => entry.pid === 2003)).toBe(true);
+      await vi.advanceTimersByTimeAsync(EXITED_PROCESS_TTL_MS + 1);
+      expect(listProcesses().some((entry) => entry.pid === 2003)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies the same bounded TTL after a spawn error', async () => {
+    vi.useFakeTimers();
+    try {
+      let onError: ((error: Error) => void) | undefined;
+      const child = fakeChild(2006);
+      child.on = vi.fn((event: string, callback: (error: Error) => void) => {
+        if (event === 'error') onError = callback;
+        return child;
+      });
+      registerProcess('node missing.js', child, '', 'error-test');
+      onError?.(new Error('ENOENT'));
+      expect(listProcesses().find((entry) => entry.pid === 2006)?.status).toBe('exited');
+      await vi.advanceTimersByTimeAsync(EXITED_PROCESS_TTL_MS + 1);
+      expect(listProcesses().some((entry) => entry.pid === 2006)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds exited history and its timers during frequent short-lived processes', () => {
+    vi.useFakeTimers();
+    try {
+      for (let index = 0; index < 300; index++) {
+        let close: ((code: number | null) => void) | undefined;
+        const child = fakeChild(4000 + index);
+        child.on = vi.fn((event: string, callback: (code: number | null) => void) => {
+          if (event === 'close') close = callback;
+          return child;
+        });
+        registerProcess(`node short-${index}.js`, child);
+        close?.(0);
+      }
+      const retained = listProcesses().filter((entry) => entry.pid >= 4000 && entry.pid < 4300);
+      expect(retained.length).toBeLessThan(300);
+      expect(Math.min(...retained.map((entry) => entry.pid))).toBeGreaterThan(4000);
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('escalates a real child that ignores SIGTERM and leaves no running entry', async () => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"]);
+    const pid = registerProcess('node stubborn.js', child, '', 'real-child');
+    try {
+      expect(killProcess(pid, 50, 'SIGTERM').killed).toBe(true);
+      await once(child, 'close');
+      expect(listProcesses().find((entry) => entry.pid === pid)?.status).toBe('exited');
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
+  }, 10_000);
+
+  it('terminates only the requested instance during release', () => {
+    const own = fakeChild(2004);
+    const other = fakeChild(2005);
+    registerProcess('node own.js', own, '', 'release-a');
+    registerProcess('node other.js', other, '', 'release-b');
+
+    expect(terminateProcessesForInstance('release-a', 100)).toEqual([2004]);
+    expect(own.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(other.kill).not.toHaveBeenCalled();
   });
 });
 

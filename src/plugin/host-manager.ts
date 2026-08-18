@@ -15,6 +15,10 @@ import { invariant } from './invariant.js';
 export type HostContainerState = 'unattached' | 'booting' | 'ready' | 'disposed';
 export type HostMode = 'internal' | 'external';
 
+function waitForHostExit(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+}
+
 export interface HostManagerHandle {
   readonly mode: HostMode | null;
   readonly state: HostContainerState;
@@ -41,6 +45,7 @@ export class HostManager {
   private state: HostContainerState = 'unattached';
   private wc: WebContainer | null = null;
   private hostProc: WebContainerProcess | null = null;
+  private client: TerminalClient | null = null;
   private startedAt: number | null = null;
   private configRevision = 0;
   private serviceApplied = false;
@@ -113,28 +118,30 @@ export class HostManager {
     return this.ensureHost(wc, { ...opts, mode: 'external' });
   }
 
-  /** Hard shutdown: kill the host and reset page-level state. */
+  /** Hard shutdown: request host cleanup, then reset page-level state. */
   async shutdown(): Promise<void> {
-    this.shutdownSync();
+    const detached = this.detachHost();
+    await this.stopHost(detached.client, detached.hostProc);
   }
 
-  /** Synchronous kill/reset used by restart-required fiber updates. */
+  /** Synchronous state reset used by restart-required fiber updates. */
   shutdownSync(): void {
-    this.generation += 1;
-    this.killHost(this.hostProc);
-    this.hostProc = null;
-    this.wc = null;
-    this.mode = null;
-    this.startedAt = null;
-    this.state = 'disposed';
+    const detached = this.detachHost();
+    if (detached.ready && detached.client) {
+      void this.stopHost(detached.client, detached.hostProc);
+    } else {
+      this.killHost(detached.hostProc);
+    }
   }
 
   resetForTests(): void {
-    this.shutdownSync();
+    const detached = this.detachHost();
+    this.killHost(detached.hostProc);
     this.mode = null;
     this.state = 'unattached';
     this.wc = null;
     this.hostProc = null;
+    this.client = null;
     this.startedAt = null;
     this.configRevision = 0;
     this.serviceApplied = false;
@@ -171,13 +178,14 @@ export class HostManager {
 
   private async bootNewHost(wc: WebContainer, opts: HostManagerBootOptions, generation: number): Promise<void> {
     const client = new TerminalClient(wc, { onCommand: opts.onCommand });
-    const readyAttempts = Math.max(1, Math.ceil(opts.hostReadyDeadlineMs / 100));
+    this.client = client;
     let lastError: unknown = null;
 
     for (let attempt = 0; attempt < opts.bootRetries; attempt++) {
       if (!this.isCurrentBoot(wc, generation)) throw new Error('host boot was superseded');
       try {
-        this.killHost(this.hostProc);
+        if (this.hostProc) await this.stopHost(this.client, this.hostProc);
+        client.prepareHostEpoch();
         this.hostProc = null;
         const hostProc = await bootEngineHost(wc, client, {
           resultTtlMs: opts.resultTtlMs,
@@ -186,12 +194,13 @@ export class HostManager {
           hostSrc: opts.hostSrc,
           lifoCoreSrc: opts.lifoCoreSrc,
         });
+        client.resumeHostDelivery();
         if (!this.isCurrentBoot(wc, generation)) {
           this.killHost(hostProc);
           throw new Error('host boot was superseded');
         }
         this.hostProc = hostProc;
-        await waitForHostReady(client, readyAttempts);
+        await waitForHostReady(client, { deadlineMs: opts.hostReadyDeadlineMs });
         if (!this.isCurrentBoot(wc, generation)) {
           this.killHost(hostProc);
           if (this.hostProc === hostProc) this.hostProc = null;
@@ -212,7 +221,29 @@ export class HostManager {
     }
 
     if (this.isCurrentBoot(wc, generation)) this.state = 'unattached';
+    if (this.generation === generation) this.client = null;
     throw lastError ?? new Error('host boot failed');
+  }
+
+  private detachHost(): { hostProc: WebContainerProcess | null; client: TerminalClient | null; ready: boolean } {
+    const detached = { hostProc: this.hostProc, client: this.client, ready: this.state === 'ready' };
+    this.generation += 1;
+    this.hostProc = null;
+    this.client = null;
+    this.wc = null;
+    this.mode = null;
+    this.startedAt = null;
+    this.state = 'disposed';
+    return detached;
+  }
+
+  private async stopHost(client: TerminalClient | null, hostProc: WebContainerProcess | null): Promise<void> {
+    if (!hostProc) return;
+    const fenced = client ? await client.requestHostShutdown(5000) : false;
+    if (client && !fenced) client.prepareHostEpoch(true);
+    const exit = (hostProc as unknown as { exit?: Promise<number> }).exit;
+    if (exit) await Promise.race([exit.catch(() => undefined), waitForHostExit(5000)]);
+    this.killHost(hostProc);
   }
 
   private isCurrentBoot(wc: WebContainer, generation: number): boolean {

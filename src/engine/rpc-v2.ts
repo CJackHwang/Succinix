@@ -6,6 +6,7 @@ export const RPC_PROTOCOL_VERSION = 2 as const;
 export const LEGACY_RPC_PROTOCOL_VERSION = 1 as const;
 export const RPC_CMD_FILE = '/cmd.json';
 export const RPC_ERROR_FILE = '/rpc-error.json';
+export const RPC_HOST_EPOCH_FILE = '/host-epoch.json';
 
 export type RpcRequestId = string | number;
 
@@ -35,6 +36,22 @@ export interface RpcDeliveryAck {
   bootNonce: string;
   instanceId: string;
   acceptedAt: number;
+}
+
+/** The browser publishes this atomically before every host spawn. The host
+ * accepts only requests carrying this nonce for its whole lifetime. */
+export interface RpcHostEpoch {
+  protocolVersion: typeof RPC_PROTOCOL_VERSION;
+  bootNonce: string;
+  createdAt: number;
+}
+
+export function isRpcHostEpoch(value: unknown): value is RpcHostEpoch {
+  if (!value || typeof value !== 'object') return false;
+  const epoch = value as Partial<RpcHostEpoch>;
+  return epoch.protocolVersion === RPC_PROTOCOL_VERSION &&
+    typeof epoch.bootNonce === 'string' && epoch.bootNonce.length > 0 &&
+    typeof epoch.createdAt === 'number' && Number.isFinite(epoch.createdAt);
 }
 
 export interface RpcStructuredError {

@@ -21,6 +21,9 @@ void runContract()
     render(result);
   })
   .catch((error) => {
-    text += `<span class="fail">[ FAIL ] contract runner crashed: ${String(error)}</span>\n`;
-    render();
+    render({
+      checks: [{ name: 'contract runner crashed', ok: false, detail: String(error) }],
+      passed: 0,
+      failed: 1,
+    });
   });

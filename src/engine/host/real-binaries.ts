@@ -9,7 +9,7 @@ import { pythonDaemon, PYTHON_DAEMON_JS } from '../python-daemon-client.js';
 import { WORKSPACE_MOUNT, canonicalizeVirtualPath, pythonRuntimeArgs, lifoSpawndCwd, withEaccesHint } from '../host-route.js';
 import { hasShellMetaToken, tryTokenize } from '../tokenize.js';
 import { getSessionCwd, mergedEnv, setSessionCwd } from './config.js';
-import { registerProcess } from '../host-procs.js';
+import { PROCESS_TERMINATION_GRACE_MS, killProcess, registerProcess } from '../host-procs.js';
 import { attachOutputCollector } from './spawn.js';
 import { createServiceCommandBridge } from './service-command-bridge.js';
 import { decodeServiceCommand } from './service-world.js';
@@ -30,15 +30,19 @@ export { runShellScript } from './runtime-commands.js';
 // pip install 走网络拉 wheel —— 120s 内可完成；daemon 内部也有同等超时兜底。
 export const PYTHON_TIMEOUT_MS = 150000;
 
-// 与 runNode 的 spawnCwd(instanceId) 语义一致）；非 /workspace 的 Lifo 私有路径回落会话 cwd。
+// 与 runNode 的 spawnCwd(instanceId) 语义一致；非共享的 Lifo 私有 cwd 必须拒绝。
 export function registerRealBinaryCommands(
   sandbox: LifoSandbox,
   instanceId: string,
-  options: { runGitCommand?: GitCommandRunner } = {},
+  options: {
+    runGitCommand?: GitCommandRunner;
+    /** Project a Lifo-local PID into the host-wide public process namespace. */
+    projectLifoPid?: (localPid: number, name?: string) => number | undefined;
+  } = {},
 ): void {
   // M2：Lifo 混合链的 node/python 转发在「当前在途请求」的实例上下文里执行（单 host 串行
   // 处理请求，currentInstanceId() 即请求所属实例）；cwd/环境按该实例解析。
-  const lifoSpawnCwd = (vfsCwd: string): string => lifoSpawndCwd(vfsCwd, getSessionCwd(instanceId), process.cwd());
+  const lifoSpawnCwd = (vfsCwd: string): string | null => lifoSpawndCwd(vfsCwd, getSessionCwd(instanceId), process.cwd());
   const resolveGitAbsolutePath = (requested: string): string | null => {
     let virtualPath: string;
     try {
@@ -70,7 +74,7 @@ export function registerRealBinaryCommands(
     const pid = registerProcess(cmd, child, realCwd, instanceId, { runtime, internal: true });
     // both：既累积（写 ctx 流）也追加进程表（ps/kill 可见）。
     const out = attachOutputCollector(child, pid, 'both');
-    const onAbort = () => child.kill();
+    const onAbort = () => { killProcess(pid, PROCESS_TERMINATION_GRACE_MS, 'SIGINT'); };
     ctx.signal?.addEventListener('abort', onAbort);
     return new Promise<number>((resolve) => {
       child.on('close', (code) => {
@@ -109,6 +113,10 @@ export function registerRealBinaryCommands(
     if (!program) return 127;
     if (program === 'node' || program === 'npm' || program === 'npx') {
       const realCwd = lifoSpawnCwd(ctx.cwd);
+      if (!realCwd) {
+        ctx.stderr.write(`succinix-service-run: cwd is outside the shared workspace: ${ctx.cwd}\n`);
+        return 1;
+      }
       const child = spawn(program, args, { cwd: realCwd, env: mergedEnv(instanceId) });
       const code = await forward(ctx, child, [program, ...args].join(' '), realCwd);
       return code;
@@ -124,6 +132,10 @@ export function registerRealBinaryCommands(
   for (const name of ['node', 'npm', 'npx']) {
     sandbox.commands.register(name, async (ctx) => {
       const realCwd = lifoSpawnCwd(ctx.cwd);
+      if (!realCwd) {
+        ctx.stderr.write(`${name}: cwd is outside the shared workspace: ${ctx.cwd}\n`);
+        return 1;
+      }
       const child = spawn(name, ctx.args, { cwd: realCwd, env: mergedEnv(instanceId) });
       return forward(ctx, child, [name, ...ctx.args].join(' '), realCwd);
     });
@@ -133,7 +145,12 @@ export function registerRealBinaryCommands(
       ctx.stderr.write('git: runtime adapter is unavailable\n');
       return 69;
     }
-    return options.runGitCommand(ctx, { dir: lifoSpawnCwd(ctx.cwd), fs, resolveAbsolutePath: resolveGitAbsolutePath });
+    const dir = lifoSpawnCwd(ctx.cwd);
+    if (!dir) {
+      ctx.stderr.write(`git: cwd is outside the shared workspace: ${ctx.cwd}\n`);
+      return 1;
+    }
+    return options.runGitCommand(ctx, { dir, fs, resolveAbsolutePath: resolveGitAbsolutePath });
   });
   // TASK27：python/pip 命令含 shell 元字符时整条经 Lifo shell 执行（真管道），python 段
   // 转发到常驻 Pyodide daemon（python-daemon-client）。资产未注入时给明确错误，与 runPython 一致。
@@ -147,7 +164,12 @@ export function registerRealBinaryCommands(
       );
       return -1;
     }
-    const r = await pythonDaemon.exec(args, lifoSpawnCwd(ctx.cwd), PYTHON_TIMEOUT_MS);
+    const cwd = lifoSpawnCwd(ctx.cwd);
+    if (!cwd) {
+      ctx.stderr.write(`python: cwd is outside the shared workspace: ${ctx.cwd}\n`);
+      return 1;
+    }
+    const r = await pythonDaemon.exec(args, cwd, PYTHON_TIMEOUT_MS);
     ctx.stdout.write(r.stdout);
     ctx.stderr.write(withEaccesHint(r.stderr));
     return r.exitCode;
@@ -162,7 +184,12 @@ export function registerRealBinaryCommands(
   // Replace Lifo's colorized systemctl renderer with the Succinix contract;
   // lifecycle operations still execute through the same ServiceManager and
   // ProcessRegistry owned by this Sandbox.
-  const systemctlCommand = createServiceCommandBridge(sandbox.kernel.serviceManager, instanceId);
+  const systemctlCommand = createServiceCommandBridge(
+    sandbox.kernel.serviceManager,
+    instanceId,
+    requestBrowserControl,
+    { projectPid: options.projectLifoPid },
+  );
   sandbox.commands.register('systemctl', systemctlCommand);
   sandbox.commands.register('env', async (ctx) => {
     if (ctx.args.length === 0) {

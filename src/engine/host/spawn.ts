@@ -1,6 +1,12 @@
 // host spawn 域（O3 拆分）：共享子进程工具（spawnTracked/输出接线/后台 spawn）。
 import { spawn } from 'node:child_process';
-import { registerProcess, appendProcessOutput, markProcessExited } from '../host-procs.js';
+import {
+  PROCESS_TERMINATION_GRACE_MS,
+  appendProcessOutput,
+  killProcess,
+  markProcessExited,
+  registerProcess,
+} from '../host-procs.js';
 import { NODE_PREFIX_RE, mapDataDirArgs, capOutput, withEaccesHint, MAX_OUTPUT_BYTES, CurrentRunRegistry } from '../host-route.js';
 import { mergedEnvFor, resolveRequestCwd } from './config.js';
 import { tryTokenize } from '../tokenize.js';
@@ -34,13 +40,15 @@ export function attachOutputCollector(
   const collect = (which: 'stdout' | 'stderr') => (d: Buffer) => {
     const s = d.toString();
     if (mode !== 'append') {
-      // 增量截断：累积超过 2 倍上限时先裁到 1 倍，防止内存随输出无限增长（OOM 防护）。
+      // Keep stdout and stderr combined below one UTF-8 byte budget. JS string
+      // length measures UTF-16 code units and lets CJK/astral output bypass a
+      // byte limit, so it is never used for this boundary.
       if (which === 'stdout') {
         stdout += s;
-        if (stdout.length > MAX_OUTPUT_BYTES * 2) stdout = stdout.slice(-MAX_OUTPUT_BYTES);
+        stdout = capOutput(stdout, Math.max(0, MAX_OUTPUT_BYTES - Buffer.byteLength(stderr)));
       } else {
         stderr += s;
-        if (stderr.length > MAX_OUTPUT_BYTES * 2) stderr = stderr.slice(-MAX_OUTPUT_BYTES);
+        stderr = capOutput(stderr, Math.max(0, MAX_OUTPUT_BYTES - Buffer.byteLength(stdout)));
       }
     }
     if (mode !== 'accumulate') appendProcessOutput(pid, s);
@@ -117,11 +125,11 @@ export function spawnChild(
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : NODE_TIMEOUT_MS;
   timer = setTimeout(() => {
     if (child.exitCode === null) {
-      child.kill();
+      killProcess(pid, PROCESS_TERMINATION_GRACE_MS, 'SIGTERM');
       settle({
         ok: false,
         exitCode: -1,
-        stderr: `${label} subprocess timed out after ${timeoutMs}ms, killed`,
+        stderr: `${label} subprocess timed out after ${timeoutMs}ms, terminating`,
         runtime: 'node',
       });
     }

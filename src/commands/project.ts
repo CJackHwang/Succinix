@@ -2,11 +2,11 @@
 // 检测在浏览器读取 wc.fs 的声明文件；执行永远走执行世界（node 子进程或声明式 service），
 // 浏览器不实现第二套启动器。
 import {
-  addServiceDef,
-  serviceTemplate,
-  startService,
-  type ServiceContext,
-} from '@succinix/engine';
+  addExecutionService,
+  startExecutionService,
+} from '../services/world-client.js';
+import { serviceTemplate } from '../services/templates.js';
+import type { ServiceContext } from '../services/types.js';
 import type { FileSystemAPI, WebContainer } from '@webcontainer/api';
 import { AMBER, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
@@ -88,6 +88,13 @@ function formatDetection(det: ProjectDetection): string[] {
 
 export async function projectCmd(ctx: CommandContext, args: string[]): Promise<void> {
   const { term } = ctx;
+  const svc: ServiceContext = {
+    wc: ctx.wc,
+    client: ctx.client,
+    ports: ctx.ports,
+    instanceId: ctx.instanceId,
+    statePrefix: ctx.statePrefix,
+  };
   const sub = args[0] ?? '';
   if (sub === '' || sub === '--help' || sub === '-h') {
     term.writeln('usage: succinix init | succinix run | succinix serve | succinix open [port]');
@@ -136,16 +143,14 @@ export async function projectCmd(ctx: CommandContext, args: string[]): Promise<v
       return;
     }
     try {
-      await addServiceDef(fsOf(ctx.wc), tpl.name, tpl.command, tpl.port, ctx.instanceId, ctx.statePrefix);
+      await addExecutionService(svc, tpl.name, tpl.command, tpl.port);
     } catch (error) {
       term.writeln(`${RED}succinix: serve: failed to register service: ${String(error)}${RESET}`);
       return;
     }
-    const svc: ServiceContext = { wc: ctx.wc, client: ctx.client, ports: ctx.ports, instanceId: ctx.instanceId, statePrefix: ctx.statePrefix };
-    const r = await startService(svc, tpl.name);
+    const r = await startExecutionService(svc, tpl.name);
     if (r.ok) {
-      const portMatch = /port (\d+)/.exec(r.message);
-      const readyPort = portMatch ? Number(portMatch[1]) : undefined;
+      const readyPort = r.port;
       const url = readyPort !== undefined ? ctx.ports.get(readyPort) : undefined;
       term.writeln(`started '${tpl.name}' (${r.message})`);
       term.writeln(url ? `preview: ${url}` : `preview: run 'ports' or 'succinix net preview' once the port is ready`);

@@ -62,7 +62,10 @@ interface Channel {
   priority: DeliveryTask[];
   delivering: boolean;
   activeResults: number;
+  activeRequestIds: Set<RpcRequestId>;
   lastCmdWrite: number;
+  preparedHostEpoch: string | null;
+  deliveryPaused: boolean;
 }
 
 interface DeliveryTask {
@@ -71,6 +74,7 @@ interface DeliveryTask {
   startedAt: number;
   resolve: (acceptedAt: number) => void;
   reject: (error: Error) => void;
+  onAccepted?: () => void;
 }
 
 const channels = new WeakMap<WebContainer, Channel>();
@@ -80,7 +84,7 @@ function channelFor(wc: WebContainer): Channel {
   if (!ch) {
     ch = {
       sequence: 0, requestPrefix: makeRpcRequestPrefix(), bootNonce: makeRpcBootNonce(),
-      normal: [], priority: [], delivering: false, activeResults: 0, lastCmdWrite: 0,
+      normal: [], priority: [], delivering: false, activeResults: 0, activeRequestIds: new Set(), lastCmdWrite: 0, preparedHostEpoch: null, deliveryPaused: false,
     };
     channels.set(wc, ch);
   }
@@ -99,6 +103,61 @@ export class TerminalClient {
   ) {
     this.options = options;
     this.ch = channelFor(wc);
+  }
+
+  /** Fence all current RPC delivery before replacing a host. Call this before
+   * killing the previous host so an old command cannot cross the restart. */
+  prepareHostEpoch(pauseDelivery = false): string {
+    const ch = this.ch;
+    if (ch.preparedHostEpoch) {
+      if (pauseDelivery) ch.deliveryPaused = true;
+      return ch.preparedHostEpoch;
+    }
+    const previousEpoch = ch.bootNonce;
+    ch.bootNonce = makeRpcBootNonce();
+    ch.requestPrefix = makeRpcRequestPrefix();
+    ch.sequence = 0;
+    ch.preparedHostEpoch = ch.bootNonce;
+    ch.deliveryPaused = pauseDelivery;
+    for (const task of [...ch.normal.splice(0), ...ch.priority.splice(0)]) {
+      task.reject(new Error('RPC host restarted before delivery'));
+    }
+    void this.clearEpochArtifacts(previousEpoch, ch.activeRequestIds);
+    return ch.bootNonce;
+  }
+
+  /** Consume the nonce prepared by the restart fence, or prepare one for an
+   * initial host boot. `bootEngineHost()` is the only caller. */
+  takeHostEpoch(): string {
+    const epoch = this.prepareHostEpoch();
+    this.ch.preparedHostEpoch = null;
+    return epoch;
+  }
+
+  /** Resume normal delivery only after the replacement host process exists. */
+  resumeHostDelivery(): void {
+    const ch = this.ch;
+    if (!ch.deliveryPaused) return;
+    ch.deliveryPaused = false;
+    this.pumpDeliveries();
+  }
+
+  /**
+   * Send the old host its shutdown request through the existing priority lane.
+   * The accepted callback rotates and pauses the epoch before the next queued
+   * command can be written, so an old daemon cannot consume a new request.
+   */
+  async requestHostShutdown(timeoutMs = 5000): Promise<boolean> {
+    const ch = this.ch;
+    if (ch.preparedHostEpoch || ch.deliveryPaused) return false;
+    const id = `${ch.requestPrefix}-${++ch.sequence}`;
+    const request = this.request(id, 'exit', undefined);
+    try {
+      await this.deliver(request, timeoutMs, true, () => this.prepareHostEpoch(true));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // 请求携带实例上下文（M3/M5）：非默认实例写入 instanceId 字段（additive，旧 host 忽略）。
@@ -190,10 +249,15 @@ export class TerminalClient {
     }) as unknown as RpcV2Envelope;
   }
 
-  private deliver(request: RpcV2Envelope, timeoutMs: number, priority: boolean): Promise<number> {
+  private deliver(
+    request: RpcV2Envelope,
+    timeoutMs: number,
+    priority: boolean,
+    onAccepted?: () => void,
+  ): Promise<number> {
     const startedAt = Date.now();
     return new Promise<number>((resolve, reject) => {
-      const task: DeliveryTask = { request, timeoutMs, startedAt, resolve, reject };
+      const task: DeliveryTask = { request, timeoutMs, startedAt, resolve, reject, onAccepted };
       (priority ? this.ch.priority : this.ch.normal).push(task);
       this.pumpDeliveries();
     });
@@ -201,13 +265,14 @@ export class TerminalClient {
 
   private pumpDeliveries(): void {
     const ch = this.ch;
-    if (ch.delivering) return;
+    if (ch.delivering || ch.deliveryPaused) return;
     const task = ch.priority.shift() ?? ch.normal.shift();
     if (!task) return;
     ch.delivering = true;
     void (async () => {
       try {
-        await this.wc.fs.writeFile('/cmd.json', JSON.stringify(task.request));
+        if (task.request.bootNonce !== ch.bootNonce) throw new Error('RPC host restarted before delivery');
+        await this.atomicWrite('/cmd.json', JSON.stringify(task.request));
         ch.lastCmdWrite = Date.now();
         const ackFile = rpcAckPath(task.request.id);
         // A cold interactive terminal can trigger Lifo's lazy kernel load in
@@ -216,24 +281,36 @@ export class TerminalClient {
         // unrelated five-second cap.
         const deadline = task.timeoutMs;
         for (;;) {
+          let ack: {
+            protocolVersion?: number;
+            id?: RpcRequestId;
+            bootNonce?: string;
+            instanceId?: string;
+          } | undefined;
           try {
-            const ack = JSON.parse(await this.wc.fs.readFile(ackFile, 'utf8')) as {
+            ack = JSON.parse(await this.wc.fs.readFile(ackFile, 'utf8')) as {
               protocolVersion?: number;
               id?: RpcRequestId;
               bootNonce?: string;
               instanceId?: string;
             };
+          } catch {
+            // The acknowledgement file is not ready yet. Identity failures are
+            // handled below and must not be mistaken for a polling miss.
+          }
+          if (task.request.bootNonce !== ch.bootNonce) throw new Error('RPC host restarted before acknowledgement');
+          if (ack) {
             if (!this.matchesIdentity(ack, task.request)) throw new Error('invalid RPC acknowledgement');
             try { await this.wc.fs.rm(ackFile); } catch { /* best effort */ }
+            task.onAccepted?.();
             task.resolve(Date.now());
             break;
-          } catch {
-            if (Date.now() - task.startedAt > deadline) {
-              task.reject(new Error(`delivery timeout: ${task.request.cmd}`));
-              break;
-            }
-            await sleep(15);
           }
+          if (Date.now() - task.startedAt > deadline) {
+            task.reject(new Error(`delivery timeout: ${task.request.cmd}`));
+            break;
+          }
+          await sleep(15);
         }
       } catch (error) {
         task.reject(error instanceof Error ? error : new Error(String(error)));
@@ -249,32 +326,42 @@ export class TerminalClient {
     const startedAt = Date.now();
     const request = this.request(id, cmd, opts);
     ch.activeResults++;
+    ch.activeRequestIds.add(id);
     try {
       const acceptedAt = await this.deliver(request, timeoutMs, priority);
       const resultFile = rpcResultPath(id);
       let delay = 25;
       for (;;) {
+        let result: (ExecResult & {
+          protocolVersion?: number;
+          id?: RpcRequestId;
+          bootNonce?: string;
+          instanceId?: string;
+        }) | undefined;
         try {
-          const m = JSON.parse(await this.wc.fs.readFile(resultFile, 'utf8')) as ExecResult & {
+          result = JSON.parse(await this.wc.fs.readFile(resultFile, 'utf8')) as ExecResult & {
             protocolVersion?: number;
             id?: RpcRequestId;
             bootNonce?: string;
             instanceId?: string;
           };
-          if (!this.matchesIdentity(m, request)) throw new Error('stale or mismatched RPC result ignored');
+        } catch {
+          /* result not ready */
+        }
+        if (request.bootNonce !== ch.bootNonce) throw new Error('RPC host restarted before result');
+        if (result) {
+          if (!this.matchesIdentity(result, request)) throw new Error('stale or mismatched RPC result ignored');
           try { await this.wc.fs.rm(resultFile); } catch { /* best effort */ }
           const now = Date.now();
           return {
-            ...m,
+            ...result,
             timing: {
               queueMs: Math.max(0, acceptedAt - startedAt),
-              hostMs: typeof m.timing?.hostMs === 'number' ? m.timing.hostMs : undefined,
+              hostMs: typeof result.timing?.hostMs === 'number' ? result.timing.hostMs : undefined,
               resultPollMs: Math.max(0, now - acceptedAt),
               totalMs: Math.max(0, now - startedAt),
             },
           };
-        } catch {
-          /* result not ready */
         }
         if (Date.now() - startedAt > timeoutMs) throw new Error(`timeout: ${cmd}`);
         await sleep(delay);
@@ -282,6 +369,7 @@ export class TerminalClient {
       }
     } finally {
       ch.activeResults--;
+      ch.activeRequestIds.delete(id);
     }
   }
 
@@ -293,6 +381,27 @@ export class TerminalClient {
       message.id === request.id &&
       message.bootNonce === request.bootNonce &&
       message.instanceId === (request.instanceId ?? DEFAULT_INSTANCE_ID);
+  }
+
+  private async atomicWrite(path: string, value: string): Promise<void> {
+    const temp = `${path}.tmp-${makeRpcRequestPrefix()}`;
+    await this.wc.fs.writeFile(temp, value);
+    const fs = this.wc.fs as unknown as { rename?: (from: string, to: string) => Promise<void>; writeFile(path: string, data: string): Promise<void> };
+    if (fs.rename) await fs.rename(temp, path);
+    else await fs.writeFile(path, value);
+  }
+
+  private async clearEpochArtifacts(epoch: string, requestIds: ReadonlySet<RpcRequestId>): Promise<void> {
+    await Promise.allSettled([...requestIds].flatMap((id) => [
+      this.wc.fs.rm(rpcAckPath(id)),
+      this.wc.fs.rm(rpcResultPath(id)),
+    ]));
+    try {
+      const request = JSON.parse(await this.wc.fs.readFile('/cmd.json', 'utf8')) as { bootNonce?: unknown };
+      if (request.bootNonce === epoch) await this.wc.fs.rm('/cmd.json');
+    } catch {
+      /* The old host may have already consumed or replaced its mailbox. */
+    }
   }
 
   // 看门狗直接探活（r4 B）：绕过互斥队列——长命令（node 子进程等待 30-150s 期间

@@ -10,7 +10,13 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import {
+  allocateBrowserPorts,
+  attachPageDiagnostics,
+  cleanupChrome,
+  launchChrome,
+  writeBrowserFailureDiagnostics,
+} from './lib/chrome.mjs';
 import { connectPageCDP, evalValue } from './lib/cdp.mjs';
 import { run, waitForHttp, sleep } from './lib/harness.mjs';
 
@@ -18,9 +24,7 @@ const PKG_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.me
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
 const portIdx = args.indexOf('--port');
-const PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 7894;
-const BASE = `http://127.0.0.1:${PORT}`;
-const DEBUG_PORT = PORT + 1; // Chrome DevTools 调试端口
+const REQUESTED_PORT = portIdx >= 0 ? Number(args[portIdx + 1]) : 0;
 const COMMAND_SAMPLE_COUNT = 30;
 const XTERM_BIG_SAMPLE_COUNT = 20;
 const INTERACTIVE_SAMPLE_COUNT = 100;
@@ -72,16 +76,32 @@ function summarizeSamples(values, includeSamples = true) {
 async function waitForBenchHook(cdp, timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   let lastErr;
+  let lastState;
   while (Date.now() < deadline) {
     try {
-      const v = await evalValue(cdp, `JSON.stringify({ hook: !!window.__succinixBench, prompt: window.__bootTimes && window.__bootTimes.prompt })`);
+      const v = await evalValue(cdp, `JSON.stringify({
+        hook: !!window.__succinixBench,
+        prompt: window.__bootTimes?.prompt ?? null,
+        overlayPresent: !!document.getElementById('boot-overlay'),
+        readyState: document.readyState,
+        url: location.href,
+        bodyText: String(document.body?.innerText ?? '').trim().slice(-500),
+      })`);
       const st = JSON.parse(v);
       if (st.hook && st.prompt !== null) return;
+      lastState = st;
       lastErr = new Error(`hook not ready: ${v}`);
     } catch (e) {
       lastErr = e;
     }
     await sleep(400);
+  }
+  if (
+    lastState?.overlayPresent
+    && lastState.readyState === 'complete'
+    && lastState.bodyText === 'Starting system services...'
+  ) {
+    throw new Error(`BENCH_BOOTSTRAP_STALL: ${JSON.stringify(lastState)}`);
   }
   throw lastErr ?? new Error('bench hook did not appear within timeout');
 }
@@ -260,6 +280,27 @@ async function measureSessionAppend(cdp) {
   return summarizeSamples(samples, false);
 }
 
+async function browserEnvironment(cdp) {
+  let chrome;
+  try {
+    const version = await cdp.send('Browser.getVersion');
+    chrome = { product: version.product ?? null, revision: version.revision ?? null, userAgent: version.userAgent ?? null };
+  } catch (error) {
+    chrome = { error: error instanceof Error ? error.message : String(error) };
+  }
+  return { node: process.version, platform: process.platform, arch: process.arch, chrome };
+}
+
+async function stopPreview(preview) {
+  if (!preview || preview.exitCode !== null || preview.signalCode !== null) return;
+  preview.kill('SIGTERM');
+  const exited = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 5_000);
+    preview.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+  if (!exited && preview.exitCode === null && preview.signalCode === null) preview.kill('SIGKILL');
+}
+
 // ─── 主流程 ───
 async function main() {
   note('Succinix performance benchmark (TASK18)');
@@ -276,19 +317,26 @@ async function main() {
     throw new Error('dist/index.html missing — run npm run build first');
   }
 
-  // 2) vite preview
-  note(`starting vite preview on :${PORT}...`);
-  const preview = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
-  let chrome = null;
+  // Each invocation uses unique ports and an isolated Chrome profile. A caller
+  // may request a preview port, but it is still checked before Vite starts.
+  const { previewPort, debugPort } = await allocateBrowserPorts(REQUESTED_PORT);
+  const base = `http://127.0.0.1:${previewPort}`;
+  note(`starting Vite preview on :${previewPort}; Chrome DevTools on :${debugPort}`);
+  const preview = spawn(process.execPath, [join(process.cwd(), 'node_modules/vite/bin/vite.js'), 'preview', '--port', String(previewPort), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
+  let chromeRun = null;
   let cdp = null;
+  let pageDiagnostics = null;
+  let failure = null;
   try {
-    await waitForHttp(BASE, 20000);
-    note(`preview reachable at ${BASE}`);
+    await waitForHttp(base, 20000);
+    note(`preview reachable at ${base}`);
 
-    chrome = launchChrome(DEBUG_PORT, 'bench');
-    cdp = await connectPageCDP(DEBUG_PORT);
+    chromeRun = launchChrome(debugPort, `bench-${process.pid}`);
+    cdp = await connectPageCDP(debugPort);
+    await cdp.send('Log.enable');
+    pageDiagnostics = attachPageDiagnostics(cdp);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SCRIPT });
-    await cdp.send('Page.navigate', { url: `${BASE}/?bench=1` });
+    await cdp.send('Page.navigate', { url: `${base}/?bench=1` });
 
     note('waiting for boot + prompt...');
     await waitForBenchHook(cdp);
@@ -323,7 +371,7 @@ async function main() {
     const result = {
       version: PKG_VERSION,
       timestamp: new Date().toISOString(),
-      platform: process.platform,
+      environment: await browserEnvironment(cdp),
       boot_ms: boot,
       cmd_lifo_ms: commands.lifo,
       cmd_node_ms: commands.node,
@@ -335,10 +383,28 @@ async function main() {
     };
     console.log(JSON.stringify(result, null, 2));
     note('bench complete');
+  } catch (error) {
+    failure = error;
+    const diagnostics = await writeBrowserFailureDiagnostics({
+      label: `bench-${process.pid}`,
+      error,
+      cdp,
+      pageDiagnostics,
+      chromeRun,
+      previewPort,
+      debugPort,
+    });
+    console.error(`[bench] failure diagnostics: ${diagnostics.reportPath}`);
+    throw error;
   } finally {
+    pageDiagnostics?.dispose();
     cdp?.close();
-    cleanupChrome(chrome?.chrome, chrome?.profileDir);
-    preview.kill('SIGTERM');
+    const cleanup = await cleanupChrome(chromeRun?.chrome, chromeRun?.profileDir);
+    if (!cleanup.exited || cleanup.descendantsAfter.length > 0 || !cleanup.profileRemoved) {
+      console.error(`[bench] cleanup diagnostic: ${JSON.stringify(cleanup)}`);
+    }
+    await stopPreview(preview);
+    if (failure) note('failure diagnostics were retained in the temporary directory above');
   }
 }
 

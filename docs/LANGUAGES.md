@@ -1,14 +1,14 @@
 # Succinix Language Ecosystem — Verified Support Matrix
 
-> **Authoritative, measurement-based.** Every status below is backed by a reproducible
-> measured source — a check id from `scripts/lang-verify.mjs` (`LV·P1` … `LV·R3`), the
-> `?test=1` self-test (`ST`), or a scenario in `scripts/scenarios.mjs` (`S11`, `S13`, `S14`).
-> Nothing is speculative; run `npm run test:e2e` to reproduce every number.
+> **Evidence-based matrix.** Each entry identifies either a reproducible browser measurement
+> (`LV`, `ST`, or `S`) or a source-level implementation contract. An implementation entry is not
+> a substitute for an end-to-end measurement; run the named command to obtain current evidence.
 
 Status legend:
 
 - ✅ **measured working** — a real browser/container execution returned the expected result
 - ⚠️ **partial / probe** — runs with documented caveats, or a feasibility probe recorded an outcome
+- **implementation present** — routed code exists, but the matrix has no complete E2E measurement
 - ❌ **not available** — confirmed absent (real execution, not assumed)
 
 Measured environment: headless Chrome (CDP) driving a WebContainer; `node` 22.22.3 / `npm`
@@ -28,7 +28,7 @@ bundled Node or the pinned Pyodide asset changes.
 | **Node.js** | `node` | real Node.js (WebContainer runtime) | 22.22.3 | ✅ npm, local per-project installs | ✅ | `LV·N1–N5`, `S13`, `S14`, `ST` |
 | **npm** | `npm` | real npm (ships with node) | 10.8.2 | ✅ local; ❌ global (`/usr/local` read-only → EACCES + hint) | ✅ | `LV·N1`, `LV·N4`, `S14`, `ST` |
 | **TypeScript** | `npx tsc`, `tsx`, `vitest` | npm-installed toolchain; node 22 `--experimental-strip-types` | latest via npm | ✅ via npm | ✅ | `LV·N3`, `S13`, `S14` |
-| **Ruby** | `ruby` | Lazily injected WASM runtime: browser asset bridge → `@ruby/wasm-wasi` adapter in a real Node child | head ruby.wasm | ✅ npm install; ❌ **no gem** | ✅ integrated, lazy (first run slow) | v0.7, `LV·R1` |
+| **Ruby** | `ruby` | Registered Lifo command; browser asset bridge lazily installs an `@ruby/wasm-wasi` adapter in a real Node child | adapter runtime version is not measured as a release gate | npm packages; ❌ **no gem** | implementation present; underlying WASM API probe only | `src/engine/host/runtime-commands.ts`, `tests/ruby-wasi.test.ts`, `LV·R1` |
 | **C** | `gcc` | none | — | — | ❌ confirmed absent | `LV·R2` |
 | **Rust** | `rustc`, `cargo` | none | — | — | ❌ confirmed absent | `LV·R2` |
 | **Go** | `go` | none | — | — | ❌ confirmed absent | `LV·R2` |
@@ -66,7 +66,7 @@ Replacement degree for real development scenarios, measured end-to-end.
 | Full TypeScript development loop (install → compile → test → run) | Node/TS | **~80%+** | `npm i -D typescript tsx vitest` → `tsc` → `node dist/*.js` → `vitest run 1 passed` (`LV·N3`, `S13`); `node -e` nested-quote writes survive tokenization and tsc (`LV·N2`, `S14`); npm installs into the session cwd (`LV·N5`, `S14`). |
 | Frontend/service runtime (http servers, package scripts) | Node | **~85%+** | Real node spawn + preview URL registration + `ps`/`kill` lifecycle (`S1`, `ST`); `node --version && npm --version` chain works (`LV·N1`, `S14`). |
 | Global CLI tools (`npm i -g`) | npm | **❌** | `/usr/local` is read-only; EACCES with an actionable hint (`LV·N4`, `S14`). Install locally instead. |
-| Ruby scripting | Ruby | **~60%+** | `ruby` is a registered Lifo command; the browser asset bridge lazily injects the WASM runtime and runs it in a real Node child (`6*7` → `42`). No gem installer; first run is slow (`v0.7`, `LV·R1`). |
+| Ruby scripting | Ruby | not rated | `ruby` is a registered Lifo command; the asset bridge lazily installs its WASM adapter and it runs in a real Node child. `LV·R1` measures the underlying API (`6*7` → `42`), not the routed command. No gem installer; first run is slow. |
 | Native builds (C/Rust/Go) | C/Rust/Go | **❌** | No compilers (`LV·R2`). Precompiled **WASI** binaries run through the `wasi-run` / `wasi-info` Lifo adapters (`v0.7`, `LV·R3`); there is still no in-sandbox toolchain to build them. |
 
 ---
@@ -96,8 +96,10 @@ Measured, environment-level constraints — not bugs.
 - **No C/Rust/Go compilers**: `which gcc/rustc/go` all report not found (`LV·R2`).
 - **WASI**: precompiled WASI modules run under `node:wasi` (`LV·R3`), but building them
   requires an external toolchain; the sandbox ships none.
-- **Ruby**: probe only. The v2 `@ruby/wasm-wasi` API (`@ruby/wasm-wasi/dist/node`) works,
-  but Ruby is not a routed/built-in runtime and has no gem installer (`LV·R1`).
+- **Ruby**: the `ruby` command is routed through the Lifo runtime-command registry and requests
+  its WASM adapter from the browser asset bridge on first use. `LV·R1` only probes the underlying
+  `@ruby/wasm-wasi` API; a complete routed-command E2E measurement is still absent. There is no
+  gem installer.
 - **External network**: `urllib` / `curl` to CORS-less hosts fail; use a CORS-friendly
   proxy (e.g. `https://r.jina.ai/<url>`) (AGENTS.md boundary; `ST`).
 - **`/workspace` path mapping**: Lifo's `/workspace` is a VFS view of the browser-FS root;
@@ -115,6 +117,5 @@ node scripts/scenarios.mjs --only S11 # python workflow + pip + persistence, or 
 # self-test: open <deploy>/?test=1  → "7? passed, 0 failed, ? skipped" (gate >= 71)
 ```
 
-These files are the single source of truth for this matrix — any change to the support
-matrix must come from an updated measurement in `lang-verify.mjs`, the self-test, or a
-scenario, never from assumption.
+This matrix must be updated from a named measurement or an implementation test/source change;
+do not promote an implementation entry to measured working without a reproducible E2E check.

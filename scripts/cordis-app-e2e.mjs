@@ -40,8 +40,19 @@ async function ensureDemoDeps() {
 async function runHeadlessContract() {
   const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'cordis-app');
   let cdp = null;
+  const diagnostics = [];
   try {
     cdp = await connectPageCDP(DEBUG_PORT);
+    cdp.on('Runtime.consoleAPICalled', (event) => {
+      const text = (event.args ?? [])
+        .map((arg) => String(arg.value ?? arg.description ?? arg.unserializableValue ?? ''))
+        .join(' ')
+        .trim();
+      if (text) diagnostics.push(`${event.type}: ${text}`);
+    });
+    cdp.on('Runtime.exceptionThrown', (event) => {
+      diagnostics.push(`exception: ${event.exceptionDetails?.text ?? 'unknown page exception'}`);
+    });
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: '(() => { window.__cordisResult = null; })();',
     });
@@ -56,16 +67,22 @@ async function runHeadlessContract() {
       });
       if (res.result?.value && res.result.value !== 'null') {
         try {
-          return JSON.parse(res.result.value);
+          const result = JSON.parse(res.result.value);
+          if (diagnostics.length > 0) result.diagnostics = diagnostics.slice(-20);
+          return result;
         } catch {
           /* retry parse */
         }
       }
     }
-    throw new Error('contract did not finish within 600s');
+    const diagnostic = await cdp.send('Runtime.evaluate', {
+      expression: 'JSON.stringify({ progress: window.__cordisProgress ?? null, text: document.body?.innerText ?? "" })',
+      returnByValue: true,
+    });
+    throw new Error(`contract did not finish within 600s: ${diagnostic.result?.value ?? 'no page diagnostic'}`);
   } finally {
     cdp?.close();
-    cleanupChrome(chrome, profileDir);
+    await cleanupChrome(chrome, profileDir);
   }
 }
 

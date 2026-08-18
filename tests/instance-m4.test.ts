@@ -1,33 +1,8 @@
 // M4：service/ports 按实例视图 + db 数据目录 + reboot 实例级语义（纯逻辑单测）。
 import { describe, it, expect } from 'vitest';
-import { processBelongsToInstance } from '../src/services/index.js';
 import { InstancePortRegistry } from '../src/instance/ports.js';
 import { tinbaseDataDir, DEFAULT_INSTANCE_ID } from '../src/instance/paths.js';
 import { rebootMode } from '../src/commands/index.js';
-
-describe('service 进程归属过滤（M4）', () => {
-  const own = { scope: 'container', containerId: '.succinix-c-1' };
-  const other = { scope: 'container', containerId: '.succinix-c-2' };
-  const legacy = { scope: 'container', containerId: 'c-9' };
-  const sys = { scope: 'system' };
-  const unknown = { scope: 'unknown' };
-
-  it('non-default instance matches only its own state root / system', () => {
-    expect(processBelongsToInstance(own, 'c-1')).toBe(true);
-    expect(processBelongsToInstance(other, 'c-1')).toBe(false);
-    expect(processBelongsToInstance(legacy, 'c-9')).toBe(true); // CISOL 同 id
-    expect(processBelongsToInstance(sys, 'c-1')).toBe(true);
-    expect(processBelongsToInstance(unknown, 'c-1')).toBe(false);
-  });
-
-  it('default instance excludes other instances state-root processes (组织性隔离)', () => {
-    expect(processBelongsToInstance(own, DEFAULT_INSTANCE_ID)).toBe(false);
-    expect(processBelongsToInstance(other, DEFAULT_INSTANCE_ID)).toBe(false);
-    expect(processBelongsToInstance(legacy, DEFAULT_INSTANCE_ID)).toBe(true); // CISOL 现状
-    expect(processBelongsToInstance(sys, DEFAULT_INSTANCE_ID)).toBe(true);
-    expect(processBelongsToInstance(unknown, DEFAULT_INSTANCE_ID)).toBe(true); // 现状：unknown 照旧匹配
-  });
-});
 
 describe('实例端口视图（M4，InstancePortRegistry）', () => {
   it('default instance view = page-level ports (现状全等)', () => {

@@ -35,9 +35,9 @@ class MemoryFs {
 function identity(nonce = 'boot-1'): TerminalIdentity { return { protocolVersion: TERMINAL_PROTOCOL_VERSION, instanceId: 'default', sessionId: 'session-1', bootNonce: nonce }; }
 
 describe('terminal mailbox transport', () => {
-  it('escapes nested instance ids without changing their identity', () => {
+  it('rejects nested instance ids before they can become mailbox paths', () => {
     const nested = { ...identity(), instanceId: 'users/alice' };
-    expect(mailboxPath(nested, 'open.json')).toContain('/users%2Falice/');
+    expect(() => mailboxPath(nested, 'open.json')).toThrow('invalid terminal id');
   });
 
   it('coalesces output and retains sequence frames until ack', () => {
@@ -123,6 +123,7 @@ describe('terminal mailbox transport', () => {
       fs.writeFileSync(mailboxPath(identity(), 'out-000000000001.json'), JSON.stringify({ ...identity(), type: 'output', seq: 1, data: 'ok\r\n' }));
       await vi.advanceTimersByTimeAsync(2);
       expect(output).toEqual(['ok\r\n']);
+      expect(client.receivedOutputByteCount).toBe(4);
       await client.dispose();
     } finally {
       vi.useRealTimers();
@@ -149,6 +150,7 @@ describe('terminal mailbox transport', () => {
 
       const output: string[] = [];
       client.onOutput((data) => output.push(data));
+      await vi.advanceTimersByTimeAsync(2);
 
       expect(output).toEqual(['guest@succinix:~$ ']);
       await client.dispose();
@@ -187,7 +189,7 @@ describe('terminal mailbox transport', () => {
     await client.renewBootNonce('new');
     expect(client.bootNonce).toBe('new');
     const frames = [...fs.files.entries()].filter(([name]) => name.includes('/in-') && name.endsWith('.json')).map(([, value]) => JSON.parse(value));
-    expect(frames.some((frame) => frame.bootNonce === 'old')).toBe(true);
+    expect(frames.some((frame) => frame.bootNonce === 'old')).toBe(false);
     expect(JSON.parse(fs.readFileSync(mailboxPath({ ...identity('new') }, 'open.json'), 'utf8')).bootNonce).toBe('new');
     await client.dispose();
   });
@@ -200,15 +202,95 @@ describe('terminal backpressure', () => {
     const term = new RpcTerminal(identity(), { fs, maxBufferedBytes: 16, onBackpressure: (bytes) => events.push(bytes) });
     term.write('x'.repeat(32));
     expect(term.backpressured).toBe(true);
-    expect(events).toContain(32);
+    expect(events).toContain(16);
     const controlPath = hostMailboxPath(identity(), 'out-000000000001.json');
     const frame = JSON.parse(fs.readFileSync(controlPath, 'utf8'));
     expect(frame.control).toBe('backpressure');
-    expect(frame.bufferedBytes).toBe(32);
+    expect(frame.bufferedBytes).toBe(16);
     term.flush();
     expect(term.bufferedBytes).toBe(0);
+    expect(term.backpressured).toBe(true);
+    term.acknowledge(2);
     expect(term.backpressured).toBe(false);
     expect(events.at(-1)).toBe(0);
+  });
+
+  it('reports clamped terminal dimensions when a mailbox resize arrives', () => {
+    const sizes: Array<{ cols: number; rows: number }> = [];
+    const term = new RpcTerminal(identity(), {
+      fs: new MemoryFs(),
+      onResize: (cols, rows) => sizes.push({ cols, rows }),
+    });
+
+    term.resize(120.8, 40.2);
+
+    expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+    expect(term).toMatchObject({ cols: 120, rows: 40 });
+  });
+
+  it('caps unacknowledged output and resumes after the browser ACK', () => {
+    const fs = new MemoryFs();
+    let opened: RpcTerminal | undefined;
+    const host = new TerminalMailboxHost((open, opts) => {
+      opened = new RpcTerminal(open, { ...opts, maxBufferedBytes: 8 });
+      return opened;
+    }, { fs });
+    fs.writeFileSync(hostMailboxPath(identity(), 'open.json'), JSON.stringify({ ...identity(), type: 'open', cols: 80, rows: 24 }));
+    host.poll();
+    opened!.write('abcdefghijk');
+    opened!.flush();
+    expect(opened!.unacknowledgedBytes).toBe(8);
+    expect(opened!.discardedOutputBytes).toBe(3);
+    opened!.write('later');
+    expect(opened!.discardedOutputBytes).toBe(8);
+
+    fs.writeFileSync(hostMailboxPath(identity(), 'ack.json'), JSON.stringify({ ...identity(), type: 'ack', ack: 2 }));
+    host.poll();
+    expect(opened!.unacknowledgedBytes).toBe(0);
+    opened!.write('next');
+    opened!.flush();
+    expect(opened!.unacknowledgedBytes).toBe(4);
+  });
+
+  it('expires a mailbox which stops sending heartbeats', () => {
+    const fs = new MemoryFs();
+    const closed: TerminalIdentity[] = [];
+    let now = 100;
+    const host = new TerminalMailboxHost((open, opts) => new RpcTerminal(open, opts), {
+      fs,
+      now: () => now,
+      sessionTtlMs: 50,
+      onSessionClose: (value) => closed.push(value),
+    });
+    fs.writeFileSync(hostMailboxPath(identity(), 'open.json'), JSON.stringify({ ...identity(), type: 'open', cols: 80, rows: 24 }));
+    host.poll();
+    now = 151;
+    host.poll();
+    expect(host.sessionCount()).toBe(0);
+    expect(closed).toEqual([identity()]);
+    expect([...fs.files.keys()].some((path) => path.includes('/session-1/'))).toBe(false);
+  });
+
+  it('prunes an orphaned mailbox only after the session TTL', () => {
+    const fs = new MemoryFs();
+    let now = 100;
+    const host = new TerminalMailboxHost((open, opts) => new RpcTerminal(open, opts), {
+      fs,
+      now: () => now,
+      sessionTtlMs: 50,
+    });
+    const orphan = '.succinix-terminal/default/crashed-session/in-000000000001.json';
+    fs.writeFileSync(orphan, JSON.stringify({ type: 'input', data: 'stale' }));
+
+    host.poll();
+    now = 150;
+    host.poll();
+    expect(fs.existsSync('.succinix-terminal/default/crashed-session')).toBe(true);
+
+    now = 151;
+    host.poll();
+    expect(fs.existsSync('.succinix-terminal/default/crashed-session')).toBe(false);
+    expect(host.sessionCount()).toBe(0);
   });
 
 

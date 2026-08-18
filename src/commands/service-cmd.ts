@@ -1,15 +1,14 @@
 // service 命令域：声明式服务管理（O1 拆分）。
 import {
-  disableAutostart,
-  enableAutostart,
-  getServiceState,
-  listServiceStates,
-  readServices,
-  startService,
-  stopService,
-  restartService,
-  type ServiceContext,
-} from '@succinix/engine';
+  disableExecutionService,
+  enableExecutionService,
+  executionServiceState,
+  listExecutionServiceStates,
+  restartExecutionService,
+  startExecutionService,
+  stopExecutionService,
+} from '../services/world-client.js';
+import type { ServiceContext } from '../services/types.js';
 import { AMBER, RED, RESET } from '../theme.js';
 import type { CommandContext } from './types.js';
 // ─── 服务管理（TASK11）：service 命令族，spawn/ps/kill + 端口注册表的声明式封装 ───
@@ -19,17 +18,17 @@ import type { CommandContext } from './types.js';
 // 单个服务详情：state + pid + port/url（未匹配显示 unknown service）。
 async function serviceStatusOne(ctx: CommandContext, svc: ServiceContext, name: string): Promise<void> {
   const { term } = ctx;
-  const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
-  const def = defs.find((d) => d.name === name);
-  if (!def) {
+  let state;
+  try {
+    state = await executionServiceState(svc, name);
+  } catch {
     term.writeln(`${RED}unknown service: ${name}${RESET}`);
     return;
   }
-  const st = await getServiceState(svc, def);
   term.writeln(`Service '${name}'`);
-  term.writeln(`  state  ${st.state === 'running' ? `${AMBER}${st.state}${RESET}` : st.state}`);
-  if (st.pid !== undefined) term.writeln(`  pid    ${st.pid}`);
-  if (st.effectivePort !== null) term.writeln(`  port   ${st.effectivePort}${st.url ? `  -> ${st.url}` : ''}`);
+  term.writeln(`  state  ${state.state === 'running' ? `${AMBER}${state.state}${RESET}` : state.state}`);
+  if (state.pid !== undefined) term.writeln(`  pid    ${state.pid}`);
+  if (state.effectivePort !== null) term.writeln(`  port   ${state.effectivePort}${state.url ? `  -> ${state.url}` : ''}`);
 }
 
 export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<void> {
@@ -38,7 +37,7 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
   const sub = args[0] ?? '';
 
   if (sub === '' || sub === 'list-units') {
-    const states = await listServiceStates(svc);
+    const states = await listExecutionServiceStates(svc);
     if (states.length === 0) {
       term.writeln('Services');
       term.writeln('  (none defined)');
@@ -63,7 +62,7 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
       term.writeln('usage: service start <name>');
       return;
     }
-    const r = await startService(svc, name);
+    const r = await startExecutionService(svc, name);
     term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
     return;
   }
@@ -74,7 +73,7 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
       term.writeln('usage: service stop <name>');
       return;
     }
-    const r = await stopService(svc, name);
+    const r = await stopExecutionService(svc, name);
     term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
     return;
   }
@@ -85,7 +84,7 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
       term.writeln('usage: service restart <name>');
       return;
     }
-    const r = await restartService(svc, name);
+    const r = await restartExecutionService(svc, name);
     term.writeln(r.ok ? r.message : `${RED}${r.message}${RESET}`);
     return;
   }
@@ -106,13 +105,12 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
       term.writeln('usage: service enable <name>');
       return;
     }
-    const defs = await readServices(ctx.wc.fs, ctx.instanceId, ctx.statePrefix);
-    if (!defs.some((d) => d.name === name)) {
+    try {
+      const enabled = await enableExecutionService(svc, name);
+      term.writeln(enabled ? `service '${name}' enabled (will start on boot)` : `service '${name}' is already enabled`);
+    } catch {
       term.writeln(`${RED}unknown service: ${name}${RESET}`);
-      return;
     }
-    const added = await enableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
-    term.writeln(added ? `service '${name}' enabled (will start on boot)` : `service '${name}' is already enabled`);
     return;
   }
 
@@ -122,8 +120,12 @@ export async function serviceCmd(ctx: CommandContext, args: string[]): Promise<v
       term.writeln('usage: service disable <name>');
       return;
     }
-    const removed = await disableAutostart(ctx.wc.fs, name, ctx.instanceId, ctx.statePrefix);
-    term.writeln(removed ? `service '${name}' disabled` : `service '${name}' is not enabled`);
+    try {
+      const disabled = await disableExecutionService(svc, name);
+      term.writeln(disabled ? `service '${name}' disabled` : `service '${name}' is not enabled`);
+    } catch {
+      term.writeln(`${RED}unknown service: ${name}${RESET}`);
+    }
     return;
   }
 

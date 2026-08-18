@@ -50,14 +50,30 @@ describe('synchronous config schema', () => {
   it('accepts empty and valid configs', () => {
     const result = checkSync(Config, {});
     expect('issues' in result).toBe(false);
-    const valid = checkSync(Config, { resultTtlMs: 5000, container: { mode: 'external' } });
+    const valid = checkSync(Config, {
+      hostJsUrl: '/assets/host.js',
+      lifoCoreUrl: '/assets/lifo-core.js',
+      pythonAssetsUrl: '/assets/pyodide/',
+      rubyAssetsUrl: '/assets/ruby/',
+      resultTtlMs: 5000,
+      container: { mode: 'external', bootRetries: 2, bootIntervalMs: 100, hostReadyDeadlineMs: 1000 },
+      defaultInstance: {
+        instanceId: 'default',
+        statePrefix: '.succinix-default',
+        home: '/workspace',
+        persistence: { dbName: 'test', storeKey: 'default', includeGit: true },
+      },
+      capabilities: { defaultAllow: true, rules: [{ pattern: 'fs.read', allow: true }] },
+      lifecycle: { disposeMode: 'soft', flushOnPageHide: true },
+      assets: { integrity: true },
+    });
     expect('issues' in valid).toBe(false);
   });
 
   it('rejects invalid and unknown fields', () => {
     const bad = checkSync(Config, { resultTtlMs: 0, mystery: true });
     expect('issues' in bad && bad.issues).toBeTruthy();
-    expect('issues' in checkSync(Config, { terminal: { cwd: 42 } })).toBe(true);
+    expect('issues' in checkSync(Config, { terminal: { cwd: '/workspace' } })).toBe(true);
   });
 
   it('rejects async validators explicitly', () => {

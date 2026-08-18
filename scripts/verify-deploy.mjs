@@ -131,7 +131,7 @@ async function runHeadlessSelfTest() {
     return null;
   } finally {
     cdp?.close();
-    cleanupChrome(chrome, profileDir);
+    await cleanupChrome(chrome, profileDir);
   }
 }
 

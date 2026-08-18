@@ -2,13 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Command } from '@lifo-sh/core';
+import { PROCESS_TERMINATION_GRACE_MS, killProcess, registerProcess } from '../host-procs.js';
 import { mergedEnv } from './config.js';
 import { requestBrowserControl } from './control.js';
-import { createSystemctlCommand, serviceCommandFromUnitText, serviceEnablementMarker } from './service-world.js';
+import {
+  createSystemctlCommand,
+  SERVICE_ENABLEMENT_ROOT,
+  serviceCommandFromUnitText,
+  serviceEnablementMarker,
+} from './service-world.js';
 import { SERVICE_TEMPLATES } from '../../services/templates.js';
 
 const servicePackageInstalls = new Map<string, Promise<void>>();
 const PORT_CONTROL_TIMEOUT_MS = 2_000;
+
+export interface ServiceCommandBridgeOptions {
+  /** Translate Lifo-local service PIDs before they leave the execution world. */
+  projectPid?: (localPid: number, name: string) => number | undefined;
+}
 
 /**
  * 将 Lifo ServiceManager 接到浏览器独有的端口、快照控制面。命令本身仍在
@@ -18,6 +29,7 @@ export function createServiceCommandBridge(
   serviceManager: Parameters<typeof createSystemctlCommand>[0],
   instanceId: string,
   requestControl: typeof requestBrowserControl = requestBrowserControl,
+  options: ServiceCommandBridgeOptions = {},
 ): Command {
   const servicePorts = new Map<string, number>();
   const expectedReadyGenerations = new Map<string, number>();
@@ -68,8 +80,12 @@ export function createServiceCommandBridge(
           env: mergedEnv(instanceId),
           stdio: 'ignore',
         });
+        const pid = registerProcess(`npm install --no-save ${packageName}`, child, process.cwd(), instanceId, {
+          runtime: 'node',
+          internal: true,
+        });
         const timer = setTimeout(() => {
-          child.kill();
+          killProcess(pid, PROCESS_TERMINATION_GRACE_MS, 'SIGTERM');
           reject(new Error(`package install timed out: ${packageName}`));
         }, 120000);
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
@@ -129,7 +145,7 @@ export function createServiceCommandBridge(
   const persistServiceEnablement = async (name: string, enabled: boolean, ctx: Parameters<Command>[0]): Promise<void> => {
     const marker = serviceEnablementMarker(name);
     if (enabled) {
-      ctx.vfs.mkdir('/workspace/.succinix-service-state', { recursive: true });
+      ctx.vfs.mkdir(SERVICE_ENABLEMENT_ROOT, { recursive: true });
       ctx.vfs.writeFile(marker, 'enabled\n');
     } else if (ctx.vfs.exists(marker)) {
       ctx.vfs.unlink(marker);
@@ -145,5 +161,6 @@ export function createServiceCommandBridge(
     afterStop: releaseServicePort,
     waitForReady: waitForServiceReady,
     onEnablementChange: persistServiceEnablement,
+    projectPid: options.projectPid,
   });
 }

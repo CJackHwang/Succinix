@@ -8,7 +8,12 @@ import type { UserlandServiceTemplate } from '../../userland/index.js';
 import { hasShellMetaToken, tryTokenize } from '../tokenize.js';
 
 const UNIT_ROOT = '/etc/systemd/system';
-const ENABLEMENT_ROOT = '/workspace/.succinix-service-state';
+/**
+ * `/etc` is mounted to the current instance's persistent host state before
+ * this adapter runs. Keep enablement beside the unit files, never under the
+ * shared `/workspace` mount.
+ */
+export const SERVICE_ENABLEMENT_ROOT = '/etc/succinix/service-state';
 const SERVICE_RUNNER = 'succinix-service-run';
 
 function unitName(raw: string): string {
@@ -108,7 +113,11 @@ function servicePayload(vfs: VFS, name: string): ServicePayload | null {
   return { name: unitName(name), command, port };
 }
 
-function serviceInspections(vfs: VFS, serviceManager: ServiceManager): ServiceInspection[] {
+function serviceInspections(
+  vfs: VFS,
+  serviceManager: ServiceManager,
+  projectPid?: (localPid: number, name: string) => number | undefined,
+): ServiceInspection[] {
   const names = new Set<string>();
   try {
     for (const entry of vfs.readdir(UNIT_ROOT)) {
@@ -127,7 +136,9 @@ function serviceInspections(vfs: VFS, serviceManager: ServiceManager): ServiceIn
       description: status.description || '',
       enabled: status.enabled,
       state: status.active === 'active' || status.active === 'activating' ? 'running' : 'stopped',
-      ...(status.pid === null ? {} : { pid: status.pid }),
+      ...(status.pid === null
+        ? {}
+        : { pid: projectPid ? projectPid(status.pid, name) : status.pid }),
     }];
   });
 }
@@ -191,16 +202,18 @@ export interface SystemctlCommandOptions {
   waitForReady?: (name: string, ctx: CommandContext) => Promise<boolean>;
   /** Persist enablement in the workspace snapshot, then mirror it to systemd. */
   onEnablementChange?: (name: string, enabled: boolean, ctx: CommandContext) => Promise<void>;
+  /** Translate a Lifo-local service PID into the host's public PID namespace. */
+  projectPid?: (localPid: number, name: string) => number | undefined;
 }
 
 export function serviceEnablementMarker(name: string): string {
-  return `${ENABLEMENT_ROOT}/${unitName(name)}.enabled`;
+  return `${SERVICE_ENABLEMENT_ROOT}/${unitName(name)}.enabled`;
 }
 
 /** Recreate native systemd wants entries from the snapshot-backed marker tree. */
 export function restoreServiceEnablement(vfs: VFS, serviceManager: ServiceManager | null): void {
-  if (!serviceManager || !vfs.exists(ENABLEMENT_ROOT)) return;
-  for (const entry of vfs.readdir(ENABLEMENT_ROOT)) {
+  if (!serviceManager || !vfs.exists(SERVICE_ENABLEMENT_ROOT)) return;
+  for (const entry of vfs.readdir(SERVICE_ENABLEMENT_ROOT)) {
     if (entry.type !== 'file' || !entry.name.endsWith('.enabled')) continue;
     const name = entry.name.slice(0, -'.enabled'.length);
     if (serviceManager.status(name).loaded) serviceManager.enable(name);
@@ -208,15 +221,103 @@ export function restoreServiceEnablement(vfs: VFS, serviceManager: ServiceManage
   serviceManager.daemonReload();
 }
 
-function statusLines(info: ReturnType<ServiceManager['status']>): string[] {
+function statusLines(
+  info: ReturnType<ServiceManager['status']>,
+  projectPid?: (localPid: number, name: string) => number | undefined,
+): string[] {
   const lines = [
     `${info.name}.service - ${info.description || 'No description'}`,
     `  Loaded: ${info.loaded ? 'loaded' : 'not-found'} (${info.enabled ? 'enabled' : 'disabled'})`,
     `  Active: ${info.active} (${info.sub})`,
   ];
-  if (info.pid !== null) lines.push(`  Main PID: ${info.pid}`);
+  const publicPid = info.pid === null ? undefined : projectPid ? projectPid(info.pid, info.name) : info.pid;
+  if (publicPid !== undefined) lines.push(`  Main PID: ${publicPid}`);
   if (info.exitCode !== null && info.exitCode !== 0) lines.push(`  Exit code: ${info.exitCode}`);
   return lines;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function settleFailedStart(
+  serviceManager: ServiceManager,
+  options: SystemctlCommandOptions,
+  name: string,
+  ctx: CommandContext,
+  attempted: boolean,
+): Promise<void> {
+  try {
+    // A beforeStart failure owns only browser-side reservations. It must not
+    // stop an already-running unit because no ServiceManager operation began.
+    if (attempted) await serviceManager.stop(name);
+  } catch {
+    // Port ownership must still be released even when the service manager's
+    // best-effort stop reports a secondary failure.
+  } finally {
+    try {
+      await options.afterStop?.(name, ctx);
+    } catch {
+      // A browser control bridge failure cannot retain execution-world state.
+    }
+  }
+}
+
+async function runStartOperation(
+  serviceManager: ServiceManager,
+  options: SystemctlCommandOptions,
+  operation: 'start' | 'restart',
+  name: string,
+  ctx: CommandContext,
+): Promise<number> {
+  let attempted = false;
+  try {
+    await options.beforeStart?.(name, ctx);
+    attempted = true;
+    const result = operation === 'start'
+      ? await serviceManager.start(name)
+      : await serviceManager.restart(name);
+    if (!result.ok) {
+      await settleFailedStart(serviceManager, options, name, ctx, attempted);
+      return writeError(ctx, `Failed to ${operation} ${name}: ${result.message}`);
+    }
+    if (options.waitForReady && !(await options.waitForReady(name, ctx))) {
+      await settleFailedStart(serviceManager, options, name, ctx, attempted);
+      return writeError(ctx, `Failed to ${operation} ${name}: service did not become ready`);
+    }
+    writeLine(ctx, result.message || `${operation === 'start' ? 'Started' : 'Restarted'} ${name}.`);
+    return 0;
+  } catch (error) {
+    await settleFailedStart(serviceManager, options, name, ctx, attempted);
+    return writeError(ctx, `Failed to ${operation} ${name}: ${errorMessage(error)}`);
+  }
+}
+
+async function runStopOperation(
+  serviceManager: ServiceManager,
+  options: SystemctlCommandOptions,
+  name: string,
+  ctx: CommandContext,
+  successMessage?: string,
+): Promise<number> {
+  let result: Awaited<ReturnType<ServiceManager['stop']>> | undefined;
+  let operationError: unknown;
+  let cleanupError: unknown;
+  try {
+    result = await serviceManager.stop(name);
+  } catch (error) {
+    operationError = error;
+  }
+  try {
+    await options.afterStop?.(name, ctx);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (operationError) return writeError(ctx, `Failed to stop ${name}: ${errorMessage(operationError)}`);
+  if (cleanupError) return writeError(ctx, `Failed to stop ${name}: cleanup failed: ${errorMessage(cleanupError)}`);
+  if (!result?.ok) return writeError(ctx, `Failed to stop ${name}: ${result?.message ?? 'service manager returned no result'}`);
+  if (successMessage) writeLine(ctx, result.message || successMessage);
+  return 0;
 }
 
 /** ASCII-only systemctl adapter backed by the same Lifo ServiceManager. */
@@ -236,7 +337,7 @@ export function createSystemctlCommand(
     const name = rawName ? unitName(rawName) : '';
     switch (operation) {
       case 'inspect': {
-        const units = serviceInspections(ctx.vfs, serviceManager);
+        const units = serviceInspections(ctx.vfs, serviceManager, options.projectPid);
         const inspected = name ? units.find((unit) => unit.name === name) ?? null : units;
         ctx.stdout.write(`${JSON.stringify(inspected)}\n`);
         return name && !inspected ? 3 : 0;
@@ -254,9 +355,8 @@ export function createSystemctlCommand(
         if (!ctx.vfs.exists(unitPath(name))) return writeError(ctx, `Failed to remove ${name}: unit not found`);
         const status = serviceManager.status(name);
         if (status.active === 'active' || status.active === 'activating') {
-          const stopped = await serviceManager.stop(name);
-          if (!stopped.ok) return writeError(ctx, `Failed to remove ${name}: ${stopped.message}`);
-          await options.afterStop?.(name, ctx);
+          const stopped = await runStopOperation(serviceManager, options, name, ctx);
+          if (stopped !== 0) return stopped;
         }
         serviceManager.disable(name);
         await options.onEnablementChange?.(name, false, ctx);
@@ -267,37 +367,19 @@ export function createSystemctlCommand(
       }
       case 'start': {
         if (!name) return writeError(ctx, 'systemctl start: missing unit name');
-        await options.beforeStart?.(name, ctx);
-        const result = await serviceManager.start(name);
-        if (!result.ok) return writeError(ctx, `Failed to start ${name}: ${result.message}`);
-        if (options.waitForReady && !(await options.waitForReady(name, ctx))) {
-          return writeError(ctx, `Failed to start ${name}: service did not become ready`);
-        }
-        writeLine(ctx, result.message || `Started ${name}.`);
-        return 0;
+        return runStartOperation(serviceManager, options, 'start', name, ctx);
       }
       case 'stop': {
         if (!name) return writeError(ctx, 'systemctl stop: missing unit name');
-        const result = await serviceManager.stop(name);
-        if (!result.ok) return writeError(ctx, `Failed to stop ${name}: ${result.message}`);
-        await options.afterStop?.(name, ctx);
-        writeLine(ctx, result.message || `Stopped ${name}.`);
-        return 0;
+        return runStopOperation(serviceManager, options, name, ctx, `Stopped ${name}.`);
       }
       case 'restart': {
         if (!name) return writeError(ctx, 'systemctl restart: missing unit name');
-        await options.beforeStart?.(name, ctx);
-        const result = await serviceManager.restart(name);
-        if (!result.ok) return writeError(ctx, `Failed to restart ${name}: ${result.message}`);
-        if (options.waitForReady && !(await options.waitForReady(name, ctx))) {
-          return writeError(ctx, `Failed to restart ${name}: service did not become ready`);
-        }
-        writeLine(ctx, result.message || `Restarted ${name}.`);
-        return 0;
+        return runStartOperation(serviceManager, options, 'restart', name, ctx);
       }
       case 'status': {
         if (!name) return writeError(ctx, 'systemctl status: missing unit name');
-        for (const line of statusLines(serviceManager.status(name))) writeLine(ctx, line);
+        for (const line of statusLines(serviceManager.status(name), options.projectPid)) writeLine(ctx, line);
         return 0;
       }
       case 'enable': {

@@ -20,9 +20,15 @@ import { dispatchRun } from './run.js';
 import { dispatchSpawn } from './spawn.js';
 import { dispatchPs, dispatchKill, dispatchResetInstance, dispatchInterrupt, dispatchSetCwd } from './ps-kill.js';
 import { pruneStaleResults } from './rpc.js';
-import { BoundedProcessedIds, RPC_PROTOCOL_VERSION, isValidRpcRequestId, type RpcStructuredError } from '../rpc-v2.js';
+import { BoundedProcessedIds, RPC_HOST_EPOCH_FILE, RPC_PROTOCOL_VERSION, isRpcHostEpoch, isValidRpcRequestId, type RpcStructuredError } from '../rpc-v2.js';
 import { RpcTerminal, TerminalMailboxHost } from './terminal.js';
-import { attachRpcTerminal, detachRpcTerminal } from './run.js';
+import { setTerminalDimensions } from './terminal-dimensions.js';
+import { PROCESS_TERMINATION_GRACE_MS, terminateProcessesForInstance } from '../host-procs.js';
+import { TERMINAL_MAILBOX_ROOT } from '../../terminal/transport-protocol.js';
+import { attachRpcTerminal, detachRpcTerminal, resetSandboxContext } from './run.js';
+
+const activeInstanceIds = new Set<string>(['default']);
+let shuttingDown = false;
 
 // 统一命令入口：各分支自行写 result-<id>.json。
 // node 子进程的 run 会立即返回（结果异步写回），保证 ps/kill 在长命令期间仍可用。
@@ -30,6 +36,7 @@ export async function handleCommand(req: CommandRequest): Promise<void> {
   const previousInstance = currentInstanceId();
   setCurrentInstanceId(instanceOf(req));
   const inst = instanceOf(req);
+  activeInstanceIds.add(inst);
   try {
     switch (req.cmd) {
       case 'ping':
@@ -60,7 +67,9 @@ export async function handleCommand(req: CommandRequest): Promise<void> {
         dispatchInterrupt(req);
         return;
       case 'exit':
+        await shutdownExecutionWorld();
         writeResult(req.id, { ok: true, kind: 'bye' }, inst);
+        setTimeout(() => process.exit(0), 0);
         return;
       default:
         writeResult(req.id, { ok: false, error: `unknown command: ${req.cmd}` }, inst);
@@ -76,17 +85,47 @@ const processedIds = new BoundedProcessedIds(4096);
 let busy = false;
 let priorityBusy = false;
 
+function currentHostEpoch(): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(RPC_HOST_EPOCH_FILE.slice(1), 'utf8')) as unknown;
+    return isRpcHostEpoch(parsed) ? parsed.bootNonce : null;
+  } catch {
+    return null;
+  }
+}
+
+const hostEpoch = currentHostEpoch();
+if (!hostEpoch) throw new Error('host epoch is missing or invalid');
+
 // Interactive terminal transport is a separate session-scoped mailbox.  It
 // runs alongside the batch RPC loop and never parses commands or owns shell
 // state; the Lifo Sandbox/ Shell remains the execution-world owner.
 const terminalMailbox = new TerminalMailboxHost((open, options) => {
-  const terminal = new RpcTerminal(open, options, { cols: open.cols, rows: open.rows });
+  activeInstanceIds.add(open.instanceId);
+  setTerminalDimensions(open.instanceId, open.cols, open.rows);
+  const terminal = new RpcTerminal(open, {
+    ...options,
+    onResize: (cols, rows) => setTerminalDimensions(open.instanceId, cols, rows),
+  }, { cols: open.cols, rows: open.rows });
   attachRpcTerminal(open.instanceId, terminal);
   return terminal;
 }, {
   onSessionClose: (identity, terminal) => { void detachRpcTerminal(identity.instanceId, terminal); },
 });
 terminalMailbox.start(16);
+
+async function shutdownExecutionWorld(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  terminalMailbox.stop();
+  try { fs.rmSync(TERMINAL_MAILBOX_ROOT.slice(1), { recursive: true, force: true }); } catch { /* best effort */ }
+  for (const instanceId of activeInstanceIds) {
+    terminateProcessesForInstance(instanceId, PROCESS_TERMINATION_GRACE_MS);
+  }
+  await Promise.allSettled([...activeInstanceIds].map((instanceId) => resetSandboxContext(instanceId)));
+  // `killProcess()` escalates each unresponsive real child at this boundary.
+  await new Promise((resolve) => setTimeout(resolve, PROCESS_TERMINATION_GRACE_MS + 25));
+}
 
 function removeIfSame(id: string | number): void {
   try {
@@ -143,6 +182,11 @@ setInterval(async () => {
       removeIfSame(candidate.id);
       return;
     }
+    if (candidate.bootNonce !== hostEpoch) {
+      protocolError({ code: 'STALE_BOOT_NONCE', message: 'RPC request belongs to a stale host epoch' }, candidate.id, candidate.bootNonce);
+      removeIfSame(candidate.id);
+      return;
+    }
     req = candidate as CommandRequest;
     if (processedIds.has(req.id)) {
       // A retried delivery gets an acknowledgement, but is never executed a
@@ -184,7 +228,7 @@ setInterval(async () => {
 }, 50); // TASK18：轮询 120ms → 50ms（命令往返的 host 侧等待减半；fs.existsSync 每 50ms 一次开销可忽略）
 
 /** While a long Lifo/Python/Node request owns the normal scheduler, accept
- * only the two priority controls that must not wait behind it.  The mailbox
+ * only the priority controls that must not wait behind it.  The mailbox
  * remains single-slot, so ordinary requests stay untouched until the active
  * request completes; this prevents watchdog/Ctrl+C from being swallowed. */
 async function processPriorityRequest(): Promise<void> {
@@ -194,7 +238,12 @@ async function processPriorityRequest(): Promise<void> {
     if (!fs.existsSync(CMD_FILE)) return;
     const parsed = JSON.parse(fs.readFileSync(CMD_FILE, 'utf8')) as Partial<CommandRequest>;
     if (!isValidRpcRequestId(parsed.id) || parsed.protocolVersion !== RPC_PROTOCOL_VERSION || typeof parsed.bootNonce !== 'string' || typeof parsed.cmd !== 'string') return;
-    if (parsed.cmd !== 'ping' && parsed.cmd !== 'interrupt') return;
+    if (parsed.bootNonce !== hostEpoch) {
+      protocolError({ code: 'STALE_BOOT_NONCE', message: 'RPC request belongs to a stale host epoch' }, parsed.id, parsed.bootNonce);
+      removeIfSame(parsed.id);
+      return;
+    }
+    if (parsed.cmd !== 'ping' && parsed.cmd !== 'interrupt' && parsed.cmd !== 'exit') return;
     req = parsed as CommandRequest;
     if (processedIds.has(req.id)) {
       writeAck(req);

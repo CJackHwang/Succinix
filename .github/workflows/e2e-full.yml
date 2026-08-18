@@ -59,6 +59,17 @@ jobs:
       - name: Run soak gates (10k / 100k / 100-release)
         run: npm run test:bench:soak
 
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-evidence
+          path: |
+            docs/benchmark-baseline-v0.7.0.json
+            public/sha256.json
+            packages/engine/assets/sha256.json
+          if-no-files-found: error
+
       - name: Upload e2e logs on failure
         if: failure()
         uses: actions/upload-artifact@v7

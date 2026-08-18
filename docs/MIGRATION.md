@@ -1,21 +1,21 @@
 # Succinix Engine Migration Guide
 
-This guide moves an existing `@succinix/engine` consumer to the **0.6.0 dsh
-service form**. The 0.6.0 package is single-track: it is a Cordis plugin for
+This guide moves an existing `@succinix/engine` consumer to the **0.7.0 dsh
+service form**. The 0.7.0 package is single-track: it is a Cordis plugin for
 `@deepseek-ai/cordis@4.0.1` and provides `ctx.fs`, `ctx.sandbox`,
 `ctx.terminals`, and `ctx.sessionPersistence`. The 0.4.0 standalone SDK exports
 and the 0.5.0 single-key `succinix` service are removed.
 
 The migration is breaking by design. It changes the public exports, the service
 keys, the lifecycle ownership, the configuration style, and the way runtime
-callbacks are consumed. The wire protocol (file RPC over `/cmd.json`) is
-unchanged.
+callbacks are consumed. The file transport remains `/cmd.json`, but 0.7.0
+requires batch RPC v2 and therefore is not wire-compatible with 0.6 clients.
 
 ## What changed
 
 ### Service keys
 
-| 0.4.0 / 0.5.0 | 0.6.0 |
+| 0.4.0 / 0.5.0 | 0.7.0 |
 | --- | --- |
 | `createTerminalExecutor()` / single-key `succinix` service | apply the plugin, then use `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, and `ctx.sessionPersistence` |
 | `ctx.fs` command facade (`exec` / `spawn` / `ps` / `kill`) | `ctx.fs` for files and `ctx.sandbox.confine` for confined argv; process management stays behind the `succinix` seam |
@@ -24,7 +24,7 @@ unchanged.
 | `boot(wc, { onServerReady })` callback configuration | `succinix` seam (`host.boot` / `host.attach`) plus `host.onServerReady` or `succinix/server-ready` events |
 | `pagePorts` | `host.ports` behind the host seam |
 
-The root export of `@succinix/engine@0.6.0` is the plugin object
+The root export of `@succinix/engine@0.7.0` is the plugin object
 `{ name: 'succinix', apply, Config }`. The `./terminal` and `./instance`
 subpath exports are removed. The only remaining subpath exports are
 `./host.js`, `./lifo-core.js`, `./assets/*`, and `./package.json`.
@@ -35,14 +35,14 @@ The engine now peers on `@deepseek-ai/cordis ^4.0.1` instead of upstream
 `cordis`. Consumer projects must install the dsh fork:
 
 ```bash
-npm install @succinix/engine@0.6.0 @deepseek-ai/cordis @webcontainer/api
+npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
 ```
 
 ### Lifecycle ownership
 
 In 0.4.0, the consumer owned the host lifecycle through
 `createTerminalExecutor()` and `dispose()` killed the host. In 0.5.0, the
-plugin owned the lifecycle but exposed a monolithic service. In 0.6.0:
+plugin owned the lifecycle but exposed a monolithic service. In 0.7.0:
 
 - `host.boot()` boots a WebContainer in **internal** mode.
 - `host.attach(wc)` adopts a host-owned WebContainer in **external** mode. The
@@ -68,7 +68,7 @@ ports and events, and pass `output`, `terminal`, `executor`, `bootSteps`, and
 ### 1. Install peers
 
 ```bash
-npm install @succinix/engine@0.6.0 @deepseek-ai/cordis @webcontainer/api
+npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
 ```
 
 ### 2. Apply the plugin
@@ -131,7 +131,7 @@ const term = createTerminalExecutor();
 await term.boot(wc);
 const result = await term.exec('node -e "console.log(1+1)"');
 
-// After (0.6.0)
+// After (0.7.0)
 const result = await host.executor.exec('node -e "console.log(1+1)"');
 ```
 
@@ -174,7 +174,7 @@ await session.boot();
 // Before (0.4.0)
 const inst = await createSuccinixInstance({ wc, instanceId: 'alice' });
 
-// After (0.6.0)
+// After (0.7.0)
 const inst = await host.ensureInstance('alice', {
   home: '/workspace/alice',
   persistence: { dbName: 'my-app', storeKey: 'alice' },
@@ -224,7 +224,7 @@ cp node_modules/@succinix/engine/assets/* public/
 Any 0.4.0 option that was a function must move to a service argument or an
 event subscription:
 
-| 0.4.0 config callback | 0.6.0 replacement |
+| 0.4.0 config callback | 0.7.0 replacement |
 | --- | --- |
 | `onServerReady` | `host.onServerReady` / `succinix/server-ready` |
 | `onServerClosed` | `host.onServerClosed` / `succinix/server-closed` |
@@ -270,33 +270,53 @@ node scripts/cordis-app-e2e.mjs
 See [docs/cordis-contract.md](cordis-contract.md) for the full contract
 snapshot and [docs/PLUGIN.md](PLUGIN.md) for third-party plugin integration.
 
-## v0.7 migration notes
+## v0.6 to v0.7 migration matrix
 
-`@succinix/engine@0.7.0` keeps the 0.6 single-track shape: the root export is
-still `{ name: 'succinix', apply, Config }`, and `inject: ['succinix']` plus
-the `ctx.succinix.*` services are unchanged. No service keys, lifecycle
-ownership, or wire-protocol changes are required to upgrade from 0.6.0.
+`@succinix/engine@0.7.0` keeps the single-track plugin export
+`{ name: 'succinix', apply, Config }`, the `inject: ['succinix']` requirement,
+and the `ctx.succinix.*` service namespace. The upgrade is nevertheless
+breaking for file-RPC clients and for consumers that supplied the removed
+terminal configuration. The table is the public compatibility contract.
 
-What changed for 0.7:
+| v0.6 surface or assumption | v0.7 contract | Required consumer change |
+| --- | --- | --- |
+| Plugin root export and `ctx.succinix.*` services | Unchanged | No code change for this surface. |
+| Batch file RPC v1, or an envelope without `protocolVersion: 2` and `bootNonce` | Removed. The host rejects it with `UNSUPPORTED_PROTOCOL` before execution. | Send the v2 envelope documented in [PROTOCOL.md](PROTOCOL.md), including `protocolVersion`, a valid `id`, `bootNonce`, and `cmd`. |
+| Treating a successful `/cmd.json` write as delivery | Replaced by a matched `/ack-<id>.json` followed by a matched `/result-<id>.json`. | Do not poll results until the ACK identity `(protocolVersion, id, bootNonce, instanceId)` matches the request. |
+| Reusing an RPC nonce across a host respawn | Removed. The browser writes a new `/host-epoch.json` before spawning the host; the host accepts only that nonce for its lifetime. | Fence queued work before respawn, rotate the request prefix and terminal nonce, and discard old ACK/result/frame files. A stale batch request returns `STALE_BOOT_NONCE`. |
+| Top-level `terminal.cwd`, `timeoutMs`, `bootGate`, `history`, `tabComplete`, `interrupt`, or `promptPrefix` config | Removed and rejected by the synchronous config schema. These fields never controlled the Lifo/RPC terminal. | Pass cwd as an instance/boot/attach option and use `host.terminal.open()` for interactive sessions. |
+| v0.6 snapshot store | No automatic import. v0.7 keeps the v0.6 snapshot untouched and reports it as legacy. | Export or preserve the old snapshot independently; do not expect implicit migration. |
+| Browser-owned terminal/editor behavior | Removed. Interactive Lifo tools use the WebContainer-native `ITerminal` seam. Generic Node/Python child-process REPLs remain unsupported. | Send input, resize, and signal frames through the interactive-terminal v1 mailbox. |
+
+### Protocol upgrade rules
+
+The batch protocol version is 2, while the independent interactive terminal
+mailbox version is 1. They are separate protocols with separate nonces.
+`/cmd.json` is still a single-slot mailbox, but the client publishes it through
+a temporary file and rename. Before every host spawn, the client atomically
+publishes the current batch epoch in `/host-epoch.json`; a host without a valid
+epoch refuses to start. The old client must not retry a rejected v1 request as
+v1: there is no compatibility fallback.
+
+The executable contract is covered by `tests/client.test.ts` (v2 envelopes,
+ACK/result identity, and stale results), `tests/rpc-v2.test.ts`
+(envelope primitives and bounded IDs), `tests/host-route.test.ts` (host routing
+and mailbox removal), and `tests/terminal-transport.test.ts` (terminal nonce
+rotation). Run the focused suite with:
+
+```bash
+npx vitest run tests/client.test.ts tests/rpc-v2.test.ts tests/host-route.test.ts tests/terminal-transport.test.ts
+```
+
+### Other 0.7 changes
 
 - **New optional config**: `rubyAssetsUrl` (deferred `ruby` runtime asset,
-  same shape as `pythonAssetsUrl`). When unset, the `ruby` command fails
-  closed (exit 69) instead of guessing an asset location.
+  same shape as `pythonAssetsUrl`). When the bridge cannot supply it, `ruby`
+  fails closed with exit 69 instead of guessing an asset location.
 - **Typed events are additive**: `succinix/command-start`,
   `succinix/command-finish`, `succinix/runtime-ready`, `succinix/degradation`,
   `succinix/persistence`, `succinix/terminal-open`, `succinix/terminal-close`,
-  and `succinix/terminal-backpressure` were added without removing or
-  repurposing existing events.
-- **Snapshot v2 replaces the v0.6 store**: v0.7 writes binary chunked
-  snapshots to a new IndexedDB database. v0.6 snapshots are **not**
-  auto-migrated and are never deleted; a legacy snapshot is detected and
-  reported through the persistence status (`degraded` with a warning) instead
-  of being silently imported.
-- **Interactive terminal semantics**: browser xterm is now only a device
-  plane. Interactive Lifo userland commands (`vi`, `nano`, third-party TUIs)
-  run through Lifo's exported `ITerminal` and `CommandContext.stdin` /
-  `setRawMode` inside WebContainer. App consumers get this automatically;
-  generic Node/Python child-process REPLs remain unsupported (see
-  `docs/PROTOCOL.md`).
+  and `succinix/terminal-backpressure` add telemetry without repurposing the
+  existing event names.
 - **Runtime pins**: `@lifo-sh/core` is pinned to `0.10.10` (with
   `browser-metro` `1.0.36`) for the WS-locked toolchain.

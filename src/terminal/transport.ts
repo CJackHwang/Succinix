@@ -2,6 +2,7 @@ import type { ITerminal } from '@lifo-sh/core';
 import {
   TERMINAL_FLUSH_MS,
   TERMINAL_FRAME_LIMIT,
+  TERMINAL_HEARTBEAT_MS,
   TERMINAL_MAX_BUFFER_BYTES,
   TERMINAL_PROTOCOL_VERSION,
   frameFile,
@@ -29,6 +30,8 @@ export interface BrowserRpcTerminalOptions {
   cols?: number;
   rows?: number;
   pollMs?: number;
+  maxBufferedBytes?: number;
+  heartbeatMs?: number;
   onOutput?: (data: string) => void;
   onControl?: (control: TerminalOutputFrame['control'], frame: TerminalOutputFrame) => void;
   onBackpressure?: (bufferedBytes: number) => void;
@@ -46,6 +49,8 @@ export class RpcTerminalClient implements ITerminal {
 
   private readonly fs: TerminalTransportFs;
   private readonly pollMs: number;
+  private readonly maxBufferedBytes: number;
+  private readonly heartbeatMs: number;
   private readonly output?: (data: string) => void;
   private readonly controlCallback?: (control: TerminalOutputFrame['control'], frame: TerminalOutputFrame) => void;
   private readonly backpressureCallback?: (bufferedBytes: number) => void;
@@ -56,16 +61,22 @@ export class RpcTerminalClient implements ITerminal {
   // prompt before callers register `onData`; retain that output until the
   // first subscriber exists instead of silently losing it.
   private readonly pendingInitialOutput: string[] = [];
+  private pendingInitialOutputBytes = 0;
+  private droppedInitialOutputBytes = 0;
   private readonly pending: Array<{ type: TerminalInputFrame['type']; data?: string; cols?: number; rows?: number }> = [];
   private pendingBytes = 0;
   private inputSeq = 0;
   private outputSeq = 0;
+  private receivedOutputBytes = 0;
   private _cols: number;
   private _rows: number;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private inputTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushPromise: Promise<void> | null = null;
   private running = false;
   private disposed = false;
+  private fenced = false;
   private openPromise: Promise<void> | null = null;
   private _backpressured = false;
 
@@ -76,6 +87,8 @@ export class RpcTerminalClient implements ITerminal {
     this.instanceId = options.identity.instanceId;
     this._bootNonce = options.identity.bootNonce;
     this.pollMs = Math.max(1, options.pollMs ?? TERMINAL_FLUSH_MS);
+    this.maxBufferedBytes = Math.max(1, options.maxBufferedBytes ?? TERMINAL_MAX_BUFFER_BYTES);
+    this.heartbeatMs = Math.max(1, options.heartbeatMs ?? TERMINAL_HEARTBEAT_MS);
     this.output = options.onOutput;
     this.controlCallback = options.onControl;
     this.backpressureCallback = options.onBackpressure;
@@ -87,13 +100,18 @@ export class RpcTerminalClient implements ITerminal {
   get rows(): number { return this._rows; }
   get bootNonce(): string { return this._bootNonce; }
   get bufferedBytes(): number { return this.pendingBytes; }
+  get bufferedInitialOutputBytes(): number { return this.pendingInitialOutputBytes; }
+  get discardedInitialOutputBytes(): number { return this.droppedInitialOutputBytes; }
   get backpressured(): boolean { return this._backpressured; }
+  get isFenced(): boolean { return this.fenced; }
   get sentInputSequence(): number { return this.inputSeq; }
   get receivedOutputSequence(): number { return this.outputSeq; }
+  get receivedOutputByteCount(): number { return this.receivedOutputBytes; }
 
   /** Create/renew the session mailbox and begin polling output frames. */
   async open(): Promise<void> {
     if (this.disposed) return;
+    if (this.fenced) throw new Error('terminal session is fenced');
     if (this.openPromise) return this.openPromise;
     this.openPromise = (async () => {
       const dir = this.dir();
@@ -103,14 +121,21 @@ export class RpcTerminalClient implements ITerminal {
       }));
       this.running = true;
       this.schedulePoll(0);
+      this.scheduleHeartbeat();
     })().finally(() => { this.openPromise = null; });
     return this.openPromise;
   }
 
   write(data: string): void {
+    this.receivedOutputBytes += byteLength(data);
     this.output?.(data);
     if (!this.output && this.outputListeners.size === 0) {
-      this.pendingInitialOutput.push(data);
+      const accepted = takePrefixByBytes(data, Math.max(0, this.maxBufferedBytes - this.pendingInitialOutputBytes));
+      if (accepted) {
+        this.pendingInitialOutput.push(accepted);
+        this.pendingInitialOutputBytes += byteLength(accepted);
+      }
+      this.droppedInitialOutputBytes += byteLength(data) - byteLength(accepted);
       return;
     }
     for (const listener of [...this.outputListeners]) listener(data);
@@ -119,6 +144,7 @@ export class RpcTerminalClient implements ITerminal {
 
   /** ITerminal's callback is retained for embedders that feed device data via sendData(). */
   onData(callback: (data: string) => void): void { if (!this.disposed) this.dataListeners.add(callback); }
+  removeDataListener(callback: (data: string) => void): void { this.dataListeners.delete(callback); }
 
   /** Output-side subscription used by the public interactive session facade. */
   onOutput(callback: (data: string) => void): () => void {
@@ -126,6 +152,7 @@ export class RpcTerminalClient implements ITerminal {
     this.outputListeners.add(callback);
     if (this.pendingInitialOutput.length) {
       const initialOutput = this.pendingInitialOutput.splice(0);
+      this.pendingInitialOutputBytes = 0;
       for (const data of initialOutput) callback(data);
     }
     return () => this.outputListeners.delete(callback);
@@ -134,26 +161,28 @@ export class RpcTerminalClient implements ITerminal {
   /** xterm's onData handler should call this method. */
   async sendData(data: string): Promise<void> {
     if (this.disposed || !data) return;
+    if (this.fenced) throw new Error('terminal session is fenced');
     await this.open();
     if (this.disposed) return;
     for (const listener of [...this.dataListeners]) listener(data);
-    this.enqueue({ type: 'input', data });
+    if (!this.enqueue({ type: 'input', data })) throw new Error('terminal input backpressure');
     await this.flushInput();
   }
 
-  focus(): void { this.enqueue({ type: 'focus' }); void this.flushInput(); }
-  clear(): void { this.enqueue({ type: 'clear' }); void this.flushInput(); }
+  focus(): void { if (this.enqueue({ type: 'focus' })) void this.flushInput(); }
+  clear(): void { if (this.enqueue({ type: 'clear' })) void this.flushInput(); }
   resize(cols: number, rows: number): void {
     if (this.disposed) return;
     this._cols = dimension(cols, this._cols);
     this._rows = dimension(rows, this._rows);
-    this.enqueue({ type: 'resize', cols: this._cols, rows: this._rows });
-    void this.flushInput();
+    if (this.enqueue({ type: 'resize', cols: this._cols, rows: this._rows })) void this.flushInput();
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return;
     if (this.running || this.openPromise) {
+      this.pending.length = 0;
+      this.pendingBytes = 0;
       this.enqueue({ type: 'dispose' });
       await this.flushInput();
     }
@@ -161,10 +190,12 @@ export class RpcTerminalClient implements ITerminal {
     this.running = false;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.inputTimer) clearTimeout(this.inputTimer);
-    this.pollTimer = this.inputTimer = null;
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.pollTimer = this.inputTimer = this.heartbeatTimer = null;
     this.dataListeners.clear();
     this.outputListeners.clear();
     this.pendingInitialOutput.length = 0;
+    this.pendingInitialOutputBytes = 0;
   }
 
   /** Re-open after a temporary browser disconnect while preserving output ack. */
@@ -173,40 +204,79 @@ export class RpcTerminalClient implements ITerminal {
     await this.open();
   }
 
+  /** Stop accepting device bytes and remove the old mailbox before host death. */
+  async fence(): Promise<void> {
+    if (this.disposed || this.fenced) return;
+    this.fenced = true;
+    this.running = false;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    if (this.inputTimer) clearTimeout(this.inputTimer);
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.pollTimer = this.inputTimer = this.heartbeatTimer = null;
+    this.pending.length = 0;
+    this.pendingBytes = 0;
+    this.updateBackpressure();
+    await remove(this.fs, this.dir(), true);
+  }
+
   /** Host respawn boundary: rotate the nonce so stale frames from the old
    * daemon can never be consumed by the replacement host. */
   async renewBootNonce(nonce = randomId()): Promise<void> {
     if (this.disposed) throw new Error('terminal is disposed');
-    this.running = false;
-    if (this.pollTimer) clearTimeout(this.pollTimer);
-    this.pollTimer = null;
-    if (this.inputTimer) clearTimeout(this.inputTimer);
-    this.inputTimer = null;
-    // Input queued for the dead daemon must not be relabelled with the new
-    // nonce by a late flush. The browser will re-send only fresh keystrokes.
-    this.pending.length = 0;
-    this.pendingBytes = 0;
-    this.updateBackpressure();
+    await this.fence();
     this._bootNonce = nonce;
     // Input sequence remains monotonic across nonce epochs; output sequence
     // restarts because a fresh host mailbox starts replay at output frame 1.
     this.outputSeq = 0;
+    this.fenced = false;
     await this.open();
   }
 
-  private enqueue(frame: { type: TerminalInputFrame['type']; data?: string; cols?: number; rows?: number }): void {
-    if (frame.data && byteLength(frame.data) > TERMINAL_FRAME_LIMIT) {
-      for (const chunk of splitByBytes(frame.data, TERMINAL_FRAME_LIMIT)) this.enqueue({ ...frame, data: chunk });
-      return;
+  private enqueue(frame: { type: TerminalInputFrame['type']; data?: string; cols?: number; rows?: number }): boolean {
+    if (this.disposed || this.fenced) return false;
+    const dataBytes = frame.data ? byteLength(frame.data) : 0;
+    if (dataBytes > this.maxBufferedBytes - this.pendingBytes) {
+      this.updateBackpressure();
+      return false;
+    }
+    if (frame.data && dataBytes > TERMINAL_FRAME_LIMIT) {
+      for (const chunk of splitByBytes(frame.data, TERMINAL_FRAME_LIMIT)) this.push({ ...frame, data: chunk });
+      this.updateBackpressure();
+      void this.scheduleInputFlush();
+      return true;
+    }
+    this.push(frame);
+    this.updateBackpressure();
+    void this.scheduleInputFlush();
+    return true;
+  }
+
+  private push(frame: { type: TerminalInputFrame['type']; data?: string; cols?: number; rows?: number }): void {
+    if (!frame.data && frame.type !== 'dispose') {
+      const last = this.pending.at(-1);
+      if (last?.type === frame.type) {
+        Object.assign(last, frame);
+        return;
+      }
+      const controlCount = this.pending.filter((item) => !item.data).length;
+      if (controlCount >= 64) return;
     }
     this.pending.push(frame);
     this.pendingBytes += frame.data ? byteLength(frame.data) : 0;
-    this.updateBackpressure();
+  }
+
+  private async scheduleInputFlush(): Promise<void> {
     if (this.pendingBytes >= TERMINAL_FRAME_LIMIT) void this.flushInput();
     else if (!this.inputTimer) this.inputTimer = setTimeout(() => void this.flushInput(), TERMINAL_FLUSH_MS);
   }
 
   private async flushInput(): Promise<void> {
+    if (this.flushPromise) return this.flushPromise;
+    this.flushPromise = this.drainInput().finally(() => { this.flushPromise = null; });
+    return this.flushPromise;
+  }
+
+  private async drainInput(): Promise<void> {
     if (this.inputTimer) clearTimeout(this.inputTimer);
     this.inputTimer = null;
     if (this.disposed || this.pending.length === 0) return;
@@ -214,24 +284,32 @@ export class RpcTerminalClient implements ITerminal {
       if (this.openPromise) await this.openPromise;
       else return;
     }
-    const frameIdentity = this.identity();
-    const frames: typeof this.pending = [];
-    let bytes = 0;
-    while (this.pending.length) {
-      const frame = this.pending[0]!;
-      const size = frame.data ? byteLength(frame.data) : 0;
-      if (frames.length && bytes + size > TERMINAL_FRAME_LIMIT) break;
-      this.pending.shift();
-      frames.push(frame);
-      bytes += size;
-      this.pendingBytes -= size;
-      if (bytes >= TERMINAL_FRAME_LIMIT) break;
-    }
-    for (const frame of frames) {
-      const seq = ++this.inputSeq;
-      await atomicWrite(this.fs, mailboxPath(frameIdentity, frameFile('in', seq)), JSON.stringify({
-        ...frameIdentity, ...frame, seq,
-      }));
+    while (this.pending.length && this.running && !this.disposed && !this.fenced) {
+      const frameIdentity = this.identity();
+      const frames: typeof this.pending = [];
+      let bytes = 0;
+      while (this.pending.length) {
+        const frame = this.pending[0]!;
+        const size = frame.data ? byteLength(frame.data) : 0;
+        if (frames.length && bytes + size > TERMINAL_FRAME_LIMIT) break;
+        this.pending.shift();
+        frames.push(frame);
+        bytes += size;
+        this.pendingBytes -= size;
+        if (bytes >= TERMINAL_FRAME_LIMIT) break;
+      }
+      try {
+        for (const frame of frames) {
+          const seq = ++this.inputSeq;
+          await atomicWrite(this.fs, mailboxPath(frameIdentity, frameFile('in', seq)), JSON.stringify({
+            ...frameIdentity, ...frame, seq,
+          }));
+        }
+      } catch (error) {
+        this.pending.unshift(...frames);
+        this.pendingBytes += bytes;
+        throw error;
+      }
     }
     this.updateBackpressure();
     if (this.pending.length) this.inputTimer = setTimeout(() => void this.flushInput(), TERMINAL_FLUSH_MS);
@@ -269,10 +347,19 @@ export class RpcTerminalClient implements ITerminal {
     if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = setTimeout(() => void this.poll(), delay);
   }
+  private scheduleHeartbeat(): void {
+    if (!this.running || this.disposed || this.fenced) return;
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      if (this.enqueue({ type: 'heartbeat' })) void this.flushInput().catch(() => {});
+      this.scheduleHeartbeat();
+    }, this.heartbeatMs);
+  }
   private identity(): TerminalIdentity { return { protocolVersion: TERMINAL_PROTOCOL_VERSION, instanceId: this.instanceId, sessionId: this.sessionId, bootNonce: this.bootNonce }; }
   private dir(): string { return mailboxPath(this.identity(), 'open.json').slice(0, -'/open.json'.length); }
   private updateBackpressure(): void {
-    const now = this.pendingBytes >= TERMINAL_MAX_BUFFER_BYTES;
+    const now = this.pendingBytes >= this.maxBufferedBytes;
     if (now === this._backpressured) return;
     this._backpressured = now;
     this.backpressureCallback?.(this.pendingBytes);
@@ -290,11 +377,26 @@ async function atomicWrite(fsys: TerminalTransportFs, path: string, text: string
   else await fsys.writeFile(path, text);
 }
 async function readJson(fsys: TerminalTransportFs, path: string): Promise<unknown> { try { return JSON.parse(await fsys.readFile(path, 'utf8')); } catch { return null; } }
-async function remove(fsys: TerminalTransportFs, path: string): Promise<void> { try { await fsys.rm?.(path, { force: true }); } catch { /* consumed */ } }
+async function remove(fsys: TerminalTransportFs, path: string, recursive = false): Promise<void> {
+  try { await fsys.rm?.(path, { force: true, recursive }); } catch { /* consumed */ }
+}
 function sameIdentity(a: TerminalIdentity, b: TerminalIdentity): boolean { return a.protocolVersion === b.protocolVersion && a.instanceId === b.instanceId && a.sessionId === b.sessionId && a.bootNonce === b.bootNonce; }
 function randomId(): string { const c = globalThis.crypto; if (c?.getRandomValues) { const b = new Uint32Array(3); c.getRandomValues(b); return [...b].map((n) => n.toString(36)).join('-'); } return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`; }
 function dimension(value: number | undefined, fallback: number): number { return Number.isFinite(value) && (value as number) > 0 ? Math.floor(value as number) : fallback; }
 function byteLength(value: string): number { return new TextEncoder().encode(value).byteLength; }
+function takePrefixByBytes(value: string, limit: number): string {
+  if (limit <= 0) return '';
+  if (byteLength(value) <= limit) return value;
+  let bytes = 0;
+  let prefix = '';
+  for (const character of value) {
+    const size = byteLength(character);
+    if (bytes + size > limit) break;
+    prefix += character;
+    bytes += size;
+  }
+  return prefix;
+}
 function splitByBytes(value: string, limit: number): string[] {
   if (byteLength(value) <= limit) return [value];
   const chunks: string[] = [];

@@ -18,7 +18,7 @@ function makeWc() {
   return { fs, spawn, on };
 }
 
-const client = {} as unknown as TerminalClient;
+const client = { takeHostEpoch: vi.fn(() => 'boot-test') } as unknown as TerminalClient;
 
 describe('bootEngineHost 端口监听器（M1）', () => {
   it('同一 wc 实例重复 bootEngineHost 只注册一次 server-ready/port 监听器', async () => {

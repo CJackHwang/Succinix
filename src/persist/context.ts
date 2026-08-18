@@ -26,7 +26,10 @@ import {
   createBinarySnapshotStore,
   type BinarySnapshotStore,
 } from './binary-v2.js';
-import { collectBinaryInstanceExcludes, listSnapshotTreePaths, removeStaleSnapshotPaths } from './snapshot-tree.js';
+import { collectBinaryInstanceExcludes, listSnapshotTreePaths } from './snapshot-tree.js';
+import { importVerifiedBinary } from './restore-staging.js';
+
+const BINARY_RUNTIME_EXCLUDES = ['**/host.js', '**/lifo-core.js', '**/cmd.json', '**/host-epoch.json', '**/succinix.engine.json', '**/rpc-error.json', '**/result-*.json', '**/ack-*.json', '**/usr/lib/succinix/**'];
 
 export function createPersist(opts: PersistOptions = {}): PersistContext {
   const dbName = opts.dbName ?? 'succinix-persist';
@@ -48,6 +51,7 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
   // export path.  The unbound text adapter below is retained only for existing
   // SDK callers that provide a FileSystemAPI but cannot provide a container.
   let container: BinarySnapshotContainer | undefined = opts.container;
+  let exportRoot = scopeRoot;
   let binary: BinarySnapshotStore | undefined;
   let restoreFs: FileSystemAPI | undefined;
   let binaryDynamicExcludes: string[] = [];
@@ -70,6 +74,23 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
   // "已清除"脏标志：clearSnapshot 置位后，任何进行中/稍后开始的保存都跳过 put，防止把已删快照复活。
   let cleared = false;
 
+  function binaryExportOptions(): { format: 'binary'; excludes: string[] } {
+    return {
+      format: 'binary',
+      excludes: [
+        '**/node_modules/**',
+        '**/dist/**',
+        ...(includeGit ? [] : ['**/.git/**']),
+        '**/.succinix-terminal/**',
+        '**/.succinix-control/**',
+        '**/.succinix-userland/**',
+        ...BINARY_RUNTIME_EXCLUDES,
+        ...binaryDynamicExcludes,
+        ...extraPrefixes.map((prefix) => `${prefix.replace(/^\//, '')}/**`),
+      ],
+    };
+  }
+
   function bindContainer(next: BinarySnapshotContainer): void {
     if (container === next && binary) return;
     // Test harnesses and older embedders may expose only `wc.fs`. Keep the
@@ -90,7 +111,7 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
     // '/workspace').  Map the fs-space scope to its container-root absolute
     // path through the container's workdir when it is available.
     const workdir = next.workdir;
-    const exportRoot = workdir ? (scopeRoot === '/' ? workdir : `${workdir}${scopeRoot}`) : scopeRoot;
+    exportRoot = workdir ? (scopeRoot === '/' ? workdir : `${workdir}${scopeRoot}`) : scopeRoot;
     const binaryDbName = opts.binary?.dbName ?? (opts.dbName ? `${opts.dbName}-v2` : 'succinix-persist-v2');
     binary = createBinarySnapshotStore({
       dbName: binaryDbName,
@@ -101,24 +122,18 @@ export function createPersist(opts: PersistOptions = {}): PersistContext {
       maxBytes: opts.binary?.maxBytes,
       exportBinary: () => {
         if (!container) throw new Error('binary snapshot container is not bound');
-        return container.export(exportRoot, {
-          format: 'binary',
-          excludes: [
-            '**/node_modules/**',
-            '**/dist/**',
-            ...(includeGit ? [] : ['**/.git/**']),
-            '**/.succinix-terminal/**',
-            '**/.succinix-control/**',
-            '**/.succinix-userland/**',
-            ...binaryDynamicExcludes,
-            ...extraPrefixes.map((prefix) => `${prefix.replace(/^\//, '')}/**`),
-          ],
-        });
+        return container.export(exportRoot, binaryExportOptions());
       },
       importBinary: async (data, manifest) => {
         if (!container || !restoreFs) throw new Error('binary snapshot restore target is not bound');
-        await container.mount(data, { mountPoint: scopeRoot });
-        await removeStaleSnapshotPaths(restoreFs, scopeRoot, shouldSkip, manifest);
+        await importVerifiedBinary(data, manifest, {
+          container,
+          restoreFs,
+          scopeRoot,
+          exportRoot,
+          exportOptions: binaryExportOptions,
+          shouldSkip,
+        });
       },
     });
     try {

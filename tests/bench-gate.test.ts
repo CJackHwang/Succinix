@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { isClassifiedTransient } from '../scripts/bench-gate.mjs';
 
 describe('性能门禁定义', () => {
   it('对交互帧与 10k session append 的 P95 使用 50ms 上限', async () => {
@@ -29,5 +30,44 @@ describe('性能门禁定义', () => {
     expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50' }");
     expect(benchSource).toContain('mean: Math.round((values.reduce((total, value) => total + value, 0) / values.length) * 100) / 100,');
     expect(source).toContain('const worst = Math.max(...numeric);');
+  });
+
+  it('基线绑定依赖锁、runtime/engine asset、bundle、环境和中位数', async () => {
+    const source = await readFile(new URL('../scripts/bench-gate.mjs', import.meta.url), 'utf8');
+    expect(source).toContain("'public/sha256.json'");
+    expect(source).toContain("'packages/engine/assets/sha256.json'");
+    expect(source).toContain("'--record-baseline'");
+    expect(source).toContain('function validateBaseline(baseline, inputs, environment, summary)');
+    expect(source).toContain('baseline is not a verified artifact');
+  });
+
+  it('仅对明确分类的浏览器或端口暂态错误重试', async () => {
+    const source = await readFile(new URL('../scripts/bench-gate.mjs', import.meta.url), 'utf8');
+    expect(source).toContain('MAX_TRANSIENT_RETRIES = 1');
+    expect(source).toContain('EADDRINUSE|ECONNRESET|ECONNREFUSED');
+    expect(source).toContain('classified transient browser bootstrap/port error');
+  });
+
+  it('只将未进入应用启动阶段的页面停滞视为可重试暂态错误', () => {
+    expect(isClassifiedTransient(new Error('BENCH_BOOTSTRAP_STALL: only initial startup status remained'))).toBe(true);
+    expect(isClassifiedTransient(new Error('hook not ready: application startup failed'))).toBe(false);
+  });
+
+  it('soak 对在途 respawn 与真实 terminal frame 分别设置断言', async () => {
+    const source = await readFile(new URL('../scripts/soak-gate.mjs', import.meta.url), 'utf8');
+    expect(source).toContain('10k RPC batch');
+    expect(source).toContain('during host respawn');
+    expect(source).toContain('INPUT_OUTPUT_PAIRS = 50_000');
+    expect(source).toContain('completeSequence');
+    expect(source).toContain('independentPortClosed');
+  });
+
+  it('完整浏览器 CI 保存基线与运行时资产哈希', async () => {
+    const source = await readFile(new URL('../.github/workflows/e2e-full.yml', import.meta.url), 'utf8');
+    expect(source).toContain('name: Upload benchmark evidence');
+    expect(source).toContain('if: always()');
+    expect(source).toContain('docs/benchmark-baseline-v0.7.0.json');
+    expect(source).toContain('public/sha256.json');
+    expect(source).toContain('packages/engine/assets/sha256.json');
   });
 });

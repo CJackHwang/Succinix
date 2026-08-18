@@ -5,14 +5,18 @@
  * the host use the same small envelope and path rules; the mailbox itself is
  * only a transport and never contains shell/editor state.
  */
+import { isValidInstanceId } from '../engine/host-route.js';
 
 export const TERMINAL_PROTOCOL_VERSION = 1 as const;
 export const TERMINAL_MAILBOX_ROOT = '/.succinix-terminal';
 export const TERMINAL_FRAME_LIMIT = 32 * 1024;
 export const TERMINAL_FLUSH_MS = 16;
 export const TERMINAL_MAX_BUFFER_BYTES = 1024 * 1024;
+/** A disconnected browser must not keep an execution-world mailbox forever. */
+export const TERMINAL_HEARTBEAT_MS = 10_000;
+export const TERMINAL_SESSION_TTL_MS = 30_000;
 
-export type TerminalFrameKind = 'input' | 'resize' | 'focus' | 'clear' | 'dispose';
+export type TerminalFrameKind = 'input' | 'resize' | 'focus' | 'clear' | 'heartbeat' | 'dispose';
 
 export interface TerminalIdentity {
   protocolVersion: typeof TERMINAL_PROTOCOL_VERSION;
@@ -69,6 +73,7 @@ export function safeTerminalPart(value: string): string {
 }
 
 export function mailboxPath(identity: Pick<TerminalIdentity, 'instanceId' | 'sessionId'>, name: string): string {
+  if (!isValidInstanceId(identity.instanceId)) throw new Error('invalid terminal id');
   const instance = safeTerminalPart(identity.instanceId);
   const session = safeTerminalPart(identity.sessionId);
   if (!/^[A-Za-z0-9._~-]+\.json$/.test(name)) throw new Error('invalid terminal mailbox filename');
@@ -96,7 +101,7 @@ export function isTerminalIdentity(value: unknown): value is TerminalIdentity {
   const v = value as Partial<TerminalIdentity>;
   return v.protocolVersion === TERMINAL_PROTOCOL_VERSION &&
     typeof v.sessionId === 'string' && validIdentityPart(v.sessionId) &&
-    typeof v.instanceId === 'string' && validIdentityPart(v.instanceId) &&
+    isValidInstanceId(v.instanceId) &&
     typeof v.bootNonce === 'string' && validIdentityPart(v.bootNonce);
 }
 

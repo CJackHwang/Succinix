@@ -87,7 +87,7 @@ describe('userland compatibility profile', () => {
   it('serializes third-party declarations and restores them into a new sandbox registry', () => {
     const registry = createUserlandRegistry();
     registry.registerCommand(command('hello-userland', { kind: 'shell', command: 'echo hello' }));
-    registry.registerPackage({ name: 'lifo-demo', source: 'lifo', version: '1.2.3' });
+    registry.registerPackage({ name: 'lifo-demo', source: 'lifo', version: '1.2.3', integrity: `sha256-${'a'.repeat(64)}` });
     registry.registerServiceTemplate({
       name: 'userland-worker',
       runtime: 'node',
@@ -101,11 +101,17 @@ describe('userland compatibility profile', () => {
       expect.objectContaining({ name: 'hello-userland', source: { kind: 'shell', command: 'echo hello' } }),
     ]));
     expect(restored.listPackages()).toEqual([
-      expect.objectContaining({ name: 'lifo-demo', source: 'lifo', version: '1.2.3' }),
+      expect.objectContaining({ name: 'lifo-demo', source: 'lifo', version: '1.2.3', integrity: `sha256-${'a'.repeat(64)}` }),
     ]);
     expect(restored.listServiceTemplates()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'userland-worker', command: 'node worker.js' }),
     ]));
+  });
+
+  it('rejects third-party package registrations without a payload digest', () => {
+    const registry = createUserlandRegistry();
+    expect(() => registry.registerPackage({ name: 'unchecked', source: 'npm' } as never))
+      .toThrow('package.integrity must be a sha256 payload digest');
   });
 
   it('publishes structured registrations through the execution-world mailbox', async () => {

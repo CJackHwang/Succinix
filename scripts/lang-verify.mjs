@@ -296,7 +296,7 @@ async function main() {
     process.exitCode = globalFail === 0 ? 0 : 1;
   } finally {
     cdp?.close();
-    cleanupChrome(chrome, profileDir);
+    await cleanupChrome(chrome, profileDir);
     preview.kill('SIGTERM');
   }
 }

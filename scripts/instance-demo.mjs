@@ -13,17 +13,20 @@
 // 跨容器已 e2e、同页路由仅单测。
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { launchChrome, cleanupChrome } from './lib/chrome.mjs';
+import {
+  allocateBrowserPorts,
+  attachPageDiagnostics,
+  cleanupChrome,
+  launchChrome,
+  writeBrowserFailureDiagnostics,
+} from './lib/chrome.mjs';
 import { connectBrowserCDP, connectTargetCDP } from './lib/cdp.mjs';
 import { run, waitForHttp, sleep, makeTab } from './lib/harness.mjs';
 
 const args = process.argv.slice(2);
 const SKIP_BUILD = args.includes('--skip-build');
-// 注意：7897 常被本机代理（mihomo/clash 混合端口）占用，故用 7893/7902。
-const PORT = 7893;
-const DEBUG_PORT = 7902;
-// vite preview 默认只监听 IPv6 localhost（::1）—— 探测/导航必须用 localhost，不能用 127.0.0.1。
-const BASE = `http://localhost:${PORT}`;
+const portIndex = args.indexOf('--port');
+const REQUESTED_PORT = portIndex >= 0 ? Number(args[portIndex + 1]) : 0;
 let exitCode = 0;
 
 function note(msg) {
@@ -36,33 +39,30 @@ function check(checks, name, ok, detail = '') {
 }
 
 async function main() {
-  note(`dual-tab instance demo (ports ${PORT}/${DEBUG_PORT})`);
   if (!SKIP_BUILD) {
     note('production build...');
     await run('npm', ['run', 'build'], { silent: true });
   }
+  const { previewPort, debugPort } = await allocateBrowserPorts(REQUESTED_PORT);
+  const base = `http://127.0.0.1:${previewPort}`;
+  note(`dual-tab instance demo (isolated ports ${previewPort}/${debugPort})`);
   note('starting vite preview...');
   // 直接用仓库内 vite 二进制（不经 npx，避免 registry 探测）。
-  const preview = spawn(process.execPath, [join(import.meta.dirname, '..', 'node_modules', 'vite', 'bin', 'vite.js'), 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
-  const cleanup = () => {
-    try {
-      preview.kill('SIGTERM');
-    } catch {
-      /* ignore */
-    }
-  };
-  process.on('exit', cleanup);
+  const preview = spawn(process.execPath, [join(import.meta.dirname, '..', 'node_modules', 'vite', 'bin', 'vite.js'), 'preview', '--port', String(previewPort), '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
+  let chromeRun;
+  let diagnosticCdp;
+  let pageDiagnostics;
+  let failure;
   try {
-    await waitForHttp(BASE, 30000);
+    await waitForHttp(base, 30000);
 
-    const { chrome, profileDir } = launchChrome(DEBUG_PORT, 'instance-demo');
-    process.on('exit', () => cleanupChrome(chrome, profileDir));
+    chromeRun = launchChrome(debugPort, `instance-demo-${process.pid}`);
 
     // 浏览器级 CDP：建两个 tab（各自独立容器 / 独立页面上下文）。
-    const browserCdp = await connectBrowserCDP(DEBUG_PORT);
+    const browserCdp = await connectBrowserCDP(debugPort);
     const urls = {
-      'c-1': `${BASE}/?instance=c-1&scenario=1`,
-      'c-2': `${BASE}/?instance=c-2&scenario=1`,
+      'c-1': `${base}/?instance=c-1&scenario=1`,
+      'c-2': `${base}/?instance=c-2&scenario=1`,
     };
     const targetIds = {};
     for (const id of Object.keys(urls)) {
@@ -75,7 +75,7 @@ async function main() {
     for (const id of Object.keys(urls)) {
       let wsUrl = '';
       for (let i = 0; i < 30 && !wsUrl; i++) {
-        const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
+        const list = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
         const target = list.find((x) => x.type === 'page' && x.id === targetIds[id]);
         if (target?.webSocketDebuggerUrl) wsUrl = target.webSocketDebuggerUrl;
         if (!wsUrl) await sleep(200);
@@ -84,6 +84,9 @@ async function main() {
       const cdp = await connectTargetCDP(wsUrl);
       tabs[id] = makeTab(cdp, id);
     }
+    diagnosticCdp = tabs['c-1'].cdp;
+    await diagnosticCdp.send('Log.enable');
+    pageDiagnostics = attachPageDiagnostics(diagnosticCdp);
 
     const checks = [];
     const A = tabs['c-1'];
@@ -181,8 +184,8 @@ async function main() {
     // （/workspace/users/<id>，.succinix 种子）、会话 cwd = home（Lifo 视图，pwd 断言）、
     // 身份展示（whoami / 提示符前缀）。快照按用户键隔离 + 刷新后 cwd 仍在 home。
     const userUrls = {
-      a: `${BASE}/?user=a&scenario=1`,
-      b: `${BASE}/?user=b&scenario=1`,
+      a: `${base}/?user=a&scenario=1`,
+      b: `${base}/?user=b&scenario=1`,
     };
     const userTargetIds = {};
     for (const id of Object.keys(userUrls)) {
@@ -193,7 +196,7 @@ async function main() {
     for (const id of Object.keys(userUrls)) {
       let wsUrl = '';
       for (let i = 0; i < 30 && !wsUrl; i++) {
-        const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
+        const list = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
         const target = list.find((x) => x.type === 'page' && x.id === userTargetIds[id]);
         if (target?.webSocketDebuggerUrl) wsUrl = target.webSocketDebuggerUrl;
         if (!wsUrl) await sleep(200);
@@ -253,25 +256,64 @@ async function main() {
     const ubPwdAfter = await UB.run('pwd');
     check(checks, 'session cwd persists in user home after refresh (a + b)', String(uaPwdAfter.output).trim() === '/workspace/workspace/users/a' && String(ubPwdAfter.output).trim() === '/workspace/workspace/users/b');
 
-    for (const id of Object.keys(userTabs)) userTabs[id].cdp.close();
-
-    browserCdp.close();
-    for (const id of Object.keys(tabs)) tabs[id].cdp.close();
-    cleanupChrome(chrome, profileDir);
-
     const failed = checks.filter((c) => !c.ok);
     console.log(`\n=== INSTANCE DEMO SUMMARY ===`);
     for (const c of checks) console.log(`  ${c.ok ? '[  OK  ]' : '[ FAIL ]'} ${c.name}${c.ok ? '' : ` — ${c.detail}`}`);
     console.log(`instance-demo: ${checks.length - failed.length}/${checks.length} checks passed, ${failed.length} failed`);
-    if (failed.length > 0) exitCode = 1;
+    if (failed.length > 0) {
+      exitCode = 1;
+      failure = new Error(`${failed.length} instance isolation assertions failed`);
+      const diagnostics = await writeBrowserFailureDiagnostics({
+        label: `instance-demo-${process.pid}`,
+        error: failure,
+        cdp: diagnosticCdp,
+        pageDiagnostics,
+        chromeRun,
+        previewPort,
+        debugPort,
+      });
+      console.error(`[instance-demo] failure diagnostics: ${diagnostics.reportPath}`);
+    }
+
+    for (const id of Object.keys(userTabs)) userTabs[id].cdp.close();
+    browserCdp.close();
+    for (const id of Object.keys(tabs)) tabs[id].cdp.close();
   } catch (e) {
+    failure = e;
     note(`FATAL: ${e.stack ?? e}`);
+    const diagnostics = await writeBrowserFailureDiagnostics({
+      label: `instance-demo-${process.pid}`,
+      error: e,
+      cdp: diagnosticCdp,
+      pageDiagnostics,
+      chromeRun,
+      previewPort,
+      debugPort,
+    });
+    console.error(`[instance-demo] failure diagnostics: ${diagnostics.reportPath}`);
     exitCode = 1;
   } finally {
-    cleanup();
+    pageDiagnostics?.dispose();
+    diagnosticCdp?.close();
+    const cleanup = await cleanupChrome(chromeRun?.chrome, chromeRun?.profileDir);
+    if (!cleanup.exited || cleanup.descendantsAfter.length > 0 || !cleanup.profileRemoved) {
+      console.error(`[instance-demo] cleanup diagnostic: ${JSON.stringify(cleanup)}`);
+    }
+    await stopPreview(preview);
+    if (failure) note('failure diagnostics were retained in the temporary directory above');
   }
   note(exitCode === 0 ? 'RESULT: PASSED' : 'RESULT: FAILED');
   process.exitCode = exitCode;
+}
+
+async function stopPreview(preview) {
+  if (!preview || preview.exitCode !== null || preview.signalCode !== null) return;
+  preview.kill('SIGTERM');
+  const exited = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 5_000);
+    preview.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+  if (!exited && preview.exitCode === null && preview.signalCode === null) preview.kill('SIGKILL');
 }
 
 main().catch((e) => {

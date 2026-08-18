@@ -47,7 +47,7 @@ function netClient(opts: {
     if (cmd.startsWith('npm search ')) {
       return { ok: true, stdout: JSON.stringify(opts.npmSearch ?? []) };
     }
-    if (cmd.startsWith('npm install ') || cmd.startsWith('lifo install ')) {
+    if (cmd.startsWith('succinix pkg install npm:') || cmd.startsWith('lifo install ')) {
       return opts.install ? opts.install(cmd) : { ok: true, stdout: 'installed' };
     }
     if (cmd.startsWith('npm view ')) {
@@ -167,7 +167,7 @@ describe('pkg install source detection', () => {
     expect(res.ok).toBe(true);
     expect(res.source).toBe('npm');
     expect(res.message).not.toContain('fell back');
-    expect(fake.terminalCalls.some((c) => c.command.includes('npm install "express"'))).toBe(true);
+    expect(fake.terminalCalls.some((c) => c.command.includes('succinix pkg install npm:"express"'))).toBe(true);
   });
 
   it('falls back to npm with a hint when lifo search is unreachable', async () => {
@@ -229,7 +229,7 @@ describe('pkg remove', () => {
     const res = await removePackage(makeCtx(fake, f), 'express');
     expect(res.ok).toBe(true);
     expect(res.message).toContain('source: npm');
-    expect(fake.terminalCalls.some((c) => c.command.includes('npm uninstall "express"'))).toBe(true);
+    expect(fake.terminalCalls.some((c) => c.command.includes('succinix pkg remove npm:"express"'))).toBe(true);
   });
 
   it('reports not installed when neither channel has it', async () => {

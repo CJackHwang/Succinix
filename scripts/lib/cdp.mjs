@@ -9,6 +9,7 @@ export class CDP {
     this.ws = new WebSocket(url);
     this.id = 0;
     this.pending = new Map();
+    this.listeners = new Map();
   }
   async open() {
     await new Promise((resolve, reject) => {
@@ -21,7 +22,9 @@ export class CDP {
         const { resolve, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
         msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
+        return;
       }
+      for (const handler of this.listeners.get(msg.method) ?? []) handler(msg.params);
     };
   }
   send(method, params = {}) {
@@ -35,6 +38,15 @@ export class CDP {
     } catch {
       /* ignore */
     }
+  }
+  on(method, handler) {
+    const handlers = this.listeners.get(method) ?? new Set();
+    handlers.add(handler);
+    this.listeners.set(method, handlers);
+    return () => {
+      handlers.delete(handler);
+      if (handlers.size === 0) this.listeners.delete(method);
+    };
   }
 }
 

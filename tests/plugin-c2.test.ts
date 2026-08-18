@@ -77,7 +77,6 @@ describe('config schema (C2)', () => {
       resultTtlMs: 5000,
       container: { mode: 'external', bootRetries: 2 },
       defaultInstance: { instanceId: 'default', home: '/workspace/users/guest' },
-      terminal: { timeoutMs: 30000, history: true },
       capabilities: { defaultAllow: true, rules: [{ pattern: 'fs.read', allow: true }] },
       lifecycle: { disposeMode: 'soft', flushOnPageHide: true },
       assets: { integrity: true },
@@ -94,7 +93,7 @@ describe('config schema (C2)', () => {
   });
 
   it('rejects non-serializable values', () => {
-    const result = checkSync(Config, { resultTtlMs: 0, terminal: { timeoutMs: -1 } });
+    const result = checkSync(Config, { resultTtlMs: 0 });
     expect('issues' in result && result.issues).toBeTruthy();
   });
 
@@ -115,8 +114,7 @@ describe('config schema (C2)', () => {
     expect(resolved.lifoCoreUrl).toBe('/lifo-core.js');
     expect(resolved.pythonAssetsUrl).toBe('/pyodide/');
     expect(resolved.container.mode).toBe('internal');
-    expect(resolved.terminal.promptPrefix).toBe('guest@succinix:');
-    expect(resolved.terminal.cwd).toBe('/workspace');
+    expect(resolved).not.toHaveProperty('terminal');
     expect(resolved.capabilities.defaultAllow).toBe(true);
   });
 
@@ -423,7 +421,7 @@ describe('lifecycle and single host (C2)', () => {
     expect(wc.spawnCalls).toHaveLength(4);
   });
 
-  it('pagehide flushes without hard shutdown and beforeunload shuts down', async () => {
+  it('pagehide flushes and shuts down the host before unload', async () => {
     const listeners = new Map<string, EventListener>();
     vi.stubGlobal('window', {
       addEventListener: vi.fn((type: string, callback: EventListener) => listeners.set(type, callback)),
@@ -437,10 +435,11 @@ describe('lifecycle and single host (C2)', () => {
       expect(wc.hostProc.kill).not.toHaveBeenCalled();
       listeners.get('pagehide')?.({} as Event);
       await vi.waitFor(() => expect(flushEvents).toContain('flush'));
-      expect(wc.hostProc.kill).not.toHaveBeenCalled();
-      expect(hostOf(ctx).state.containerState).toBe('ready');
-      listeners.get('beforeunload')?.({} as Event);
       await vi.waitFor(() => expect(wc.hostProc.kill).toHaveBeenCalledTimes(1));
+      expect(hostOf(ctx).state.containerState).toBe('disposed');
+      listeners.get('beforeunload')?.({} as Event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(wc.hostProc.kill).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }

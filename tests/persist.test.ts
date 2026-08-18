@@ -33,6 +33,7 @@ describe('persist exclusion rules', () => {
     await src.writeFile('/host.js', 'nope');
     await src.writeFile('/lifo-core.js', 'nope');
     await src.writeFile('/cmd.json', 'nope');
+    await src.writeFile('/host-epoch.json', 'nope');
     await src.writeFile('/result-42.json', 'nope');
     await src.writeFile('/.succinix-control/request-control-test.json', 'nope');
     await src.writeFile('/.succinix-terminal/default/session/open.json', 'nope');
@@ -50,6 +51,7 @@ describe('persist exclusion rules', () => {
     expect(dst.has('/host.js')).toBe(false);
     expect(dst.has('/lifo-core.js')).toBe(false);
     expect(dst.has('/cmd.json')).toBe(false);
+    expect(dst.has('/host-epoch.json')).toBe(false);
     expect(dst.has('/result-42.json')).toBe(false);
     expect(dst.has('/.succinix-control')).toBe(false);
     expect(dst.has('/.succinix-terminal')).toBe(false);

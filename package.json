@@ -43,9 +43,10 @@
     "audit:files": "node scripts/audit-file-size.mjs --fail",
     "check:static": "node scripts/check-static.mjs",
     "check:docs": "node scripts/check-docs.mjs",
+    "check:status-evidence": "node scripts/check-status-evidence.mjs",
     "audit:deps": "npm audit --audit-level=high",
     "report:dependencies": "node scripts/dependency-report.mjs",
-    "check": "npm run typecheck && npm run typecheck:legacy && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:engine-package && npm run check:docs && npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys && npm run check:legacy-store && npm run check:lifecycle && npm run check:bundle-budget",
+    "check": "npm run typecheck && npm run typecheck:legacy && npm run lint && npm run test && npm run build && npm run audit:files && npm run check:static && npm run check:engine-package && npm run check:docs && npm run check:status-evidence && npm run check:plugin-boundaries && npm run check:dsh-shapes && npm run check:dsh-keys && npm run check:legacy-store && npm run check:lifecycle && npm run check:bundle-budget",
     "check:release": "npm run check && npm run test:coverage && npm run audit:deps && npm run test:e2e && npm run test:bench && npm run test:bench:soak",
     "check:e2e": "npm run check && npm run test:e2e",
     "setup:hooks": "node scripts/setup-hooks.mjs"

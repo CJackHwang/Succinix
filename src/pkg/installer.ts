@@ -13,7 +13,6 @@ import {
   type SearchEntry,
 } from './metadata.js';
 import { detectSource, listLifo, listNpm } from './registry.js';
-import { recordPackageInstall, recordPackageRemove } from './manifest.js';
 
 // pkg install <name>：按来源判定走 lifo 或 npm；回显真实命令 stdout 尾部 + 成功/失败摘要。
 export async function installPackage(ctx: PkgContext, rawName: string): Promise<ActionResult> {
@@ -30,7 +29,6 @@ export async function installPackage(ctx: PkgContext, rawName: string): Promise<
     const r = await ctx.client.terminal(`lifo install ${q(base)}`, TIMEOUT.install.opts, TIMEOUT.install.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
-      if (ctx.manifestFs) await recordPackageInstall(ctx.manifestFs, { name: base, source: 'lifo', version: 'latest', execution: 'both' }, ctx.manifestPath);
       void log('INFO', `pkg install: ${base} via lifo`);
       return { ok: true, message: `'${base}' installed (source: lifo)`, source: 'lifo', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
     }
@@ -39,10 +37,9 @@ export async function installPackage(ctx: PkgContext, rawName: string): Promise<
     return { ok: false, message: `install failed: ${String(why).slice(0, 300)}`, source: 'lifo', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
   }
 
-  const r = await ctx.client.terminal(`npm install ${q(name)} --no-audit --no-fund`, TIMEOUT.install.opts, TIMEOUT.install.wait);
+  const r = await ctx.client.terminal(`succinix pkg install npm:${q(name)}`, TIMEOUT.install.opts, TIMEOUT.install.wait);
   const out = String(r.stdout ?? '').trim();
   if (r.ok) {
-    if (ctx.manifestFs) await recordPackageInstall(ctx.manifestFs, { name, source: 'npm', version: 'installed', execution: 'both' }, ctx.manifestPath);
     void log('INFO', `pkg install: ${name} via npm`);
     return { ok: true, message: `'${name}' installed (source: npm)${hint}`, source: 'npm', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
   }
@@ -64,7 +61,6 @@ export async function removePackage(ctx: PkgContext, rawName: string): Promise<A
     const r = await ctx.client.terminal(`lifo remove ${q(base)}`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
-      if (ctx.manifestFs) await recordPackageRemove(ctx.manifestFs, base, 'lifo', ctx.manifestPath);
       void log('INFO', `pkg remove: ${base} via lifo`);
       return { ok: true, message: `'${base}' removed (source: lifo)`, source: 'lifo', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
     }
@@ -74,10 +70,9 @@ export async function removePackage(ctx: PkgContext, rawName: string): Promise<A
   }
 
   if ((await listNpm(ctx.wc)).some((p) => p.name === name)) {
-    const r = await ctx.client.terminal(`npm uninstall ${q(name)} --no-audit --no-fund`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
+    const r = await ctx.client.terminal(`succinix pkg remove npm:${q(name)}`, TIMEOUT.remove.opts, TIMEOUT.remove.wait);
     const out = String(r.stdout ?? '').trim();
     if (r.ok) {
-      if (ctx.manifestFs) await recordPackageRemove(ctx.manifestFs, name, 'npm', ctx.manifestPath);
       void log('INFO', `pkg remove: ${name} via npm`);
       return { ok: true, message: `'${name}' removed (source: npm)`, source: 'npm', outputTail: out.slice(-OUTPUT_TAIL_CHARS) };
     }

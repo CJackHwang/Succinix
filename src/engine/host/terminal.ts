@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import type { ITerminal } from '@lifo-sh/core';
 import {
   TERMINAL_FLUSH_MS,
@@ -6,10 +5,10 @@ import {
   TERMINAL_MAILBOX_ROOT,
   TERMINAL_MAX_BUFFER_BYTES,
   TERMINAL_PROTOCOL_VERSION,
+  TERMINAL_SESSION_TTL_MS,
   frameFile,
   hostMailboxPath,
   isTerminalIdentity,
-  mailboxPath,
   parseFrameSequence,
   type TerminalAckFrame,
   type TerminalIdentity,
@@ -17,26 +16,29 @@ import {
   type TerminalOpenFrame,
   type TerminalOutputFrame,
 } from '../../terminal/transport-protocol.js';
+import {
+  byteLength,
+  clampDimension,
+  decodePathPart,
+  dirname,
+  nodeFs,
+  readJson,
+  rootPath,
+  sameIdentity,
+  splitByBytes,
+  takePrefixByBytes,
+  unlinkQuiet,
+  type TerminalMailboxFs,
+} from './terminal-mailbox-utils.js';
 
-/** Minimal synchronous file surface used by the in-WebContainer daemon. */
-export interface TerminalMailboxFs {
-  existsSync(path: string): boolean;
-  mkdirSync(path: string, options?: { recursive?: boolean }): void;
-  readdirSync(path: string): string[];
-  readFileSync(path: string, encoding: 'utf8'): string;
-  writeFileSync(path: string, data: string): void;
-  renameSync(oldPath: string, newPath: string): void;
-  unlinkSync(path: string): void;
-  rmSync?(path: string, options?: { recursive?: boolean; force?: boolean }): void;
-}
-
-const nodeFs: TerminalMailboxFs = fs;
+export type { TerminalMailboxFs } from './terminal-mailbox-utils.js';
 
 export interface RpcTerminalOptions {
   fs?: TerminalMailboxFs;
   /** Output frames waiting for browser acknowledgement are retained on disk. */
   maxBufferedBytes?: number;
   onBackpressure?: (bufferedBytes: number) => void;
+  onResize?: (cols: number, rows: number) => void;
 }
 
 /**
@@ -56,7 +58,11 @@ export class RpcTerminal implements ITerminal {
   private readonly listeners = new Set<(data: string) => void>();
   private readonly earlyInput: string[] = [];
   private readonly pending: string[] = [];
+  private readonly outputBytesBySeq = new Map<number, number>();
   private pendingBytes = 0;
+  private outstandingBytes = 0;
+  private discardedBytes = 0;
+  private earlyInputBytes = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private outputSeq = 0;
   private _cols: number;
@@ -74,21 +80,28 @@ export class RpcTerminal implements ITerminal {
     this._cols = clampDimension(dimensions.cols, 80);
     this._rows = clampDimension(dimensions.rows, 24);
     this.onBackpressure = options.onBackpressure;
+    this.onResize = options.onResize;
   }
 
   private readonly onBackpressure?: (bufferedBytes: number) => void;
+  private readonly onResize?: (cols: number, rows: number) => void;
 
   get cols(): number { return this._cols; }
   get rows(): number { return this._rows; }
   get disposed(): boolean { return this._disposed; }
   get bufferedBytes(): number { return this.pendingBytes; }
+  get unacknowledgedBytes(): number { return this.outstandingBytes; }
+  get discardedOutputBytes(): number { return this.discardedBytes; }
   get backpressured(): boolean { return this._backpressured; }
 
   write(data: string): void {
     if (this._disposed || !data) return;
-    // Keep every byte (rather than dropping terminal output) while exposing a
-    // bounded-pressure signal to the scheduler.  Flushes are split at 32 KiB.
-    for (const chunk of splitByBytes(data, TERMINAL_FRAME_LIMIT)) {
+    // Output which has not been acknowledged also occupies the session budget.
+    // ITerminal.write() is synchronous, so the only available producer-control
+    // contract is deterministic refusal of the tail once that budget is full.
+    const accepted = takePrefixByBytes(data, this.availableBytes());
+    this.discardedBytes += byteLength(data) - byteLength(accepted);
+    for (const chunk of splitByBytes(accepted, TERMINAL_FRAME_LIMIT)) {
       this.pending.push(chunk);
       this.pendingBytes += byteLength(chunk);
     }
@@ -107,6 +120,7 @@ export class RpcTerminal implements ITerminal {
     // the Lifo terminal seam is attached instead of losing the first keystroke.
     if (this.earlyInput.length) {
       const queued = this.earlyInput.splice(0);
+      this.earlyInputBytes = 0;
       for (const data of queued) callback(data);
     }
   }
@@ -120,7 +134,10 @@ export class RpcTerminal implements ITerminal {
   acceptInput(data: string): void {
     if (this._disposed || !data) return;
     if (this.listeners.size === 0) {
-      this.earlyInput.push(data);
+      const accepted = takePrefixByBytes(data, Math.max(0, this.maxBufferedBytes - this.earlyInputBytes));
+      if (!accepted) return;
+      this.earlyInput.push(accepted);
+      this.earlyInputBytes += byteLength(accepted);
       return;
     }
     for (const listener of [...this.listeners]) listener(data);
@@ -133,6 +150,7 @@ export class RpcTerminal implements ITerminal {
     if (this._disposed) return;
     this._cols = clampDimension(cols, this._cols);
     this._rows = clampDimension(rows, this._rows);
+    this.onResize?.(this._cols, this._rows);
     this.control('resize', undefined, this._cols, this._rows);
   }
 
@@ -143,6 +161,10 @@ export class RpcTerminal implements ITerminal {
     this.flushTimer = null;
     this.pending.length = 0;
     this.pendingBytes = 0;
+    this.outputBytesBySeq.clear();
+    this.outstandingBytes = 0;
+    this.earlyInput.length = 0;
+    this.earlyInputBytes = 0;
     this.listeners.clear();
     this.updateBackpressure();
   }
@@ -164,7 +186,12 @@ export class RpcTerminal implements ITerminal {
       this.pendingBytes -= nextBytes;
       if (chunkBytes >= TERMINAL_FRAME_LIMIT) break;
     }
-    if (chunk) this.writeFrame({ type: 'output', seq: ++this.outputSeq, data: chunk });
+    if (chunk) {
+      const seq = ++this.outputSeq;
+      this.outputBytesBySeq.set(seq, chunkBytes);
+      this.outstandingBytes += chunkBytes;
+      this.writeFrame({ type: 'output', seq, data: chunk });
+    }
     this.updateBackpressure();
     if (this.pending.length) this.flushTimer = setTimeout(() => this.flush(), TERMINAL_FLUSH_MS);
   }
@@ -188,11 +215,25 @@ export class RpcTerminal implements ITerminal {
   }
 
   private updateBackpressure(): void {
-    const now = this.pendingBytes >= this.maxBufferedBytes;
+    const now = this.pendingBytes + this.outstandingBytes >= this.maxBufferedBytes;
     if (now === this._backpressured) return;
     this._backpressured = now;
     this.onBackpressure?.(this.pendingBytes);
     if (!this._disposed) this.control('backpressure', undefined, undefined, undefined, this.pendingBytes);
+  }
+
+  /** The mailbox host calls this only after validating a browser ACK. */
+  acknowledge(sequence: number): void {
+    for (const [seq, bytes] of this.outputBytesBySeq) {
+      if (seq > sequence) continue;
+      this.outputBytesBySeq.delete(seq);
+      this.outstandingBytes -= bytes;
+    }
+    this.updateBackpressure();
+  }
+
+  private availableBytes(): number {
+    return Math.max(0, this.maxBufferedBytes - this.pendingBytes - this.outstandingBytes);
   }
 }
 
@@ -203,6 +244,8 @@ export interface TerminalMailboxFactory {
 export interface TerminalMailboxHostOptions {
   fs?: TerminalMailboxFs;
   onSessionClose?: (identity: TerminalIdentity, terminal: RpcTerminal) => void;
+  sessionTtlMs?: number;
+  now?: () => number;
 }
 
 interface HostSession {
@@ -210,18 +253,26 @@ interface HostSession {
   terminal: RpcTerminal;
   lastInput: number;
   lastAck: number;
+  lastSeenAt: number;
 }
 
 /** Host-side mailbox scanner. Call poll() from the existing 50 ms host loop. */
 export class TerminalMailboxHost {
   private readonly mailboxFs: TerminalMailboxFs;
   private readonly onSessionClose?: (identity: TerminalIdentity, terminal: RpcTerminal) => void;
+  private readonly sessionTtlMs: number;
+  private readonly now: () => number;
   private readonly sessions = new Map<string, HostSession>();
+  // 浏览器可能在创建邮箱目录后、原子发布 open frame 前崩溃。这类路径没有
+  // HostSession，需要独立的有界观察窗口。
+  private readonly orphanedAt = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly factory: TerminalMailboxFactory, options: TerminalMailboxHostOptions = {}) {
     this.mailboxFs = options.fs ?? nodeFs;
     this.onSessionClose = options.onSessionClose;
+    this.sessionTtlMs = Math.max(1, options.sessionTtlMs ?? TERMINAL_SESSION_TTL_MS);
+    this.now = options.now ?? Date.now;
   }
 
   start(intervalMs = 16): void {
@@ -237,6 +288,7 @@ export class TerminalMailboxHost {
       this.onSessionClose?.(s.identity, s.terminal);
     }
     this.sessions.clear();
+    this.orphanedAt.clear();
   }
 
   sessionCount(): number { return this.sessions.size; }
@@ -244,23 +296,42 @@ export class TerminalMailboxHost {
   poll(): number {
     let handled = 0;
     const root = TERMINAL_MAILBOX_ROOT.slice(1);
+    this.dropMissingOrphans();
     let instances: string[];
     try { instances = this.mailboxFs.readdirSync(root); } catch { return 0; }
     for (const encodedInstanceId of instances) {
       const instanceId = decodePathPart(encodedInstanceId);
-      if (!instanceId) continue;
+      if (!instanceId) {
+        this.pruneOrphan(`${root}/${encodedInstanceId}`);
+        continue;
+      }
       let sessions: string[];
       try { sessions = this.mailboxFs.readdirSync(`${root}/${encodedInstanceId}`); } catch { continue; }
       for (const encodedSessionId of sessions) {
         const sessionId = decodePathPart(encodedSessionId);
-        if (sessionId) handled += this.pollSession(instanceId, sessionId);
+        const dir = `${root}/${encodedInstanceId}/${encodedSessionId}`;
+        if (!sessionId) {
+          this.pruneOrphan(dir);
+          continue;
+        }
+        let canonicalDir: string;
+        try {
+          canonicalDir = rootPath(instanceId, sessionId);
+        } catch {
+          this.pruneOrphan(dir);
+          continue;
+        }
+        if (canonicalDir !== dir) {
+          this.pruneOrphan(dir);
+          continue;
+        }
+        handled += this.pollSession(canonicalDir, instanceId, sessionId);
       }
     }
     return handled;
   }
 
-  private pollSession(instanceId: string, sessionId: string): number {
-    const dir = `${rootPath(instanceId, sessionId)}`;
+  private pollSession(dir: string, instanceId: string, sessionId: string): number {
     let names: string[];
     try { names = this.mailboxFs.readdirSync(dir); } catch { return 0; }
     let handled = 0;
@@ -268,6 +339,7 @@ export class TerminalMailboxHost {
     if (openName) {
       const open = readJson(this.mailboxFs, `${dir}/${openName}`) as TerminalOpenFrame | null;
       if (open && isTerminalIdentity(open) && open.type === 'open' && open.instanceId === instanceId && open.sessionId === sessionId) {
+        this.orphanedAt.delete(dir);
         const key = `${instanceId}/${sessionId}`;
         const old = this.sessions.get(key);
         if (!old || old.identity.bootNonce !== open.bootNonce) {
@@ -279,11 +351,18 @@ export class TerminalMailboxHost {
             this.onSessionClose?.(old.identity, old.terminal);
           }
           const terminal = this.factory(open, { fs: this.mailboxFs });
-          this.sessions.set(key, { identity: { protocolVersion: TERMINAL_PROTOCOL_VERSION, instanceId, sessionId, bootNonce: open.bootNonce }, terminal, lastInput: 0, lastAck: open.lastAck ?? 0 });
+          this.sessions.set(key, {
+            identity: { protocolVersion: TERMINAL_PROTOCOL_VERSION, instanceId, sessionId, bootNonce: open.bootNonce },
+            terminal,
+            lastInput: 0,
+            lastAck: open.lastAck ?? 0,
+            lastSeenAt: this.now(),
+          });
         } else {
           const state = this.sessions.get(key);
           if (state && typeof open.lastAck === 'number' && Number.isFinite(open.lastAck) && open.lastAck > state.lastAck) {
             state.lastAck = Math.floor(open.lastAck);
+            state.terminal.acknowledge(state.lastAck);
             for (const name of names) {
               const seq = parseFrameSequence(name, 'out');
               if (seq !== null && seq <= state.lastAck) unlinkQuiet(this.mailboxFs, `${dir}/${name}`);
@@ -295,10 +374,18 @@ export class TerminalMailboxHost {
     }
     const key = `${instanceId}/${sessionId}`;
     const state = this.sessions.get(key);
-    if (!state) return handled;
+    if (!state) {
+      this.pruneOrphan(dir);
+      return handled;
+    }
+    if (this.now() - state.lastSeenAt > this.sessionTtlMs) {
+      this.closeSession(key, dir, state);
+      return handled;
+    }
     const ack = readJson(this.mailboxFs, `${dir}/ack.json`) as TerminalAckFrame | null;
     if (ack && isTerminalIdentity(ack) && ack.type === 'ack' && sameIdentity(ack, state.identity)) {
       this.applyAck(state, dir, names, ack.ack);
+      state.lastSeenAt = this.now();
       unlinkQuiet(this.mailboxFs, `${dir}/ack.json`);
       handled++;
     }
@@ -309,16 +396,14 @@ export class TerminalMailboxHost {
       if (!frame || !isTerminalIdentity(frame) || !sameIdentity(frame, state.identity)) continue;
       if (frame.seq <= state.lastInput) continue;
       state.lastInput = frame.seq;
+      state.lastSeenAt = this.now();
       handled++;
       if (frame.type === 'input') state.terminal.acceptInput(frame.data ?? '');
       else if (frame.type === 'resize') state.terminal.resize(frame.cols ?? state.terminal.cols, frame.rows ?? state.terminal.rows);
       else if (frame.type === 'focus') state.terminal.focus();
       else if (frame.type === 'clear') state.terminal.clear();
       else if (frame.type === 'dispose') {
-        state.terminal.dispose();
-        this.onSessionClose?.(state.identity, state.terminal);
-        this.sessions.delete(key);
-        this.mailboxFs.rmSync?.(dir, { recursive: true, force: true });
+        this.closeSession(key, dir, state);
         break;
       }
     }
@@ -328,43 +413,37 @@ export class TerminalMailboxHost {
 
   private applyAck(state: HostSession, dir: string, names: string[], ack: number): void {
     state.lastAck = Math.max(state.lastAck, ack);
+    state.terminal.acknowledge(state.lastAck);
     for (const name of names) {
       const seq = parseFrameSequence(name, 'out');
       if (seq !== null && seq <= state.lastAck) unlinkQuiet(this.mailboxFs, `${dir}/${name}`);
     }
   }
-}
 
-function rootPath(instanceId: string, sessionId: string): string {
-  return mailboxPath({ instanceId, sessionId }, 'open.json').slice(1, -'/open.json'.length);
-}
-function decodePathPart(value: string): string | null {
-  try { const decoded = decodeURIComponent(value); return decoded && decoded !== '.' && decoded !== '..' ? decoded : null; } catch { return null; }
-}
-
-function dirname(file: string): string { const i = file.lastIndexOf('/'); return i > 0 ? file.slice(0, i) : '.'; }
-function byteLength(s: string): number { return typeof Buffer === 'undefined' ? s.length : Buffer.byteLength(s); }
-function splitByBytes(value: string, limit: number): string[] {
-  if (byteLength(value) <= limit) return [value];
-  const chunks: string[] = [];
-  let chunk = '';
-  let bytes = 0;
-  for (const char of value) {
-    const n = byteLength(char);
-    if (chunk && bytes + n > limit) { chunks.push(chunk); chunk = ''; bytes = 0; }
-    chunk += char;
-    bytes += n;
+  private closeSession(key: string, dir: string, state: HostSession): void {
+    state.terminal.dispose();
+    this.onSessionClose?.(state.identity, state.terminal);
+    this.sessions.delete(key);
+    this.orphanedAt.delete(dir);
+    this.mailboxFs.rmSync?.(dir, { recursive: true, force: true });
   }
-  if (chunk) chunks.push(chunk);
-  return chunks;
-}
-function clampDimension(value: number, fallback: number): number { return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback; }
-function unlinkQuiet(fsys: TerminalMailboxFs, path: string): void { try { fsys.unlinkSync(path); } catch { /* already consumed */ } }
-function readJson(fsys: TerminalMailboxFs, path: string): unknown {
-  try { return JSON.parse(fsys.readFileSync(path, 'utf8')); } catch { return null; }
-}
-function sameIdentity(a: TerminalIdentity, b: TerminalIdentity): boolean {
-  return a.protocolVersion === b.protocolVersion && a.instanceId === b.instanceId && a.sessionId === b.sessionId && a.bootNonce === b.bootNonce;
+
+  private pruneOrphan(dir: string): void {
+    const firstSeenAt = this.orphanedAt.get(dir);
+    if (firstSeenAt === undefined) {
+      this.orphanedAt.set(dir, this.now());
+      return;
+    }
+    if (this.now() - firstSeenAt <= this.sessionTtlMs) return;
+    this.orphanedAt.delete(dir);
+    this.mailboxFs.rmSync?.(dir, { recursive: true, force: true });
+  }
+
+  private dropMissingOrphans(): void {
+    for (const dir of this.orphanedAt.keys()) {
+      if (!this.mailboxFs.existsSync(dir)) this.orphanedAt.delete(dir);
+    }
+  }
 }
 
 export { TERMINAL_MAILBOX_ROOT };

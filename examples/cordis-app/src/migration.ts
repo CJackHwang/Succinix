@@ -1,4 +1,4 @@
-// Runnable 0.4.0/0.5.0 -> 0.6.0 migration surface example.
+// Runnable 0.4.0/0.5.0 -> 0.7.0 migration surface example.
 import { Context } from '@deepseek-ai/cordis';
 import enginePlugin, {
   type SuccinixConfig,
@@ -19,7 +19,6 @@ export async function runMigrationSurface(storeKey: string): Promise<MigrationSu
       instanceId: 'migration-demo',
       persistence: { dbName: 'cordis-app-contract', storeKey },
     },
-    terminal: { timeoutMs: 120000, bootGate: false },
     lifecycle: { disposeMode: 'soft', flushOnPageHide: false },
   };
   const ctx = new Context();

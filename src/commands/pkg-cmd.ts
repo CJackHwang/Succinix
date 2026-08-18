@@ -7,8 +7,6 @@ import {
   installPackage,
   removePackage,
   packageInfo,
-  readPackageManifest,
-  writePackageManifest,
   type PkgContext,
 } from '../pkg/index.js';
 import { GRAY, RED, RESET } from '../theme.js';
@@ -34,10 +32,6 @@ export async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void>
   const pctx: PkgContext = {
     wc: ctx.wc,
     client: ctx.client,
-    manifestFs: ctx.wc.fs as unknown as PkgContext['manifestFs'],
-    manifestPath: ctx.instanceId && ctx.instanceId !== 'default'
-      ? `/workspace/.succinix-${ctx.instanceId}/etc/succinix.packages.json`
-      : '/etc/succinix.packages.json',
   };
   const sub = args[0] ?? '';
 
@@ -124,43 +118,31 @@ export async function pkgCmd(ctx: CommandContext, args: string[]): Promise<void>
   }
 
   if (sub === 'lock') {
-    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
-    await writePackageManifest(pctx.manifestFs!, manifest, pctx.manifestPath);
-    term.writeln(`Package lock written (${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'})`);
+    await forwardExecutionWorldPackage(ctx, ['lock']);
     return;
   }
 
   if (sub === 'doctor') {
-    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
-    const installed = await listPackages(pctx);
-    const available = new Set(installed.map((entry) => `${entry.source}:${entry.name}`));
-    let missing = 0;
-    for (const entry of manifest.packages) {
-      if (available.has(`${entry.source}:${entry.name}`)) term.writeln(`[  OK  ] ${entry.source}:${entry.name}`);
-      else { term.writeln(`[ FAIL ] ${entry.source}:${entry.name} is missing`); missing++; }
-    }
-    if (manifest.packages.length === 0) term.writeln('[SKIP] package manifest is empty');
-    if (missing > 0) term.writeln(`Package doctor: ${missing} package${missing === 1 ? '' : 's'} need restore`);
-    else term.writeln('Package doctor: manifest is consistent');
+    await forwardExecutionWorldPackage(ctx, ['doctor']);
     return;
   }
 
   if (sub === 'cache') {
-    const r = await pctx.client.terminal('npm cache verify', { timeout: 30000 }, 45000);
-    if (r.stdout) term.writeln(String(r.stdout).trimEnd());
-    if (r.stderr) term.writeln(`${GRAY}${String(r.stderr).trimEnd()}${RESET}`);
-    if (!r.ok) term.writeln(`${RED}package cache verification failed${RESET}`);
+    await forwardExecutionWorldPackage(ctx, ['cache']);
     return;
   }
 
   if (sub === 'restore') {
-    const manifest = await readPackageManifest(pctx.manifestFs!, pctx.manifestPath);
-    if (manifest.packages.length === 0) { term.writeln('[SKIP] no persistent packages recorded'); return; }
-    term.writeln(`Rehydration manifest contains ${manifest.packages.length} package${manifest.packages.length === 1 ? '' : 's'}:`);
-    for (const entry of manifest.packages.filter((item) => item.persistent)) term.writeln(`  ${entry.source}:${entry.name}@${entry.version}`);
-    term.writeln('Run pkg install for any package that is missing from the current workspace.');
+    await forwardExecutionWorldPackage(ctx, ['restore']);
     return;
   }
 
   term.writeln('usage: pkg list | pkg search <term> | pkg install <name> | pkg remove <name> | pkg info <name>');
+}
+
+async function forwardExecutionWorldPackage(ctx: CommandContext, args: string[]): Promise<void> {
+  const result = await ctx.client.terminal(`succinix pkg ${args.join(' ')}`, { timeout: 30000 }, 45000);
+  if (result.stdout) ctx.term.writeln(String(result.stdout).trimEnd());
+  if (result.stderr) ctx.term.writeln(`${GRAY}${String(result.stderr).trimEnd()}${RESET}`);
+  if (!result.ok && !result.stderr) ctx.term.writeln(`${RED}succinix pkg ${args[0]} failed${RESET}`);
 }

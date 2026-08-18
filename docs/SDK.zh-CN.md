@@ -1,6 +1,7 @@
 # Succinix Engine — dsh Cordis 集成参考
 
-> 状态：**0.7.0 dsh 服务提供方（发布就绪）**。`@succinix/engine` 是面向
+> 状态：**0.7.0 dsh 服务提供方**。是否发布就绪只能由可复现发布门禁判定，本文集成参考
+> 不能作为结论。`@succinix/engine` 是面向
 > `@deepseek-ai/cordis@4.0.1` 的 Cordis 插件，也是唯一对外集成面。它提供 dsh
 > 服务键 `ctx.fs`、`ctx.sandbox`、`ctx.terminals` 与
 > `ctx.sessionPersistence`。旧的 0.4.0 独立 SDK 导出（`createTerminalExecutor`、
@@ -39,7 +40,6 @@ const fiber = ctx.plugin(engine, {
     instanceId: 'default',
     persistence: { dbName: 'my-app', storeKey: 'default' },
   },
-  terminal: { timeoutMs: 120000, bootGate: false },
 });
 await fiber;
 
@@ -271,15 +271,6 @@ export interface SuccinixConfig {
     home?: string;
     persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
   };
-  terminal?: {
-    cwd?: string;
-    timeoutMs?: number;
-    bootGate?: boolean;
-    history?: boolean;
-    tabComplete?: boolean;
-    interrupt?: boolean;
-    promptPrefix?: string;
-  };
   capabilities?: {
     defaultAllow?: boolean;
     rules?: Array<{ pattern: string; allow: boolean }>;
@@ -296,6 +287,10 @@ export interface SuccinixConfig {
 
 非法值抛 `ValidationError`；插件保留最后一次合法配置，并在
 `host.state.lastError` 记录原因。
+
+顶层 `terminal` 配置在 0.7.0 已移除，因为它从未控制执行世界终端；传入该字段会被拒绝。
+初始工作目录请通过 `ensureInstance()` / `boot()` / `attach()` 的选项传入，交互会话请通过
+`host.terminal.open()` 打开。
 
 ## 实例
 
@@ -424,6 +419,9 @@ await host.userland.flush();
 命令只能声明结构化执行世界来源，不能传入浏览器函数；注册表拒绝重复名称和
 fail-closed denylist。package 与 service template 通过同一 mailbox，复用 package manifest、
 VFS、进程、服务、实例和生命周期状态。
+每个 package 注册都必须提供预期的 `sha256-` payload digest（64 位小写十六进制）。host
+在安装后按排序后的相对文件名与字节计算摘要，将其记录到执行世界 manifest，并在恢复已有
+payload 前完成校验。
 
 交互命令必须声明 `execution: 'interactive'`，并使用 Lifo 公开的
 `CommandContext.stdin` / `setRawMode` 合同。它们与 `vi`、`nano` 及已安装 Lifo 包共用

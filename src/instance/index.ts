@@ -26,7 +26,7 @@ import {
   stopExecutionService,
 } from '../services/world-client.js';
 import type { ServiceContext } from '../services/types.js';
-import { clearActivePorts, clearDbActivePorts } from '../services/registry.js';
+import { clearDbActivePorts } from '../services/registry.js';
 import { DEFAULT_INSTANCE_ID, instanceStateRoot } from './paths.js';
 import { instancePorts } from './ports.js';
 
@@ -250,9 +250,8 @@ export async function createSuccinixInstance(opts: SuccinixInstanceOptions): Pro
       } catch {
         /* host 不可达：浏览器侧继续清理，进程残留由下一次 boot 快照/宿主兜底 */
       }
-      // 2. 清端口期望 / 活动端口记录 / 实例端口视图（旧 URL 不再可用）。
+      // 2. 清端口期望 / 数据库端口投影 / 实例端口视图（旧 URL 不再可用）。
       instancePorts.releaseAll(instanceId);
-      clearActivePorts(instanceId);
       clearDbActivePorts(instanceId);
       ports.clear();
       // 3. 清快照 + 状态根（M4 现状）。

@@ -313,15 +313,56 @@ describe('TerminalClient 结果文件清理', () => {
 });
 
 describe('TerminalClient v2 身份隔离', () => {
+  it('优先 exit 的 ACK 内建立重启围栏，并在 replacement host 就绪后重放未投递的只读请求', async () => {
+    const rpc = makeRpcFs({
+      ackDelayMs: 15,
+      respond: (request) => request.cmd === 'exit' ? { ok: true, kind: 'bye' } : PONG(),
+    });
+    const client = new TerminalClient({ fs: rpc.fs } as never);
+    const pings = Promise.all(Array.from({ length: 3 }, () => client.exec('ping', undefined, 500)));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(client.requestHostShutdown(500)).resolves.toBe(true);
+
+    expect(rpc.cmdWrites.slice(0, 2).map((request) => request.cmd)).toEqual(['ping', 'exit']);
+    expect(rpc.cmdWrites).toHaveLength(2);
+
+    const oldNonce = rpc.cmdWrites[0]?.bootNonce;
+    client.resumeHostDelivery();
+    const results = await pings;
+    expect(results.every((result) => result.ok === true && result.kind === 'pong')).toBe(true);
+
+    const replayedPings = rpc.cmdWrites.filter((request) => request.cmd === 'ping').slice(1);
+    expect(replayedPings).toHaveLength(2);
+    expect(replayedPings.every((request) => request.bootNonce !== oldNonce)).toBe(true);
+  });
+
+  it('在 host epoch 更换后立即丢弃在途旧结果并让只读请求以新 epoch 重试', async () => {
+    let pings = 0;
+    const { client, cmdWrites } = makeClient((request) => {
+      if (request.cmd !== 'ping') return RUN_OK();
+      pings++;
+      return pings === 1 ? undefined as never : PONG();
+    });
+    const pending = client.exec('ping', undefined, 1000);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const oldRequest = cmdWrites[0]!;
+    client.prepareHostEpoch();
+
+    await expect(pending).resolves.toMatchObject({ ok: true, kind: 'pong' });
+    expect(pings).toBe(2);
+    expect(cmdWrites[1]?.bootNonce).not.toBe(oldRequest.bootNonce);
+  });
+
   it('拒绝陈旧 boot nonce 结果，不把它当作当前请求成功', async () => {
     const { client } = makeClient(() => ({ ok: true, stdout: 'stale', bootNonce: 'boot-old' }));
-    await expect(client.exec('run', { command: 'echo stale' }, 140)).rejects.toThrow(/timeout/);
+    await expect(client.exec('run', { command: 'echo stale' }, 140)).rejects.toThrow(/timeout|stale or mismatched RPC result ignored/);
   });
 
   it('拒绝错误 instanceId 结果', async () => {
     const rpc = makeRpcFs({ respond: () => ({ ok: true, stdout: 'wrong instance', instanceId: 'other' }) });
     const client = new TerminalClient({ fs: rpc.fs } as never, { instanceId: 'instance-a' });
-    await expect(client.exec('run', { command: 'pwd' }, 140)).rejects.toThrow(/timeout/);
+    await expect(client.exec('run', { command: 'pwd' }, 140)).rejects.toThrow(/timeout|stale or mismatched RPC result ignored/);
   });
 
   it('拒绝错误身份的 delivery ack', async () => {
@@ -330,7 +371,7 @@ describe('TerminalClient v2 身份隔离', () => {
       ack: () => ({ instanceId: 'other' }),
     });
     const client = new TerminalClient({ fs: rpc.fs } as never, { instanceId: 'instance-a' });
-    await expect(client.exec('run', { command: 'echo ack' }, 140)).rejects.toThrow(/delivery timeout/);
+    await expect(client.exec('run', { command: 'echo ack' }, 140)).rejects.toThrow(/delivery timeout|invalid RPC acknowledgement/);
   });
 });
 

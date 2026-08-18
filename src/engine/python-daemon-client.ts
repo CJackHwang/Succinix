@@ -5,7 +5,7 @@
 // 协议见 python-daemon.ts；这里负责：spawn → 等 READY → 按 id 匹配响应 → 超时杀进程重生。
 import { spawn, type ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
-import { registerProcess } from './host-procs.js';
+import { PROCESS_TERMINATION_GRACE_MS, killProcess, registerProcess } from './host-procs.js';
 
 // python daemon 脚本在容器内的位置（浏览器首用 python/pip 时懒注入 assets 到同一目录）。
 // TASK24 双根铁律：浏览器 wc.fs 的 `/` == host 进程 cwd，注入到 `/usr/lib/succinix/python/...`
@@ -23,8 +23,9 @@ interface Pending {
   resolve: (r: DaemonExecResult) => void;
 }
 
-class PythonDaemonClient {
+export class PythonDaemonClient {
   private child: ChildProcess | null = null;
+  private childPid: number | null = null;
   private rl: readline.Interface | null = null;
   private ready: Promise<void> | null = null;
   private nextId = 1;
@@ -45,7 +46,7 @@ class PythonDaemonClient {
       // The daemon is a real execution-world process. Register it once so
       // `ps`, service status, and host shutdown observe the same lifecycle as
       // Node children; its command pattern is classified as system scope.
-      registerProcess(`node ${PYTHON_DAEMON_JS}`, child, process.cwd(), 'default', { runtime: 'python' });
+      this.childPid = registerProcess(`node ${PYTHON_DAEMON_JS}`, child, process.cwd(), 'default', { runtime: 'python' });
       let sawReady = false;
       const rl = readline.createInterface({ input: child.stdout!, terminal: false });
       this.rl = rl;
@@ -86,10 +87,10 @@ class PythonDaemonClient {
           sawReady = true;
           reject(e);
         }
-        this.dispose();
+        this.dispose(child);
       });
       child.on('exit', () => {
-        this.dispose();
+        this.dispose(child);
         for (const p of this.pending.values()) {
           clearTimeout(p.timer);
           p.resolve({ exitCode: -1, stdout: '', stderr: 'python daemon exited unexpectedly (runtime reset); retry the command' });
@@ -129,19 +130,15 @@ class PythonDaemonClient {
 
   // 显式终止 daemon（host 退出 / 超时恢复）。
   kill(): void {
-    const c = this.child;
-    if (c) {
-      try {
-        c.kill();
-      } catch {
-        /* 句柄失效 */
-      }
-    }
-    this.dispose();
+    const child = this.child;
+    if (this.childPid !== null) killProcess(this.childPid, PROCESS_TERMINATION_GRACE_MS, 'SIGTERM');
+    this.dispose(child);
   }
 
-  private dispose(): void {
+  private dispose(expectedChild?: ChildProcess | null): void {
+    if (expectedChild && this.child !== expectedChild) return;
     this.child = null;
+    this.childPid = null;
     this.rl = null;
     this.ready = null;
   }

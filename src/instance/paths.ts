@@ -3,6 +3,7 @@
 // `<stateRoot>/etc/...`，stateRoot = `/workspace/.succinix-<id>`（DM-12）。
 // 页面级文件（/ws/.current 工作区指针、/browser-wrote.txt 自检文件）**不**走本函数
 // —— workspace 是页面/容器级语义，见 MASTER-PLAN M2 保留项。
+import { isValidInstanceId } from '../engine/host-route.js';
 
 export const DEFAULT_INSTANCE_ID = 'default';
 export const INSTANCE_STATE_ROOT_PREFIX = '/workspace/.succinix-';
@@ -12,6 +13,7 @@ export const INSTANCE_STATE_ROOT_PREFIX = '/workspace/.succinix-';
  *  注意：host 侧进程归属 / 状态解析以内置前缀为准（.succinix-<id> 段），自定义前缀仅供
  *  浏览器侧布局使用，宿主应保持 instanceId 命名与内置前缀对齐（见 SDK.md 多实例节）。 */
 export function instanceStateRoot(instanceId: string, prefix: string = INSTANCE_STATE_ROOT_PREFIX): string {
+  if (!isValidInstanceId(instanceId)) throw new Error('invalid instance id');
   return instanceId === DEFAULT_INSTANCE_ID ? '' : `${prefix}${instanceId}`;
 }
 
@@ -38,8 +40,8 @@ export const USER_HOME_ROOT = '/workspace/users';
 
 /** 用户 home（浏览器 wc.fs 视角）；缺省根 /workspace/users，宿主可覆盖。 */
 export function userHomePath(userId: string, root: string = USER_HOME_ROOT): string {
-  const clean = userId.replace(/^\/+|\/+$/g, '');
-  return `${root}/${clean}`;
+  if (!isValidInstanceId(userId)) throw new Error('invalid instance id');
+  return `${root}/${userId}`;
 }
 
 /** 浏览器视角绝对路径 → 会话 cwd（Lifo 视图）：/workspace/users/a → /workspace/workspace/users/a。 */

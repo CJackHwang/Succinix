@@ -7,7 +7,6 @@ import { TerminalClient } from '../src/engine/client.js';
 import { createSuccinixInstance, DEFAULT_INSTANCE_BOOT_STEPS } from '../src/instance/index.js';
 import { instanceStateRoot, statePath, tinbaseDataDir, INSTANCE_STATE_ROOT_PREFIX } from '../src/instance/paths.js';
 import { envFilePath, settingsFilePath } from '../src/config.js';
-import { servicesFilePath, autostartFilePath } from '../src/services/index.js';
 import { motdFilePath } from '../src/motd.js';
 import type { WebContainer } from '@webcontainer/api';
 import { sleep } from '../src/engine/sleep.js';
@@ -297,11 +296,9 @@ describe('statePrefix 路径覆盖（M5）', () => {
     expect(instanceStateRoot('default', '/x/')).toBe(''); // 默认实例恒 /etc
   });
 
-  it('config/services/motd 路径函数透传 statePrefix', () => {
+  it('config/motd 路径函数透传 statePrefix', () => {
     expect(envFilePath('c-1', '/workspace/users/')).toBe('/workspace/users/c-1/etc/succinix.env');
     expect(settingsFilePath('c-1', '/workspace/users/')).toBe('/workspace/users/c-1/etc/succinix.settings');
-    expect(servicesFilePath('c-1', '/workspace/users/')).toBe('/workspace/users/c-1/etc/succinix.services');
-    expect(autostartFilePath('c-1', '/workspace/users/')).toBe('/workspace/users/c-1/etc/succinix.autostart');
     expect(motdFilePath('c-1', '/workspace/users/')).toBe('/workspace/users/c-1/etc/succinix.motd');
   });
 });

@@ -40,6 +40,17 @@ export async function runServices(ctx: TestContext): Promise<void> {
   if (svcDef) {
     const started = await startExecutionService(svcCtx, SVC_TEST);
     verdict(term, 'Services', 'start returns pid', started.ok && Number(started.pid) > 0, started.message);
+    let pidInProcessTable = false;
+    let processDetail = `pid=${started.pid ?? '?'}`;
+    try {
+      const processList = await client.terminal('ps', undefined, 5000);
+      pidInProcessTable = Number.isInteger(started.pid) && (processList.processes ?? []).some((process) =>
+        Number(process.pid) === started.pid && process.status === 'running',
+      );
+    } catch (error) {
+      processDetail = String(error);
+    }
+    verdict(term, 'Services', 'service pid appears in ps', pidInProcessTable, processDetail);
 
     // 等端口就绪 → running（进程表 + 端口注册表联合判定）。
     let running = false;

@@ -1,6 +1,7 @@
 # Succinix Engine — dsh Cordis Integration
 
-> Status: **0.7.0 dsh service provider (release-ready)**. `@succinix/engine` is a
+> Status: **0.7.0 dsh service provider**. Release readiness is established only
+> by the reproducible release gates, not by this integration reference. `@succinix/engine` is a
 > Cordis plugin for `@deepseek-ai/cordis@4.0.1` and the only public integration
 > surface. It provides the dsh service keys `ctx.fs`, `ctx.sandbox`,
 > `ctx.terminals`, and `ctx.sessionPersistence`. The old 0.4.0 standalone SDK
@@ -43,7 +44,6 @@ const fiber = ctx.plugin(engine, {
     instanceId: 'default',
     persistence: { dbName: 'my-app', storeKey: 'default' },
   },
-  terminal: { timeoutMs: 120000, bootGate: false },
 });
 await fiber;
 
@@ -290,6 +290,7 @@ export interface SuccinixConfig {
   hostJsUrl?: string;        // default '/host.js'
   lifoCoreUrl?: string;      // default '/lifo-core.js'
   pythonAssetsUrl?: string;  // default '/pyodide/'
+  rubyAssetsUrl?: string;    // default '/ruby/'
   resultTtlMs?: number;
   container?: {
     mode?: 'internal' | 'external';
@@ -302,15 +303,6 @@ export interface SuccinixConfig {
     statePrefix?: string;
     home?: string;
     persistence?: { dbName?: string; storeKey?: string; includeGit?: boolean };
-  };
-  terminal?: {
-    cwd?: string;
-    timeoutMs?: number;
-    bootGate?: boolean;
-    history?: boolean;
-    tabComplete?: boolean;
-    interrupt?: boolean;
-    promptPrefix?: string;
   };
   capabilities?: {
     defaultAllow?: boolean;
@@ -328,6 +320,11 @@ export interface SuccinixConfig {
 
 Invalid values produce a `ValidationError`; the plugin keeps its last valid
 configuration and records the reason in `host.state.lastError`.
+
+The former top-level `terminal` configuration was removed in 0.7.0 because it
+never controlled the execution-world terminal. Passing it is rejected. Set
+the initial working directory through `ensureInstance()` / `boot()` /
+`attach()` options, and open interactive sessions through `host.terminal.open()`.
 
 ## Instances
 
@@ -459,6 +456,10 @@ Commands accept only structured execution-world sources, never browser
 functions. The registry rejects duplicate names and the kernel-dependent
 denylist. Package and service-template registrations use the same mailbox,
 package manifest, VFS, process, service, instance, and lifecycle state.
+Every package registration supplies an expected `sha256-` payload digest (64
+lowercase hexadecimal characters). The host hashes sorted relative file names
+and bytes after installation, records that digest in the execution-world
+manifest, and verifies it before rehydrating an existing payload.
 
 Interactive commands must declare `execution: 'interactive'` and use Lifo's
 public `CommandContext.stdin` and `setRawMode` contract. They share the same

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { VFS, type Command, type CommandContext } from '@lifo-sh/core';
 import {
   installPackageManifestTracking,
+  packagePayloadIntegrity,
   reconcileRegisteredUserlandPackages,
   runPackageManagement,
 } from '../src/engine/host/package-world.js';
@@ -74,11 +75,13 @@ describe('execution-world package management', () => {
 
   it('uses real npm only for an explicit npm: source and commits metadata after success', async () => {
     const vfs = new VFS();
-    const execute = vi.fn(async (command: string) => ({
-      stdout: 'npm output\n',
-      stderr: '',
-      code: command.includes('failed') ? 9 : 0,
-    }));
+    const execute = vi.fn(async (command: string) => {
+      if (!command.includes('failed')) {
+        vfs.mkdir('/workspace/node_modules/@scope/tool', { recursive: true });
+        vfs.writeFile('/workspace/node_modules/@scope/tool/package.json', JSON.stringify({ name: '@scope/tool', version: '1.0.0' }));
+      }
+      return { stdout: 'npm output\n', stderr: '', code: command.includes('failed') ? 9 : 0 };
+    });
     const { ctx, stdout } = context(vfs, ['install', 'npm:@scope/tool'], execute);
     const sandbox = { kernel: { vfs } };
 
@@ -89,7 +92,7 @@ describe('execution-world package management', () => {
     );
     expect(stdout.join('')).toContain('npm output');
     expect((await readPackageManifest(manifestFs(vfs))).packages).toMatchObject([
-      { name: '@scope/tool', source: 'npm', version: 'installed', persistent: true },
+      { name: '@scope/tool', source: 'npm', version: 'installed', persistent: true, integrity: packagePayloadIntegrity(vfs, '/workspace/node_modules/@scope/tool') },
     ]);
 
     const failedVfs = new VFS();
@@ -151,14 +154,41 @@ describe('execution-world package management', () => {
     const vfs = new VFS();
     installPayload(vfs, 'extension', '3.2.1');
     const run = vi.fn();
+    const integrity = packagePayloadIntegrity(vfs, 'extension');
     await reconcileRegisteredUserlandPackages({
       kernel: { vfs },
       commands: { run },
-    }, [{ name: 'extension', source: 'lifo', version: '3.2.1', integrity: 'sha256-demo' }]);
+    }, [{ name: 'extension', source: 'lifo', version: '3.2.1', integrity }]);
 
     expect(run).not.toHaveBeenCalled();
     expect((await readPackageManifest(manifestFs(vfs))).packages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'extension', source: 'lifo', version: '3.2.1', integrity: 'sha256-demo' }),
+      expect.objectContaining({ name: 'extension', source: 'lifo', version: '3.2.1', integrity }),
     ]));
+  });
+
+  it('rejects a declared payload digest mismatch before rehydration', async () => {
+    const vfs = new VFS();
+    installPayload(vfs, 'extension', '3.2.1');
+    const run = vi.fn();
+    await expect(reconcileRegisteredUserlandPackages({
+      kernel: { vfs },
+      commands: { run },
+    }, [{ name: 'extension', source: 'lifo', version: '3.2.1', integrity: `sha256-${'0'.repeat(64)}` }]))
+      .rejects.toThrow('package integrity mismatch');
+    expect(run).not.toHaveBeenCalled();
+    expect((await readPackageManifest(manifestFs(vfs))).packages).toEqual([]);
+  });
+
+  it('fails doctor when a persisted payload changes after its digest is recorded', async () => {
+    const vfs = new VFS();
+    installPayload(vfs, 'tool', '2.0.0');
+    const { sandbox, commands } = lifoSandbox(vfs);
+    installPackageManifestTracking(sandbox, async () => 0);
+    await commands.get('lifo')!(context(vfs, ['install', 'tool']).ctx);
+    vfs.writeFile('/usr/lib/node_modules/lifo-pkg-tool/package.json', JSON.stringify({ name: 'lifo-pkg-tool', version: '2.0.1' }));
+
+    const doctor = context(vfs, ['doctor']);
+    expect(await runPackageManagement(doctor.ctx, sandbox, doctor.ctx.args)).toBe(1);
+    expect(doctor.stdout.join('')).toContain('[ FAIL ] lifo:tool@2.0.0');
   });
 });

@@ -111,4 +111,35 @@ describe('HostManager boot lifecycle', () => {
     expect(wc.spawn).toHaveBeenCalledTimes(1);
     expect(manager.handle()).toMatchObject({ state: 'disposed', wc: null, startedAt: null });
   });
+
+  it('waits for a ready host exit acknowledgement before killing it', async () => {
+    const manager = new HostManager();
+    const wc = new FakeWebContainer();
+    let releaseExit: ((code: number) => void) | undefined;
+    Object.assign(wc.hostProc, {
+      exit: new Promise<number>((resolve) => { releaseExit = resolve; }),
+    });
+    await manager.boot(asWebContainer(wc), OPTIONS);
+
+    const shuttingDown = manager.shutdown();
+    await vi.waitFor(() => expect(wc.fs.requests.some((request) => request.cmd === 'exit')).toBe(true));
+    expect(wc.hostProc.kill).not.toHaveBeenCalled();
+
+    releaseExit?.(0);
+    await shuttingDown;
+    expect(wc.hostProc.kill).toHaveBeenCalledTimes(1);
+    expect(manager.handle()).toMatchObject({ state: 'disposed', wc: null });
+  });
+
+  it('allows an external attach only after an awaited shutdown releases the old host', async () => {
+    const manager = new HostManager();
+    const wc = new FakeWebContainer();
+    await manager.boot(asWebContainer(wc), OPTIONS);
+
+    await manager.shutdown();
+    await manager.attach(asWebContainer(wc), { ...OPTIONS, mode: 'external' });
+
+    expect(wc.spawn).toHaveBeenCalledTimes(2);
+    expect(manager.handle()).toMatchObject({ mode: 'external', state: 'ready', wc: asWebContainer(wc) });
+  });
 });

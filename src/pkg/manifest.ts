@@ -10,7 +10,7 @@ export interface InstalledPackage {
   name: string;
   source: 'lifo' | 'npm';
   version: string;
-  integrity?: string;
+  integrity: string;
   installedAt: number;
   persistent: boolean;
   execution?: 'batch' | 'interactive' | 'both';
@@ -44,7 +44,8 @@ function validEntry(value: unknown): value is InstalledPackage {
   return typeof item.name === 'string' && item.name.length > 0 &&
     (item.source === 'lifo' || item.source === 'npm') &&
     typeof item.version === 'string' && typeof item.installedAt === 'number' &&
-    typeof item.persistent === 'boolean';
+    typeof item.persistent === 'boolean' &&
+    typeof item.integrity === 'string' && /^sha256-[0-9a-f]{64}$/.test(item.integrity);
 }
 
 export async function readPackageManifest(fs: PackageManifestFs, path = PACKAGE_MANIFEST_PATH): Promise<PackageManifest> {
@@ -55,7 +56,7 @@ export async function readPackageManifest(fs: PackageManifestFs, path = PACKAGE_
       name: item.name,
       source: item.source,
       version: item.version,
-      ...(item.integrity ? { integrity: item.integrity } : {}),
+      integrity: item.integrity,
       installedAt: item.installedAt,
       persistent: item.persistent,
       ...(item.execution ? { execution: item.execution } : {}),

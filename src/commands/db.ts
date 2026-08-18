@@ -9,7 +9,6 @@ import {
   instanceStateRoot,
   setDbActivePort,
   tinbaseDataDir,
-  waitForProcessExit,
 } from '@succinix/engine';
 import { AMBER, RED, RESET } from '../theme.js';
 import { sleep } from '../util.js';
@@ -33,6 +32,21 @@ async function findRunningProcForInstance(ctx: CommandContext, needle: string): 
   return procs.find(
     (p) => String(p.cmd ?? '').includes(needle) && p.status === 'running' && procBelongsToCtxInstance(p, ctx.instanceId)
   );
+}
+
+async function waitForProcessExit(ctx: CommandContext, pid: number, timeoutMs = 15000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const result = await ctx.client.terminal('ps');
+      const processes = Array.isArray(result.processes) ? result.processes : [];
+      if (!processes.some((process) => Number(process.pid) === pid && process.status === 'running')) return true;
+    } catch {
+      // 进程表瞬时不可达时继续等待，避免错误报告已退出。
+    }
+    await sleep(100);
+  }
+  return false;
 }
 
 // db 端口：读 settings preview-port（M4 按实例 settings），缺省 3001；值被手改非法时回落默认。
@@ -227,7 +241,7 @@ export async function dbStop(ctx: CommandContext): Promise<void> {
   const pid = Number(proc.pid);
   const k = await ctx.client.terminal(`kill ${pid}`, { forceAfterMs: 10000 });
   if (k.ok && k.killed) {
-    if (!(await waitForProcessExit(ctx.client, pid))) {
+    if (!(await waitForProcessExit(ctx, pid))) {
       term.writeln(`${RED}tinbase: failed to stop: process ${pid} still running${RESET}`);
       return;
     }

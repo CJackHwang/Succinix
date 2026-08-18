@@ -81,7 +81,12 @@ async function action(ctx: ServiceContext, operation: 'start' | 'stop' | 'restar
   if (!result.ok) return { ok: false, message: message || `failed to ${operation} '${name}'` };
   try {
     const state = await executionServiceState(ctx, name);
-    return { ok: true, message: message || `service '${name}' ${operation}ed`, ...(state.pid === undefined ? {} : { pid: state.pid }) };
+    return {
+      ok: true,
+      message: message || `service '${name}' ${operation}ed`,
+      ...(state.pid === undefined ? {} : { pid: state.pid }),
+      ...(state.effectivePort === null ? {} : { port: state.effectivePort }),
+    };
   } catch {
     return { ok: true, message: message || `service '${name}' ${operation}ed` };
   }

@@ -292,4 +292,22 @@ describe('execution-world host epoch and scheduler', () => {
     await run.dispatchRun({ id: 'throws', opts: { command: 'echo throws' }, instanceId: 'alpha' } as never);
     expect(state.writeResult).toHaveBeenCalledWith('throws', expect.objectContaining({ ok: false, exitCode: -1, stderr: expect.stringContaining('sandbox failure') }), 'alpha');
   });
+
+  it('does not release the host command slot before a direct Node child settles', async () => {
+    await loadHostModules();
+    const child = deferred<void>();
+    state.spawnChild.mockImplementationOnce(() => child.promise);
+    state.files.set('cmd.json', JSON.stringify({ id: 'node-long', protocolVersion: 2, bootNonce: 'epoch-current', cmd: 'run', opts: { command: 'node long.js' }, instanceId: 'alpha' }));
+    const nodeRun = poller()();
+    await vi.waitFor(() => expect(state.spawnChild).toHaveBeenCalledTimes(1));
+
+    state.files.set('cmd.json', JSON.stringify({ id: 'lifo-after-node', protocolVersion: 2, bootNonce: 'epoch-current', cmd: 'run', opts: { command: 'echo after-node' }, instanceId: 'alpha' }));
+    await poller()();
+    expect(state.commandRun).not.toHaveBeenCalled();
+
+    child.resolve();
+    await nodeRun;
+    await poller()();
+    expect(state.commandRun).toHaveBeenCalledWith('echo after-node', expect.any(Object));
+  });
 });

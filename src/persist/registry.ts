@@ -1,21 +1,24 @@
 import type { FileSystemAPI } from '@webcontainer/api';
 import { createPersist } from './context.js';
 import type { PersistContext, PersistOptions, SaveResult, SnapshotMeta } from './types.js';
+import { normalizeInstanceId } from '../engine/host-route.js';
 
 /** 实例持久化上下文注册表：默认实例保留既有公开 facade。 */
 export function instancePersistKey(instanceId: string): string {
-  return instanceId === 'default' ? 'current' : `instance:${instanceId}`;
+  const id = normalizeInstanceId(instanceId);
+  return id === 'default' ? 'current' : `instance:${id}`;
 }
 
 const persistContexts = new Map<string, PersistContext>();
 
 export function getPersist(instanceId = 'default', scope?: PersistOptions): PersistContext {
-  let context = persistContexts.get(instanceId);
+  const id = normalizeInstanceId(instanceId);
+  let context = persistContexts.get(id);
   if (!context) {
     context = createPersist(
-      instanceId === 'default' ? { ...scope } : { storeKey: instancePersistKey(instanceId), ...scope },
+      id === 'default' ? { ...scope } : { storeKey: instancePersistKey(id), ...scope },
     );
-    persistContexts.set(instanceId, context);
+    persistContexts.set(id, context);
   }
   return context;
 }

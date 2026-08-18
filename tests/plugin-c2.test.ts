@@ -136,6 +136,10 @@ describe('config schema (C2)', () => {
     expect('issues' in checkSync(Config, { lifecycle: { disposeMode: 'nuclear' } })).toBe(true);
     expect('issues' in checkSync(Config, { assets: { integrity: 'yes' } })).toBe(true);
   });
+
+  it('rejects a non-canonical default instance identifier', () => {
+    expect('issues' in checkSync(Config, { defaultInstance: { instanceId: '../other' } })).toBe(true);
+  });
 });
 
 describe('capabilities (C2)', () => {
@@ -228,7 +232,7 @@ describe('invariants (C2)', () => {
 
   it('ensureInstance rejects empty container ids', async () => {
     const { ctx, fiber } = await bootInternal();
-    await expect(hostOf(ctx).ensureInstance('')).rejects.toThrow(/non-empty string/);
+    await expect(hostOf(ctx).ensureInstance('')).rejects.toThrow(/invalid instance id/);
     await fiber.dispose();
   });
 });

@@ -27,6 +27,10 @@ function assertion(condition, message) {
   console.log(`[  OK  ] ${message}`);
 }
 
+export function hasCompleteOrderedSequence(markers, total) {
+  return markers.length === total && markers.every((marker, index) => marker === index);
+}
+
 async function waitForBench(cdp) {
   const deadline = Date.now() + 150_000;
   let last = 'unavailable';
@@ -43,7 +47,7 @@ async function waitForBench(cdp) {
     if (ready.client && ready.host && ready.interactive) return;
     await sleep(250);
   }
-  throw new Error(`bench hook did not become ready: ${last}`);
+  throw new Error(`${last.includes('"overlayPresent":true') && last.includes('"client":false') && last.includes('"host":false') ? 'BENCH_BOOTSTRAP_STALL: ' : ''}bench hook did not become ready: ${last}`);
 }
 
 function rpcExpression() {
@@ -144,12 +148,16 @@ function frameExpression() {
       const beforeBurstOutputBytes = terminal.receivedOutputByteCount;
       await terminal.sendData('node -e "process.stdout.write(' + singleQuote + 'B' + singleQuote + '.repeat(' + burstBytes + '))"; printf "%s%s" ' + tag + ' "-burst-complete"\\r');
       await waitFor(initial.input + total + 1, burstMarker);
-      const seen = new Set(Array.from(output.matchAll(new RegExp(tag + '-(\\\\d+)', 'g')), (match) => Number(match[1])));
+      const markers = Array.from(output.matchAll(new RegExp(tag + '-(\\\\d+)', 'g')), (match) => Number(match[1]));
+      const seen = new Set(markers);
       const missing = Array.from({ length: total }, (_, index) => index).filter((index) => !seen.has(index));
       return {
         inputFrames: terminal.sentInputSequence - initial.input,
         outputFrames: terminal.receivedOutputSequence - initial.output,
-        completeSequence: missing.length === 0,
+        completeSequence: markers.length === total && markers.every((marker, index) => marker === index),
+        duplicateSequenceCount: markers.length - seen.size,
+        outOfOrder: markers.some((marker, index) => marker !== index),
+        markerCount: markers.length,
         outputMarkers: seen.size,
         missingSequenceCount: missing.length,
         burstBytes: terminal.receivedOutputByteCount - beforeBurstOutputBytes,
@@ -287,8 +295,8 @@ async function runProfile(cdp, profile) {
   if (profile === '100k') {
     const result = await evalValue(cdp, frameExpression());
     assertion(result.inputFrames === INPUT_OUTPUT_PAIRS + 1, `${INPUT_OUTPUT_PAIRS} real terminal input frames were delivered`);
-    assertion(result.outputMarkers === INPUT_OUTPUT_PAIRS, `${INPUT_OUTPUT_PAIRS} real terminal output markers were delivered`);
-    assertion(result.completeSequence && result.missingSequenceCount === 0, 'all terminal output markers arrived in order without a sequence gap');
+    assertion(result.outputMarkers === INPUT_OUTPUT_PAIRS && result.markerCount === INPUT_OUTPUT_PAIRS, `${INPUT_OUTPUT_PAIRS} real terminal output markers were delivered exactly once`);
+    assertion(result.completeSequence && result.missingSequenceCount === 0 && result.duplicateSequenceCount === 0 && result.outOfOrder === false, 'all terminal output markers arrived in order without a sequence gap or duplicate');
     assertion(result.burstBytes >= result.requiredBurstBytes, `${result.requiredBurstBytes} byte terminal output burst was not truncated (received ${result.burstBytes})`);
     return;
   }

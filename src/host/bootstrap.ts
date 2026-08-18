@@ -5,6 +5,7 @@ import type {
   TerminalBoot,
 } from '@succinix/engine';
 import { DEFAULT_INSTANCE_ID, userHomePath } from '@succinix/engine';
+import { normalizeInstanceId } from '../engine/host-route.js';
 import type { AppBootStepsContext } from '../boot-steps.js';
 import type { BootUI } from '../boot-ui.js';
 import { log } from '../log.js';
@@ -21,10 +22,11 @@ export interface InstanceRequest {
 export function resolveInstanceRequest(params: URLSearchParams): InstanceRequest {
   const userId = params.get('user');
   const instanceId = params.get('instance');
-  const id = userId ?? instanceId;
-  const demo = Boolean(id) && id !== DEFAULT_INSTANCE_ID;
+  const requestedId = userId ?? instanceId;
+  const id = normalizeInstanceId(requestedId === null ? undefined : requestedId);
+  const demo = id !== DEFAULT_INSTANCE_ID;
   return {
-    id: demo ? (id as string) : null,
+    id: demo ? id : null,
     userMode: demo && userId !== null && userId !== '',
     demo,
   };

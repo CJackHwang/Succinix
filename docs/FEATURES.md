@@ -240,13 +240,13 @@ Key measured facts:
 - **Lifecycle semantics**: page-level HostManager singleton; fiber reload does not restart the
   host; `dispose()` is soft, `shutdown()` is hard; `attach`/`boot` mode mismatch throws
   `ERR_MODE_MISMATCH`; asset SHA-256 integrity is enforced by default. | C2, C5
-- **Multi-instance (0.6.0+)** — `host.ensureInstance(id, opts)` creates or
+- **Multi-instance (0.7.0+)** — `host.ensureInstance(id, opts)` creates or
   reuses a per-instance stack on the shared page host. `?instance=<id>` starts
   the app as a named instance: state files (`/workspace/.succinix-<id>`),
   IndexedDB snapshot keys, env, services/ports views and process views are
   per-instance; cross-instance `kill` is rejected. Two tabs with different ids
   use separate hosts. | M1–M5, PROTOCOL.md
-- **Multi-user (0.6.0+)** — `?user=<id>` (alias of `?instance=<id>`) seeds a per-user home
+- **Multi-user (0.7.0+)** — `?user=<id>` (alias of `?instance=<id>`) seeds a per-user home
   (`/workspace/users/<id>`): session starts in the home (prompt `~`, node/python spawns there),
   `whoami`/prompt show the user, and state/snapshots/process views are per-user with `ps`
   filtering + `kill` authorization (organizational only — not a security boundary). | U1, SDK.md
@@ -289,7 +289,8 @@ Accepted environment constraints — not bugs, and never simulated:
 - **CI** — GitHub Actions (`.github/workflows/ci.yml`) runs `check` on push/PR and a scheduled
   `nightly-scenarios` job. A release result must cite the specific workflow run and environment. | TASK20
 - **Unit tests** — Vitest (node) covering pure-logic modules with an in-memory mock FS / fake
-  IndexedDB; v8 coverage gate **>=70%** on core files. | TASK20
+  IndexedDB; v8 uses aggregate thresholds plus explicit risk-file thresholds for host, terminal,
+  and persistence lifecycle paths. | TASK20
 - **e2e pipeline** — `npm run test:e2e` builds once, then invokes `verify-deploy`, benchmark,
   scenarios, language verification, instance checks, and the Cordis app contract. Treat its
   output as current evidence rather than inferring pass status from this document. | TASK20, TASK25

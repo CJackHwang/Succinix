@@ -1,7 +1,7 @@
 // Shared Chrome discovery, lifecycle, and failure diagnostics for browser gates.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -123,7 +123,9 @@ export function attachPageDiagnostics(cdp) {
  * The caller owns the returned directory and should retain it only on failure.
  */
 export async function writeBrowserFailureDiagnostics({ label, error, cdp, pageDiagnostics, chromeRun, previewPort, debugPort }) {
-  const directory = mkdtempSync(join(tmpdir(), `succinix-${label}-diagnostics-`));
+  const diagnosticsRoot = process.env.SUCCINIX_DIAGNOSTICS_DIR;
+  if (diagnosticsRoot) mkdirSync(diagnosticsRoot, { recursive: true });
+  const directory = mkdtempSync(join(diagnosticsRoot ?? tmpdir(), `succinix-${label}-diagnostics-`));
   const page = await capturePageState(cdp, directory);
   const chrome = await inspectChrome(chromeRun, debugPort);
   const preview = await inspectPort(previewPort);

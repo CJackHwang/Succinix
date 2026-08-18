@@ -103,7 +103,7 @@ export const PERFORMANCE_METRICS = [
 
 export function isClassifiedTransient(error) {
   const text = [error?.message, error?.stderr, error?.stdout].filter(Boolean).join('\n');
-  return /EADDRINUSE|ECONNRESET|ECONNREFUSED|CDP websocket failed to open|Chrome DevTools endpoint did not come up|Target closed|net::ERR_CONNECTION_RESET|BENCH_BOOTSTRAP_STALL/i.test(text);
+  return /EADDRINUSE|ECONNRESET|ECONNREFUSED|CDP websocket failed to open|Chrome DevTools endpoint did not come up|Target closed|net::ERR_CONNECTION_RESET|net_error\s*-100|BENCH_BOOTSTRAP_STALL/i.test(text);
 }
 
 async function runBenchOnce(index, attempt) {

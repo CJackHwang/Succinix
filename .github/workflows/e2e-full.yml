@@ -48,16 +48,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare browser diagnostics directory
+        run: mkdir -p artifacts/browser-diagnostics
+
       - name: Run full e2e suite (deploy gate retried once on flake)
         run: |
           set -o pipefail
+          export SUCCINIX_DIAGNOSTICS_DIR="$PWD/artifacts/browser-diagnostics"
           node scripts/run-e2e.mjs 2>&1 | tee e2e-full.log
 
       - name: Run benchmark gate (median + 20% variance)
-        run: npm run test:bench -- --skip-build
+        run: |
+          export SUCCINIX_DIAGNOSTICS_DIR="$PWD/artifacts/browser-diagnostics"
+          npm run test:bench -- --skip-build
 
       - name: Run soak gates (10k / 100k / 100-release)
-        run: npm run test:bench:soak
+        run: |
+          export SUCCINIX_DIAGNOSTICS_DIR="$PWD/artifacts/browser-diagnostics"
+          npm run test:bench:soak
 
       - name: Upload benchmark evidence
         if: always()
@@ -68,7 +76,8 @@ jobs:
             docs/benchmark-baseline-v0.7.0.json
             public/sha256.json
             packages/engine/assets/sha256.json
-          if-no-files-found: error
+            artifacts/browser-diagnostics/**
+          if-no-files-found: ignore
 
       - name: Upload e2e logs on failure
         if: failure()

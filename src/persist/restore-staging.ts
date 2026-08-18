@@ -21,8 +21,8 @@ function stagedManifest(manifest: BinarySnapshotManifest, stageRoot: string, sco
   const files = manifest.filePaths;
   if (!files) throw new BinarySnapshotCorruptionError('snapshot inventory is missing');
   const mapPath = (path: string): string => {
-    if (scopeRoot === '/') return `${stageRoot}${path}`;
     if (path === scopeRoot) return stageRoot;
+    if (scopeRoot === '/') return `${stageRoot}${path}`;
     if (!path.startsWith(`${scopeRoot}/`)) throw new BinarySnapshotCorruptionError('snapshot inventory escapes its workspace root');
     return `${stageRoot}${path.slice(scopeRoot.length)}`;
   };
@@ -58,6 +58,19 @@ export async function importVerifiedBinary(
       throw new BinarySnapshotCorruptionError(
         `snapshot import inventory does not match its manifest${missing ? `; missing ${missing}` : ''}${unexpected ? `; unexpected ${unexpected}` : ''}`,
       );
+    }
+    if (manifest.emptyDirs !== undefined) {
+      const expectedEmptyDirs = [...(staged.emptyDirs ?? [])].sort();
+      const actualEmptyDirs = actual.emptyDirs
+        .filter((path) => path !== stageRoot || expectedEmptyDirs.includes(stageRoot))
+        .sort();
+      if (actualEmptyDirs.join('\u0000') !== expectedEmptyDirs.join('\u0000')) {
+        const missing = expectedEmptyDirs.find((path) => !actualEmptyDirs.includes(path));
+        const unexpected = actualEmptyDirs.find((path) => !expectedEmptyDirs.includes(path));
+        throw new BinarySnapshotCorruptionError(
+          `snapshot import empty-directory inventory does not match its manifest${missing ? `; missing ${missing}` : ''}${unexpected ? `; unexpected ${unexpected}` : ''}`,
+        );
+      }
     }
 
     const beforeData = await container.export(exportRoot, exportOptions());

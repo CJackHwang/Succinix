@@ -1,5 +1,5 @@
 // host-procs.ts 单元测试（TASK-CISOL R1）：进程归属判定 + 登记时记录 cwd → ps() 附加 scope/containerId。
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { describe, it, expect, vi } from 'vitest';
@@ -14,6 +14,7 @@ import {
   registerProcess,
   terminateProcessesForInstance,
 } from '../src/engine/host-procs.js';
+import { attachOutputCollector } from '../src/engine/host/spawn.js';
 
 /** 最小 ChildProcess 替身（registerProcess 只依赖 pid / on / kill）。 */
 function fakeChild(pid: number): ChildProcess {
@@ -24,6 +25,23 @@ function fakeChild(pid: number): ChildProcess {
   };
   return child as ChildProcess;
 }
+
+describe('child process UTF-8 output collection', () => {
+  it('preserves CJK and astral code points split across stdout chunks', () => {
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const collector = attachOutputCollector({ stdout, stderr } as never, 1, 'accumulate');
+    const value = Buffer.from('中😀');
+
+    stdout.emit('data', value.subarray(0, 2));
+    stdout.emit('data', value.subarray(2, 5));
+    stdout.emit('data', value.subarray(5));
+    collector.flush();
+
+    expect(collector.stdout()).toBe('中😀');
+    expect(collector.stdout()).not.toContain('\uFFFD');
+  });
+});
 
 describe('classifyProcess（归属判定）', () => {
   it('classifies host / python daemon / /usr/lib/succinix launches as system', () => {

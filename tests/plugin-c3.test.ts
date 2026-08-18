@@ -104,6 +104,11 @@ describe('instance request parsing (C3)', () => {
     expect(resolveInstanceRequest(new URLSearchParams('?instance=default'))).toEqual({ id: null, userMode: false, demo: false });
     expect(resolveInstanceRequest(new URLSearchParams('?user=default'))).toEqual({ id: null, userMode: false, demo: false });
   });
+
+  it('rejects malformed URL instance identifiers before boot', () => {
+    expect(() => resolveInstanceRequest(new URLSearchParams('?instance=../other'))).toThrow(/invalid instance id/);
+    expect(() => resolveInstanceRequest(new URLSearchParams('?user=with%20space'))).toThrow(/invalid instance id/);
+  });
 });
 
 describe('Cordis app plugin tree (C3)', () => {

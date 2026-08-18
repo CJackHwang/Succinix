@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { validateEvidenceHead } from '../scripts/check-status-evidence.mjs';
+import { REQUIRED_GATE_COMMANDS, validateEvidenceHead } from '../scripts/check-status-evidence.mjs';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = resolve(ROOT, 'scripts/check-status-evidence.mjs');
@@ -28,14 +28,21 @@ function validEvidence(): {
   head: string;
   recordedAt: string;
   environment: Record<string, string>;
-  commands: Array<{ command: string; result: string }>;
+    commands: Array<{ command: string; result: string; exitCode: number; completedAt: string; outputSha256: string; summary: string }>;
 } {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     head: HEAD,
     recordedAt: '2026-08-18T00:00:00.000Z',
     environment: { node: process.version, platform: process.platform, arch: process.arch },
-    commands: [{ command: 'npm run check', result: 'passed' }],
+    commands: REQUIRED_GATE_COMMANDS.map((command) => ({
+      command,
+      result: 'passed',
+      exitCode: 0,
+      completedAt: '2026-08-18T00:00:00.000Z',
+      outputSha256: 'a'.repeat(64),
+      summary: 'gate passed',
+    })),
   };
 }
 
@@ -97,11 +104,23 @@ describe('status evidence gate', () => {
 
   it('rejects missing dashboard sections and malformed command results', () => {
     const evidence = validEvidence();
-    evidence.commands = [{ command: '', result: 'unknown' }];
+    evidence.commands = [{ command: '', result: 'unknown', exitCode: 0, completedAt: 'invalid', outputSha256: 'bad', summary: '' }];
     const result = verify(statusFile(evidence, ['一、架构健康度', '二、本次变更影响范围', '三、已知风险点']));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('expected exactly these sections in order');
     expect(result.stderr).toContain('commands[0].command must be a non-empty string');
     expect(result.stderr).toContain('commands[0].result must be one of');
+  });
+
+  it('rejects incomplete, duplicated, or internally inconsistent release-gate evidence', () => {
+    const evidence = validEvidence();
+    evidence.commands[0] = { ...evidence.commands[0]!, exitCode: 1 };
+    evidence.commands.pop();
+    evidence.commands.push({ ...evidence.commands[0]! });
+    const result = verify(statusFile(evidence));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('exitCode must be 0 when result is passed');
+    expect(result.stderr).toContain('command is duplicated');
+    expect(result.stderr).toContain('commands must include required release gate');
   });
 });

@@ -30,6 +30,7 @@ export default defineConfig({
         'src/terminal/transport.ts',
         'src/persist/binary-v2.ts',
         'src/persist/context.ts',
+        'src/persist/restore-staging.ts',
         'src/persist/session-segments.ts',
         'src/userland/registry.ts',
         'src/engine/host/git-world.ts',
@@ -42,6 +43,14 @@ export default defineConfig({
         functions: 70,
         branches: 70,
         statements: 70,
+        // Risk-heavy orchestration modules have explicit thresholds so a high
+        // aggregate cannot hide untested lifecycle branches.
+        'src/engine/host/main.ts': { lines: 65, functions: 45, branches: 65, statements: 60 },
+        'src/engine/host/run.ts': { lines: 65, functions: 40, branches: 55, statements: 62 },
+        'src/engine/host/terminal.ts': { lines: 80, functions: 70, branches: 70, statements: 75 },
+        'src/terminal/transport.ts': { lines: 75, functions: 60, branches: 60, statements: 68 },
+        'src/persist/binary-v2.ts': { lines: 80, functions: 70, branches: 55, statements: 70 },
+        'src/persist/restore-staging.ts': { lines: 75, functions: 65, branches: 50, statements: 65 },
       },
     },
   },

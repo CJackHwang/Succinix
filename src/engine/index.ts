@@ -38,6 +38,7 @@ export type {
 
 export { TerminalClient, type ExecResult, type CommandLogEntry } from './client.js';
 export type { ProcInfo } from './host-procs.js';
+export { isValidInstanceId, normalizeInstanceId } from './host-route.js';
 export { ensurePythonRuntime, PYTHON_RUNTIME_DIR } from './python-assets.js';
 export { ensureRubyRuntime, RUBY_RUNTIME_DIR, RUBY_RUNTIME_VERSION } from './ruby-assets.js';
 export {
@@ -65,7 +66,7 @@ export {
   type BrowserRpcTerminalOptions,
   type TerminalTransportFs,
 } from '../terminal/transport.js';
-export { TERMINAL_MAX_BUFFER_BYTES } from '../terminal/transport-protocol.js';
+export { TERMINAL_MAX_BUFFER_BYTES, TerminalBackpressureError } from '../terminal/transport-protocol.js';
 export type {
   TerminalIdentity,
   TerminalOutputFrame,

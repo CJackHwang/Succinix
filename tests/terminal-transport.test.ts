@@ -196,17 +196,20 @@ describe('terminal mailbox transport', () => {
 });
 
 describe('terminal backpressure', () => {
-  it('host terminal flips backpressure state and emits a control frame', () => {
+  it('host terminal rejects an oversized write before buffering any of it', () => {
     const fs = new MemoryFs();
     const events: number[] = [];
     const term = new RpcTerminal(identity(), { fs, maxBufferedBytes: 16, onBackpressure: (bytes) => events.push(bytes) });
-    term.write('x'.repeat(32));
+    expect(() => term.write('x'.repeat(32))).toThrow(/terminal backpressure/);
     expect(term.backpressured).toBe(true);
-    expect(events).toContain(16);
+    expect(events).toContain(0);
     const controlPath = hostMailboxPath(identity(), 'out-000000000001.json');
     const frame = JSON.parse(fs.readFileSync(controlPath, 'utf8'));
     expect(frame.control).toBe('backpressure');
-    expect(frame.bufferedBytes).toBe(16);
+    expect(frame.bufferedBytes).toBe(0);
+    expect(term.bufferedBytes).toBe(0);
+    expect(term.discardedOutputBytes).toBe(0);
+    term.write('x'.repeat(16));
     term.flush();
     expect(term.bufferedBytes).toBe(0);
     expect(term.backpressured).toBe(true);
@@ -228,7 +231,7 @@ describe('terminal backpressure', () => {
     expect(term).toMatchObject({ cols: 120, rows: 40 });
   });
 
-  it('caps unacknowledged output and resumes after the browser ACK', () => {
+  it('rejects unacknowledged output atomically and resumes after the browser ACK', () => {
     const fs = new MemoryFs();
     let opened: RpcTerminal | undefined;
     const host = new TerminalMailboxHost((open, opts) => {
@@ -237,12 +240,14 @@ describe('terminal backpressure', () => {
     }, { fs });
     fs.writeFileSync(hostMailboxPath(identity(), 'open.json'), JSON.stringify({ ...identity(), type: 'open', cols: 80, rows: 24 }));
     host.poll();
-    opened!.write('abcdefghijk');
+    expect(() => opened!.write('abcdefghijk')).toThrow(/terminal backpressure/);
+    expect(opened!.unacknowledgedBytes).toBe(0);
+    expect(opened!.discardedOutputBytes).toBe(0);
+    opened!.write('abcdefgh');
     opened!.flush();
     expect(opened!.unacknowledgedBytes).toBe(8);
-    expect(opened!.discardedOutputBytes).toBe(3);
-    opened!.write('later');
-    expect(opened!.discardedOutputBytes).toBe(8);
+    expect(() => opened!.write('later')).toThrow(/terminal backpressure/);
+    expect(opened!.discardedOutputBytes).toBe(0);
 
     fs.writeFileSync(hostMailboxPath(identity(), 'ack.json'), JSON.stringify({ ...identity(), type: 'ack', ack: 2 }));
     host.poll();

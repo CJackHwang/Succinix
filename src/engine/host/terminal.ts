@@ -11,6 +11,7 @@ import {
   isTerminalIdentity,
   parseFrameSequence,
   type TerminalAckFrame,
+  TerminalBackpressureError,
   type TerminalIdentity,
   type TerminalInputFrame,
   type TerminalOpenFrame,
@@ -26,7 +27,6 @@ import {
   rootPath,
   sameIdentity,
   splitByBytes,
-  takePrefixByBytes,
   unlinkQuiet,
   type TerminalMailboxFs,
 } from './terminal-mailbox-utils.js';
@@ -99,9 +99,13 @@ export class RpcTerminal implements ITerminal {
     // Output which has not been acknowledged also occupies the session budget.
     // ITerminal.write() is synchronous, so the only available producer-control
     // contract is deterministic refusal of the tail once that budget is full.
-    const accepted = takePrefixByBytes(data, this.availableBytes());
-    this.discardedBytes += byteLength(data) - byteLength(accepted);
-    for (const chunk of splitByBytes(accepted, TERMINAL_FRAME_LIMIT)) {
+    const dataBytes = byteLength(data);
+    const availableBytes = this.availableBytes();
+    if (dataBytes > availableBytes) {
+      this.setBackpressure();
+      throw new TerminalBackpressureError(dataBytes, availableBytes);
+    }
+    for (const chunk of splitByBytes(data, TERMINAL_FRAME_LIMIT)) {
       this.pending.push(chunk);
       this.pendingBytes += byteLength(chunk);
     }
@@ -134,10 +138,11 @@ export class RpcTerminal implements ITerminal {
   acceptInput(data: string): void {
     if (this._disposed || !data) return;
     if (this.listeners.size === 0) {
-      const accepted = takePrefixByBytes(data, Math.max(0, this.maxBufferedBytes - this.earlyInputBytes));
-      if (!accepted) return;
-      this.earlyInput.push(accepted);
-      this.earlyInputBytes += byteLength(accepted);
+      const dataBytes = byteLength(data);
+      const availableBytes = Math.max(0, this.maxBufferedBytes - this.earlyInputBytes);
+      if (dataBytes > availableBytes) throw new TerminalBackpressureError(dataBytes, availableBytes);
+      this.earlyInput.push(data);
+      this.earlyInputBytes += dataBytes;
       return;
     }
     for (const listener of [...this.listeners]) listener(data);
@@ -220,6 +225,14 @@ export class RpcTerminal implements ITerminal {
     this._backpressured = now;
     this.onBackpressure?.(this.pendingBytes);
     if (!this._disposed) this.control('backpressure', undefined, undefined, undefined, this.pendingBytes);
+  }
+
+  private setBackpressure(): void {
+    if (!this._backpressured) {
+      this._backpressured = true;
+      this.onBackpressure?.(this.pendingBytes + this.outstandingBytes);
+      if (!this._disposed) this.control('backpressure', undefined, undefined, undefined, this.pendingBytes + this.outstandingBytes);
+    }
   }
 
   /** The mailbox host calls this only after validating a browser ACK. */
@@ -392,20 +405,32 @@ export class TerminalMailboxHost {
     const inputs = names.map((name) => ({ name, seq: parseFrameSequence(name, 'in') })).filter((x): x is { name: string; seq: number } => x.seq !== null).sort((a, b) => a.seq - b.seq);
     for (const input of inputs) {
       const frame = readJson(this.mailboxFs, `${dir}/${input.name}`) as TerminalInputFrame | null;
-      unlinkQuiet(this.mailboxFs, `${dir}/${input.name}`);
-      if (!frame || !isTerminalIdentity(frame) || !sameIdentity(frame, state.identity)) continue;
-      if (frame.seq <= state.lastInput) continue;
+      if (!frame || !isTerminalIdentity(frame) || !sameIdentity(frame, state.identity)) {
+        unlinkQuiet(this.mailboxFs, `${dir}/${input.name}`);
+        continue;
+      }
+      if (frame.seq <= state.lastInput) {
+        unlinkQuiet(this.mailboxFs, `${dir}/${input.name}`);
+        continue;
+      }
+      try {
+        if (frame.type === 'input') state.terminal.acceptInput(frame.data ?? '');
+        else if (frame.type === 'resize') state.terminal.resize(frame.cols ?? state.terminal.cols, frame.rows ?? state.terminal.rows);
+        else if (frame.type === 'focus') state.terminal.focus();
+        else if (frame.type === 'clear') state.terminal.clear();
+        else if (frame.type === 'dispose') {
+          unlinkQuiet(this.mailboxFs, `${dir}/${input.name}`);
+          this.closeSession(key, dir, state);
+          break;
+        }
+      } catch (error) {
+        if (error instanceof Error && error.name === 'TerminalBackpressureError') break;
+        throw error;
+      }
       state.lastInput = frame.seq;
       state.lastSeenAt = this.now();
       handled++;
-      if (frame.type === 'input') state.terminal.acceptInput(frame.data ?? '');
-      else if (frame.type === 'resize') state.terminal.resize(frame.cols ?? state.terminal.cols, frame.rows ?? state.terminal.rows);
-      else if (frame.type === 'focus') state.terminal.focus();
-      else if (frame.type === 'clear') state.terminal.clear();
-      else if (frame.type === 'dispose') {
-        this.closeSession(key, dir, state);
-        break;
-      }
+      unlinkQuiet(this.mailboxFs, `${dir}/${input.name}`);
     }
     state.terminal.flush();
     return handled;

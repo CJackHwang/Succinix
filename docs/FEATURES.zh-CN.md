@@ -1,7 +1,7 @@
 # SuccinixOS — 支持的功能与能力
 
-> **SuccinixOS 当前支持能力的权威清单。** 每一项都已实现并验证——此处绝无愿景或臆测。
-> **来源（Source）** 列标注实现它的 TASK（详见 CHANGELOG）或记录它的权威文档。
+> **SuccinixOS 当前实现清单，不是发布证书。** “来源”列标注实现或测量依据；标有 `LV`、`S`、
+> `ST` 的条目引用可复现浏览器测量，其余条目描述当前源码契约，仍须通过第 11 节发布门禁。
 > 英文版：[FEATURES.md](FEATURES.md)
 
 ## 1. 系统概览
@@ -18,8 +18,8 @@ SuccinixOS 是**浏览器原生 Linux**：浏览器标签页内的全屏 Unix �
 | 产品 | SuccinixOS（原 WebUnix）—— 统一品牌，零功能改动 | TASK26 |
 | 引擎 | dsh Cordis 插件：`ctx.fs`、`ctx.sandbox`、`ctx.terminals`、`ctx.sessionPersistence`（统一路由：`node|npm|npx` → 真实 Node 子进程；其余 → Lifo 沙箱） | TASK1, C2 |
 | 运行时 | WebContainer + Lifo，共享虚拟化 `node:fs`（浏览器 `wc.fs`、Node 子进程、Lifo —— 同一棵树） | TASK1, README |
-| Succinix 应用版本 | **0.6.0** | CHANGELOG |
-| 引擎包 | **`@succinix/engine` 0.6.0** — dsh Cordis 插件（`@deepseek-ai/cordis@4.0.1`） | CHANGELOG, cordis-contract.md |
+| Succinix 应用版本 | **0.7.0** | `src/plugin/host-service.ts` |
+| 引擎包 | **`@succinix/engine` 0.7.0** — dsh Cordis 插件（`@deepseek-ai/cordis@4.0.1`） | `packages/engine/package.json`, cordis-contract.md |
 | 许可 | **MIT** © 2026 CJackHwang | README |
 | 浏览器 | 仅 Chromium 系（Chrome/Edge）+ COOP/COEP 跨源隔离 + SharedArrayBuffer | TASK4, README |
 
@@ -188,10 +188,10 @@ secret 与 URL query secret 永不落入 `/var/log/succinix.log`、telemetry 事
 ## 9. 生态 / SDK
 
 - **解耦引擎、dsh 单轨**：命令执行核心位于 `src/engine/` 且保持 Cordis-free；
-  `src/plugin/` 是薄 Cordis 层。`@succinix/engine@0.6.0` 是唯一对外形态：
+  `src/plugin/` 是薄 Cordis 层。`@succinix/engine@0.7.0` 是唯一对外形态：
   插件注册名为 `succinix`，经 `ctx.fs` / `ctx.sandbox` / `ctx.terminals` /
   `ctx.sessionPersistence` 消费。 | C1–C6, AGENTS.md
-- **权威协议**：`docs/PROTOCOL.md` 是文件 RPC 线上契约（版本 1）——请求/响应形态、命令路由、
+- **权威协议**：`docs/PROTOCOL.md` 是文件 RPC 线上契约（版本 2）——请求/响应形态、命令路由、
   进程模型、端口事件、超时；生态使用方可仅凭它构建替代客户端/host。 | TASK21, PROTOCOL.md
 - **发布包导出**：`.`（插件入口 `{ name, apply, Config }` + 类型）、`./host.js` +
   `./lifo-core.js`（容器内资产）、`./assets/*`（Pyodide + SHA 清单）、`./package.json`。
@@ -212,12 +212,12 @@ secret 与 URL query secret 永不落入 `/var/log/succinix.log`、telemetry 事
 - **生命周期语义**：页面级 HostManager 单例；fiber reload 不重启 host；`dispose()` 软收尾、
   `shutdown()` 完全关闭；`attach`/`boot` 模式互斥抛 `ERR_MODE_MISMATCH`；资产 SHA-256 完整性
   默认启用。 | C2, C5
-- **多实例（0.6.0+）** —— `host.ensureInstance(id, opts)` 在共享页面 host 上
+- **多实例（0.7.0+）** —— `host.ensureInstance(id, opts)` 在共享页面 host 上
   创建或复用按实例栈。`?instance=<id>` 以命名实例启动应用：状态文件
   （`/workspace/.succinix-<id>`）、IndexedDB 快照键、env、服务/端口视图与
   进程视图均按实例；跨实例 `kill` 拒绝。不同 id 的双 tab 完全隔离（独立
   host —— 已 e2e 验证）。 | M1–M5, PROTOCOL.md
-- **多用户（0.6.0+）** —— `?user=<id>`（`?instance=<id>` 的别名）种子每用户 home
+- **多用户（0.7.0+）** —— `?user=<id>`（`?instance=<id>` 的别名）种子每用户 home
   （`/workspace/users/<id>`）：会话在 home 内启动（提示符 `~`、node/python spawn 从 home 起步），
   `whoami`/提示符显示用户；状态/快照/进程视图按用户，含 `ps` 过滤 + `kill` 授权（组织性隔离，
   非安全边界）。 | U1, SDK.md
@@ -276,10 +276,10 @@ npm run dev          # 启动 Vite dev server（COOP/COEP 已预配置）
 - **README** —— 概览、用法、架构：[英文](../README.md) · [中文](README.zh-CN.md)
 - **FEATURES** —— 本文档：[英文](FEATURES.md) · [中文](FEATURES.zh-CN.md)
 - **LANGUAGES** —— 实测语言支持矩阵：[英文](LANGUAGES.md) · [中文](LANGUAGES.zh-CN.md)
-- **PROTOCOL** —— 文件 RPC 线上契约（v1）：[英文](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
+- **PROTOCOL** —— 文件 RPC 线上契约（v2）：[英文](PROTOCOL.md) · [中文](PROTOCOL.zh-CN.md)
 - **SDK** —— Cordis 插件集成：[英文](SDK.md) · [中文](SDK.zh-CN.md)
 - **PLUGIN** —— 第三方 Cordis 插件开发：[英文](PLUGIN.md)
-- **MIGRATION** —— 0.4.0/0.5.0 到 0.6.0 迁移指南：[英文](MIGRATION.md)
+- **MIGRATION** —— 0.4.0/0.5.0/0.6.0 到 0.7.0 迁移指南：[英文](MIGRATION.md)
 - **cordis-contract** —— 契约快照与验证器：[英文](cordis-contract.md)
 - **AGENTS** —— Agent 与设计规范：[英文](../AGENTS.md) · [中文](../AGENTS.zh-CN.md)
 - **CHANGELOG** —— 变更历史：[英文](../CHANGELOG.md) · [中文](../CHANGELOG.zh-CN.md)

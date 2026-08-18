@@ -106,13 +106,15 @@ describe('instance terminal scheduler', () => {
     }
   });
 
-  it('bounds detached output and preserves terminal device controls after reconnect', () => {
+  it('rejects a detached output write atomically and preserves terminal device controls after reconnect', () => {
     const hub = new TerminalHub(80, 24, 4);
-    hub.write('abcdef');
+    expect(() => hub.write('abcdef')).toThrow(/terminal backpressure/);
 
-    expect(hub.bufferedBytes).toBe(4);
-    expect(hub.discardedBytes).toBe(2);
+    expect(hub.bufferedBytes).toBe(0);
+    expect(hub.discardedBytes).toBe(0);
     expect(hub.backpressured).toBe(true);
+
+    hub.write('abcd');
 
     const device = new Device();
     hub.attach(device);
@@ -128,7 +130,7 @@ describe('instance terminal scheduler', () => {
     expect(device).toMatchObject({ cols: 120, rows: 40 });
   });
 
-  it('replaces stale device listeners and bounds terminal input queued behind a batch', async () => {
+  it('replaces stale device listeners and rejects terminal input queued behind a batch atomically', async () => {
     const hub = new TerminalHub(80, 24, 4);
     const first = new Device();
     const second = new Device();
@@ -145,8 +147,10 @@ describe('instance terminal scheduler', () => {
 
     const batch = hub.runBatch(async () => { started(); await blocked; }, 1_000);
     await active;
-    second.emit('abcde');
-    expect(hub.discardedInputBytes).toBe(1);
+    expect(() => second.emit('abcde')).toThrow(/terminal backpressure/);
+    expect(hub.discardedInputBytes).toBe(0);
+
+    second.emit('abcd');
 
     release();
     await batch;

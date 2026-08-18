@@ -102,9 +102,9 @@ host 完成校验、去重登记并接管请求后，以临时文件 + rename �
 }
 ```
 
-客户端最长等待 `min(请求超时, 5000 ms)`。只有 `protocolVersion`、`id`、`bootNonce` 与归一化
-`instanceId` 全部匹配才算送达；陈旧或跨实例 ack 被忽略。读到有效 ack 后客户端删除 ack 文件，
-释放投递槽，但继续独立轮询该请求的结果。
+客户端使用调用方提供的端到端请求超时等待 ack（包含首次懒加载 Lifo 内核的时间）。只有
+`protocolVersion`、`id`、`bootNonce` 与归一化 `instanceId` 全部匹配才算送达；陈旧或跨实例 ack
+被忽略。读到有效 ack 后客户端删除 ack 文件，释放投递槽，但继续独立轮询该请求的结果。
 
 ## 3. 响应格式（`/result-<id>.json`）
 

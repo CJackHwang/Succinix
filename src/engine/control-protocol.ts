@@ -1,6 +1,7 @@
 // Browser control-plane handshake shared by the WebContainer host and page.
 // The payload intentionally contains only fixed management actions; it is not
 // a terminal-command protocol and cannot be used to evaluate shell text.
+import { isValidInstanceId } from './host-route.js';
 
 export const CONTROL_PROTOCOL_VERSION = 1 as const;
 export const CONTROL_REQUEST_ROOT = '/.succinix-control';
@@ -58,7 +59,7 @@ export function isBrowserControlRequest(value: unknown): value is BrowserControl
   return request.protocolVersion === CONTROL_PROTOCOL_VERSION &&
     typeof request.requestId === 'string' && CONTROL_ID_RE.test(request.requestId) &&
     isBrowserControlAction(request.action) &&
-    typeof request.instanceId === 'string' && request.instanceId.length > 0 && request.instanceId.length <= 128 &&
+    isValidInstanceId(request.instanceId) &&
     (request.args === undefined || (typeof request.args === 'object' && request.args !== null && !Array.isArray(request.args))) &&
     typeof request.requestedAt === 'number' && Number.isFinite(request.requestedAt) &&
     typeof request.expiresAt === 'number' && Number.isFinite(request.expiresAt) && request.expiresAt >= request.requestedAt;

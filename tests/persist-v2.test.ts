@@ -219,6 +219,35 @@ describe('binary persistence v2', () => {
     }
   });
 
+  it('rejects a staging empty-directory inventory mismatch before touching the target', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    const source = new FakeFS();
+    await source.mkdir('/empty-workspace', { recursive: true });
+    const target = new FakeFS();
+    await target.writeFile('/keep.txt', 'keep');
+    let finalMounts = 0;
+    const container = {
+      fs: source as unknown as FileSystemAPI,
+      export: async () => new Uint8Array([7]),
+      mount: async (_data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        if (root.includes('.succinix-restore-stage-')) return;
+        finalMounts++;
+      },
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-empty-dir-${Math.random()}` } });
+      await persist.save(source as unknown as FileSystemAPI, true);
+
+      await expect(persist.load(target as unknown as FileSystemAPI)).rejects.toThrow(/empty-directory inventory/);
+      expect(finalMounts).toBe(0);
+      expect(target.raw('/keep.txt')).toBe('keep');
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
   it('maps fs-space scopeRoot to the container workdir for export while keeping mount at the scope root', async () => {
     const previousIndexedDB = globalThis.indexedDB;
     Object.assign(globalThis, { indexedDB: fakeIndexedDB() });

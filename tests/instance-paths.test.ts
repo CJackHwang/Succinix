@@ -16,6 +16,7 @@ import {
   instanceStateRootFor,
   instanceStateFile,
 } from '../src/engine/host-route.js';
+import { getPersist, instancePersistKey } from '../src/persist/registry.js';
 
 describe('browser statePath (M2)', () => {
   it('default instance keeps the current /etc paths unchanged', () => {
@@ -81,5 +82,13 @@ describe('user home paths (U1)', () => {
   it('home cwd seed path aligns with the host instance state file (browser == host view)', () => {
     // boot 种子写入的浏览器路径 == host loadSessionCwd 读取的真实路径（root = process.cwd()）。
     expect(statePath('a', 'etc/succinix.cwd')).toBe('/workspace/.succinix-a/etc/succinix.cwd');
+  });
+});
+
+describe('persistence instance identities', () => {
+  it('uses the shared canonicalizer before constructing persistence keys', () => {
+    expect(instancePersistKey('team_1-a')).toBe('instance:team_1-a');
+    expect(() => instancePersistKey('../other')).toThrow(/invalid instance id/);
+    expect(() => getPersist('with space')).toThrow(/invalid instance id/);
   });
 });

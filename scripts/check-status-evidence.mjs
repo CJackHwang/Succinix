@@ -16,6 +16,22 @@ const REQUIRED_SECTIONS = [
   '四、下次最该做的事',
 ];
 const RESULT_VALUES = new Set(['passed', 'failed', 'blocked', 'skipped']);
+export const REQUIRED_GATE_COMMANDS = [
+  'npx tsc -p tsconfig.json --noEmit',
+  'node scripts/build-host.mjs',
+  'npm run build',
+  'npm run lint',
+  'npm run test',
+  'npm run test:coverage',
+  'npm run check:docs',
+  'npm run check:plugin-boundaries',
+  'npm run check:engine-package',
+  'npm run test:e2e',
+  'npm run test:bench',
+  'npm run test:bench:soak',
+];
+const REQUIRED_GATE_COMMAND_SET = new Set(REQUIRED_GATE_COMMANDS);
+const SHA256_RE = /^[a-f0-9]{64}$/;
 
 function gitOutput(args) {
   try {
@@ -81,7 +97,7 @@ function parseEvidence(text) {
 function evidenceFailures(evidence, headContext) {
   const failures = [];
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return ['STATUS_EVIDENCE must be an object'];
-  if (evidence.schemaVersion !== 1) failures.push('schemaVersion must be 1');
+  if (evidence.schemaVersion !== 2) failures.push('schemaVersion must be 2');
   const headFailure = validateEvidenceHead(evidence.head, headContext);
   if (headFailure) failures.push(headFailure);
   if (!Number.isFinite(Date.parse(evidence.recordedAt))) failures.push('recordedAt must be an ISO date');
@@ -90,16 +106,43 @@ function evidenceFailures(evidence, headContext) {
       failures.push(`environment.${key} must be a non-empty string`);
     }
   }
+  if (evidence.environment?.node !== process.version) failures.push(`environment.node must equal the current Node version ${process.version}`);
+  if (evidence.environment?.platform !== process.platform) failures.push(`environment.platform must equal the current platform ${process.platform}`);
+  if (evidence.environment?.arch !== process.arch) failures.push(`environment.arch must equal the current architecture ${process.arch}`);
   if (!Array.isArray(evidence.commands) || evidence.commands.length === 0) {
     failures.push('commands must contain at least one command result');
   } else {
+    const presentCommands = new Set();
     for (const [index, command] of evidence.commands.entries()) {
       if (!command || typeof command !== 'object' || Array.isArray(command)) {
         failures.push(`commands[${index}] must be an object`);
         continue;
       }
-      if (typeof command.command !== 'string' || !command.command.trim()) failures.push(`commands[${index}].command must be a non-empty string`);
-      if (!RESULT_VALUES.has(command.result)) failures.push(`commands[${index}].result must be one of ${[...RESULT_VALUES].join(', ')}`);
+      if (typeof command.command !== 'string' || !command.command.trim()) {
+        failures.push(`commands[${index}].command must be a non-empty string`);
+      } else if (!REQUIRED_GATE_COMMAND_SET.has(command.command)) {
+        failures.push(`commands[${index}].command is not an approved release gate`);
+      } else if (presentCommands.has(command.command)) {
+        failures.push(`commands[${index}].command is duplicated`);
+      } else {
+        presentCommands.add(command.command);
+      }
+      if (!RESULT_VALUES.has(command.result)) {
+        failures.push(`commands[${index}].result must be one of ${[...RESULT_VALUES].join(', ')}`);
+      }
+      if (!Number.isInteger(command.exitCode) || command.exitCode < 0 || command.exitCode > 255) {
+        failures.push(`commands[${index}].exitCode must be an integer from 0 to 255`);
+      } else if (command.result === 'passed' && command.exitCode !== 0) {
+        failures.push(`commands[${index}].exitCode must be 0 when result is passed`);
+      } else if (command.result !== 'passed' && command.exitCode === 0) {
+        failures.push(`commands[${index}].exitCode must be non-zero when result is not passed`);
+      }
+      if (!Number.isFinite(Date.parse(command.completedAt))) failures.push(`commands[${index}].completedAt must be an ISO date`);
+      if (typeof command.outputSha256 !== 'string' || !SHA256_RE.test(command.outputSha256)) failures.push(`commands[${index}].outputSha256 must be a SHA-256 digest`);
+      if (typeof command.summary !== 'string' || !command.summary.trim()) failures.push(`commands[${index}].summary must be a non-empty string`);
+    }
+    for (const required of REQUIRED_GATE_COMMANDS) {
+      if (!presentCommands.has(required)) failures.push(`commands must include required release gate: ${required}`);
     }
   }
   return failures;

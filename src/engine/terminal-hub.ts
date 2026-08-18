@@ -1,5 +1,5 @@
 import type { ITerminal } from '@lifo-sh/core';
-import { TERMINAL_MAX_BUFFER_BYTES } from '../terminal/transport-protocol.js';
+import { TERMINAL_MAX_BUFFER_BYTES, TerminalBackpressureError } from '../terminal/transport-protocol.js';
 
 /**
  * Stable terminal object supplied to `Sandbox.create` for an instance.
@@ -49,12 +49,17 @@ export class TerminalHub implements ITerminal {
     if (this.disposed) return;
     if (this.device === device) return;
     if (this.device) this.removeDeviceListeners(this.device);
-    this.device = device;
+    this.device = null;
     this._cols = device.cols;
     this._rows = device.rows;
-    for (const data of this.pendingOutput.splice(0)) device.write(data);
-    this.pendingBytes = 0;
-    this._backpressured = false;
+    while (this.pendingOutput.length) {
+      const data = this.pendingOutput[0]!;
+      device.write(data);
+      this.pendingOutput.shift();
+      this.pendingBytes -= byteLength(data);
+    }
+    this.updateBackpressure();
+    this.device = device;
     const listener = (data: string) => this.acceptInput(data);
     this.deviceListeners.set(device, listener);
     device.onData(listener);
@@ -74,14 +79,14 @@ export class TerminalHub implements ITerminal {
       this.device.write(data);
       return;
     }
-    const accepted = takePrefixByBytes(data, Math.max(0, this.maxPendingBytes - this.pendingBytes));
-    if (accepted) {
-      this.pendingOutput.push(accepted);
-      this.pendingBytes += byteLength(accepted);
+    const dataBytes = byteLength(data);
+    const availableBytes = Math.max(0, this.maxPendingBytes - this.pendingBytes);
+    if (dataBytes > availableBytes) {
+      this._backpressured = true;
+      throw new TerminalBackpressureError(dataBytes, availableBytes);
     }
-    this.droppedBytes += byteLength(data) - byteLength(accepted);
-    // ITerminal.write() cannot suspend the Lifo producer. Keep the earliest
-    // bytes and deterministically reject later output while the device is gone.
+    this.pendingOutput.push(data);
+    this.pendingBytes += dataBytes;
     this._backpressured = this.pendingBytes >= this.maxPendingBytes;
   }
 
@@ -167,27 +172,22 @@ export class TerminalHub implements ITerminal {
   }
 
   private enqueueInput(data: string): void {
-    const accepted = takePrefixByBytes(data, Math.max(0, this.maxPendingBytes - this.pendingInputBytes));
-    if (accepted) {
-      this.pendingInput.push(accepted);
-      this.pendingInputBytes += byteLength(accepted);
-    }
-    this.droppedInputBytes += byteLength(data) - byteLength(accepted);
+    const dataBytes = byteLength(data);
+    const availableBytes = Math.max(0, this.maxPendingBytes - this.pendingInputBytes - this.pendingSubmittedInputBytes);
+    if (dataBytes > availableBytes) throw new TerminalBackpressureError(dataBytes, availableBytes);
+    this.pendingInput.push(data);
+    this.pendingInputBytes += dataBytes;
     this.updateBackpressure();
   }
 
   private enqueueSubmittedInput(data: string): void {
-    let acceptedBytes = 0;
     for (const submission of splitCommandSubmissions(data)) {
-      const accepted = takePrefixByBytes(submission, Math.max(0, this.maxPendingBytes - this.pendingSubmittedInputBytes));
-      if (accepted) {
-        this.pendingSubmittedInput.push(accepted);
-        this.pendingSubmittedInputBytes += byteLength(accepted);
-      }
-      acceptedBytes += byteLength(accepted);
-      if (byteLength(accepted) < byteLength(submission)) break;
+      const submissionBytes = byteLength(submission);
+      const availableBytes = Math.max(0, this.maxPendingBytes - this.pendingInputBytes - this.pendingSubmittedInputBytes);
+      if (submissionBytes > availableBytes) throw new TerminalBackpressureError(submissionBytes, availableBytes);
+      this.pendingSubmittedInput.push(submission);
+      this.pendingSubmittedInputBytes += submissionBytes;
     }
-    this.droppedInputBytes += byteLength(data) - acceptedBytes;
     this.updateBackpressure();
   }
 
@@ -278,18 +278,4 @@ function saneDimension(value: number, fallback: number): number {
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-function takePrefixByBytes(value: string, limit: number): string {
-  if (limit <= 0) return '';
-  if (byteLength(value) <= limit) return value;
-  let out = '';
-  let used = 0;
-  for (const character of value) {
-    const size = byteLength(character);
-    if (used + size > limit) break;
-    out += character;
-    used += size;
-  }
-  return out;
 }

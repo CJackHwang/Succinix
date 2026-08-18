@@ -1,5 +1,6 @@
 // host spawn 域（O3 拆分）：共享子进程工具（spawnTracked/输出接线/后台 spawn）。
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import {
   PROCESS_TERMINATION_GRACE_MS,
   appendProcessOutput,
@@ -34,11 +35,13 @@ export function attachOutputCollector(
   child: ReturnType<typeof spawn>,
   pid: number,
   mode: OutputMode
-): { stdout: () => string; stderr: () => string } {
+): { stdout: () => string; stderr: () => string; flush: () => void } {
   let stdout = '';
   let stderr = '';
-  const collect = (which: 'stdout' | 'stderr') => (d: Buffer) => {
-    const s = d.toString();
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
+  let flushed = false;
+  const collect = (which: 'stdout' | 'stderr', s: string) => {
     if (mode !== 'append') {
       // Keep stdout and stderr combined below one UTF-8 byte budget. JS string
       // length measures UTF-16 code units and lets CJK/astral output bypass a
@@ -53,9 +56,15 @@ export function attachOutputCollector(
     }
     if (mode !== 'accumulate') appendProcessOutput(pid, s);
   };
-  child.stdout?.on('data', collect('stdout'));
-  child.stderr?.on('data', collect('stderr'));
-  return { stdout: () => stdout, stderr: () => stderr };
+  child.stdout?.on('data', (d: Buffer) => collect('stdout', stdoutDecoder.write(d)));
+  child.stderr?.on('data', (d: Buffer) => collect('stderr', stderrDecoder.write(d)));
+  const flush = (): void => {
+    if (flushed) return;
+    flushed = true;
+    collect('stdout', stdoutDecoder.end());
+    collect('stderr', stderrDecoder.end());
+  };
+  return { stdout: () => stdout, stderr: () => stderr, flush };
 }
 
 // spawn + 进程登记 + 输出接线一步到位（三处共用）。登记时记录 spawn cwd
@@ -88,10 +97,12 @@ export function spawnChild(
   reqId: RpcRequestId,
   label: string,
   instanceId: string
-): void {
+): Promise<void> {
+  return new Promise<void>((resolve) => {
   const cwd = resolveRequestCwd(instanceId, opts?.cwd);
   if ('error' in cwd) {
     writeResult(reqId, { ok: false, exitCode: 1, stdout: '', stderr: cwd.error, runtime: 'node' }, instanceId);
+    resolve();
     return;
   }
   const realCwd = cwd.cwd;
@@ -106,12 +117,16 @@ export function spawnChild(
 
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutSettleTimer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutPayload: Record<string, unknown> | undefined;
 
   const settle = (payload: Record<string, unknown>) => {
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    if (timeoutSettleTimer) clearTimeout(timeoutSettleTimer);
     currentRunByInstance.clearIf(instanceId, pid);
+    out.flush();
     // TASK18 输出上限：最终截断在 settle 应用，保证结果文件有界。
     // TASK24 坑 3：EACCES 提示在截断之后追加，保证即使输出超上限提示也在。
     writeResult(reqId, {
@@ -119,28 +134,31 @@ export function spawnChild(
       stdout: capOutput(out.stdout()),
       stderr: withEaccesHint(capOutput(out.stderr())),
     }, instanceId);
+    resolve();
   };
 
   // 超时兜底：避免挂死的子进程永久占坑；可被 opts.timeout 覆盖
   const timeoutMs = typeof opts?.timeout === 'number' ? opts.timeout : NODE_TIMEOUT_MS;
   timer = setTimeout(() => {
     if (child.exitCode === null) {
-      killProcess(pid, PROCESS_TERMINATION_GRACE_MS, 'SIGTERM');
-      settle({
+      timeoutPayload = {
         ok: false,
         exitCode: -1,
         stderr: `${label} subprocess timed out after ${timeoutMs}ms, terminating`,
         runtime: 'node',
-      });
+      };
+      killProcess(pid, PROCESS_TERMINATION_GRACE_MS, 'SIGTERM');
+      timeoutSettleTimer = setTimeout(() => settle(timeoutPayload!), PROCESS_TERMINATION_GRACE_MS + 25);
     }
   }, timeoutMs);
 
   child.on('close', (code: number | null) =>
-    settle({ ok: code === 0, exitCode: code ?? -1, runtime: 'node' })
+    settle(timeoutPayload ?? { ok: code === 0, exitCode: code ?? -1, runtime: 'node' })
   );
   child.on('error', (e: Error) =>
-    settle({ ok: false, exitCode: -1, stderr: String(e), runtime: 'node' })
+    settle(timeoutPayload ?? { ok: false, exitCode: -1, stderr: String(e), runtime: 'node' })
   );
+  });
 }
 
 // spawn：后台长驻进程（端口管理 / 数据库服务等）。
@@ -176,7 +194,7 @@ export function dispatchSpawn(req: CommandRequest): void {
   const realCwd = cwd.cwd;
   // 后台进程输出只追加进程表 outputTail（不截断累积）；TASK-CISOL 登记 cwd 供归属判定。
   const rawInteractive = req.opts?.interactive;
-  const { pid, child } = spawnTracked(prog, args, {
+  const { pid, child, out } = spawnTracked(prog, args, {
     cwd: realCwd,
     mode: 'append',
     instanceId: inst,
@@ -192,6 +210,7 @@ export function dispatchSpawn(req: CommandRequest): void {
     writeResult(req.id, payload, inst);
   };
   child.on('error', (e: Error) => {
+    out.flush();
     appendProcessOutput(pid, `[spawn error] ${e}\n`);
     markProcessExited(pid); // close 事件在 spawn 失败时不触发，进程表条目会永远停在 running —— 纠正为 exited
     settle({ ok: false, error: `spawn failed: ${e.message}`, runtime: 'node' });
@@ -200,6 +219,7 @@ export function dispatchSpawn(req: CommandRequest): void {
   // 旧实现只在 setImmediate 确认 ok:true，把注定失败的启动误报为成功（浏览器读到 ok:true + pid，
   // 之后进程才退出非零，结果文件对浏览器已不可见）。close(code!==0) 先于窗口到达即报失败。
   child.on('close', (code) => {
+    out.flush();
     if (!settled && code !== 0) {
       appendProcessOutput(pid, `[spawn early exit] code ${code ?? -1}\n`);
       settle({ ok: false, exitCode: code ?? -1, error: `spawned process exited early (code ${code ?? -1})`, runtime: 'node' });

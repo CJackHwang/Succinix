@@ -5,6 +5,7 @@ import type { PersistOptions } from './types.js';
 export interface SnapshotTreePaths {
   files: string[];
   dirs: string[];
+  emptyDirs: string[];
 }
 
 export async function listSnapshotTreePaths(
@@ -14,10 +15,14 @@ export async function listSnapshotTreePaths(
 ): Promise<SnapshotTreePaths> {
   const files: string[] = [];
   const dirs: string[] = [];
+  const emptyDirs: string[] = [];
   async function visit(dir: string): Promise<void> {
     let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
-    if (entries.length === 0) dirs.push(dir);
+    if (entries.length === 0) {
+      dirs.push(dir);
+      emptyDirs.push(dir);
+    }
     for (const entry of entries) {
       const path = dir === '/' ? `/${entry.name}` : `${dir}/${entry.name}`;
       if (skip(path)) continue;
@@ -26,7 +31,7 @@ export async function listSnapshotTreePaths(
     }
   }
   await visit(root);
-  return { files, dirs };
+  return { files, dirs, emptyDirs };
 }
 
 export async function removeStaleSnapshotPaths(

@@ -347,7 +347,7 @@ export async function dispatchRun(req: CommandRequest): Promise<void> {
     }
     const route = classifyRoute(command, hasShellMetaToken(t.tokens));
     if (route === 'node') {
-      runNode(command, req.opts, req.id, inst); // 立即返回；子进程结束时异步写结果
+      await runNode(command, req.opts, req.id, inst);
       return;
     }
     if (route === 'python') {

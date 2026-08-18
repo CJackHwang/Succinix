@@ -25,6 +25,7 @@ describe('browser control bridge', () => {
     expect(isBrowserControlRequest(request('snapshot'))).toBe(true);
     expect(isBrowserControlRequest({ ...request('snapshot'), action: 'run-shell' })).toBe(false);
     expect(isBrowserControlRequest({ ...request('snapshot'), args: 'echo unsafe' })).toBe(false);
+    expect(isBrowserControlRequest({ ...request('snapshot'), instanceId: '../other' })).toBe(false);
   });
 
   it('executes a fixed action once, writes a matched response, and removes the request', async () => {

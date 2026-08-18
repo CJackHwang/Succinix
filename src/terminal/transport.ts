@@ -9,6 +9,7 @@ import {
   mailboxPath,
   isTerminalIdentity,
   parseFrameSequence,
+  TerminalBackpressureError,
   type TerminalIdentity,
   type TerminalInputFrame,
   type TerminalOutputFrame,
@@ -62,7 +63,6 @@ export class RpcTerminalClient implements ITerminal {
   // first subscriber exists instead of silently losing it.
   private readonly pendingInitialOutput: string[] = [];
   private pendingInitialOutputBytes = 0;
-  private droppedInitialOutputBytes = 0;
   private readonly pending: Array<{ type: TerminalInputFrame['type']; data?: string; cols?: number; rows?: number }> = [];
   private pendingBytes = 0;
   private inputSeq = 0;
@@ -101,7 +101,7 @@ export class RpcTerminalClient implements ITerminal {
   get bootNonce(): string { return this._bootNonce; }
   get bufferedBytes(): number { return this.pendingBytes; }
   get bufferedInitialOutputBytes(): number { return this.pendingInitialOutputBytes; }
-  get discardedInitialOutputBytes(): number { return this.droppedInitialOutputBytes; }
+  get discardedInitialOutputBytes(): number { return 0; }
   get backpressured(): boolean { return this._backpressured; }
   get isFenced(): boolean { return this.fenced; }
   get sentInputSequence(): number { return this.inputSeq; }
@@ -127,17 +127,21 @@ export class RpcTerminalClient implements ITerminal {
   }
 
   write(data: string): void {
-    this.receivedOutputBytes += byteLength(data);
-    this.output?.(data);
-    if (!this.output && this.outputListeners.size === 0) {
-      const accepted = takePrefixByBytes(data, Math.max(0, this.maxBufferedBytes - this.pendingInitialOutputBytes));
-      if (accepted) {
-        this.pendingInitialOutput.push(accepted);
-        this.pendingInitialOutputBytes += byteLength(accepted);
-      }
-      this.droppedInitialOutputBytes += byteLength(data) - byteLength(accepted);
+    if (this.output) {
+      this.receivedOutputBytes += byteLength(data);
+      this.output(data);
       return;
     }
+    if (!this.output && this.outputListeners.size === 0) {
+      const dataBytes = byteLength(data);
+      const availableBytes = Math.max(0, this.maxBufferedBytes - this.pendingInitialOutputBytes);
+      if (dataBytes > availableBytes) throw new TerminalBackpressureError(dataBytes, availableBytes);
+      this.pendingInitialOutput.push(data);
+      this.pendingInitialOutputBytes += dataBytes;
+      this.receivedOutputBytes += dataBytes;
+      return;
+    }
+    this.receivedOutputBytes += byteLength(data);
     for (const listener of [...this.outputListeners]) listener(data);
   }
   writeln(data: string): void { this.write(`${data}\r\n`); }
@@ -164,8 +168,8 @@ export class RpcTerminalClient implements ITerminal {
     if (this.fenced) throw new Error('terminal session is fenced');
     await this.open();
     if (this.disposed) return;
-    for (const listener of [...this.dataListeners]) listener(data);
     if (!this.enqueue({ type: 'input', data })) throw new Error('terminal input backpressure');
+    for (const listener of [...this.dataListeners]) listener(data);
     await this.flushInput();
   }
 
@@ -329,10 +333,10 @@ export class RpcTerminalClient implements ITerminal {
         }
         if (frame.seq <= this.outputSeq) { await remove(this.fs, `${dir}/${item.name}`); continue; }
         if (frame.seq !== this.outputSeq + 1) break; // wait for replayed missing frame
-        this.outputSeq = frame.seq;
         if (frame.data) this.write(frame.data);
         if (frame.control) this.controlCallback?.(frame.control, frame);
         if (frame.control === 'backpressure') this.backpressureCallback?.(typeof frame.bufferedBytes === 'number' ? frame.bufferedBytes : 0);
+        this.outputSeq = frame.seq;
         await atomicWrite(this.fs, mailboxPath(this.identity(), 'ack.json'), JSON.stringify({ ...this.identity(), type: 'ack', ack: this.outputSeq }));
       }
     } catch {
@@ -384,19 +388,6 @@ function sameIdentity(a: TerminalIdentity, b: TerminalIdentity): boolean { retur
 function randomId(): string { const c = globalThis.crypto; if (c?.getRandomValues) { const b = new Uint32Array(3); c.getRandomValues(b); return [...b].map((n) => n.toString(36)).join('-'); } return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`; }
 function dimension(value: number | undefined, fallback: number): number { return Number.isFinite(value) && (value as number) > 0 ? Math.floor(value as number) : fallback; }
 function byteLength(value: string): number { return new TextEncoder().encode(value).byteLength; }
-function takePrefixByBytes(value: string, limit: number): string {
-  if (limit <= 0) return '';
-  if (byteLength(value) <= limit) return value;
-  let bytes = 0;
-  let prefix = '';
-  for (const character of value) {
-    const size = byteLength(character);
-    if (bytes + size > limit) break;
-    prefix += character;
-    bytes += size;
-  }
-  return prefix;
-}
 function splitByBytes(value: string, limit: number): string[] {
   if (byteLength(value) <= limit) return [value];
   const chunks: string[] = [];

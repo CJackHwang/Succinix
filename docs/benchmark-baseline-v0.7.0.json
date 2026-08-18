@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
-  "status": "verified",
+  "status": "invalidated",
+  "invalidatedAt": "2026-08-18T13:25:00.000Z",
+  "invalidationReason": "Runtime host and production bundle hashes changed after audit repairs; record a new baseline only after three successful benchmark runs in one environment.",
   "recordedAt": "2026-08-17T22:53:17.018Z",
   "method": "Three independent headless Chrome runs; medians and per-run p95 values are retained in this artifact.",
   "inputs": {

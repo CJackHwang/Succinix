@@ -9,6 +9,7 @@ import {
   optional,
   type Schema,
 } from './schema.js';
+import { normalizeInstanceId } from '../engine/host-route.js';
 
 export interface SuccinixConfig {
   hostJsUrl?: string;
@@ -134,6 +135,7 @@ export const SuccinixConfigSchema: Schema<SuccinixConfig> = objectSchema({
     if (d.instanceId !== undefined) {
       const error = isString(d.instanceId, 'defaultInstance.instanceId');
       if (error) return error;
+      try { normalizeInstanceId(d.instanceId); } catch { return 'defaultInstance.instanceId must be a canonical instance id'; }
     }
     if (d.statePrefix !== undefined) {
       const error = isString(d.statePrefix, 'defaultInstance.statePrefix');

@@ -40,6 +40,10 @@ describe('terminal mailbox transport', () => {
     expect(() => mailboxPath(nested, 'open.json')).toThrow('invalid terminal id');
   });
 
+  it('rejects an invalid identity before creating a host terminal', () => {
+    expect(() => new RpcTerminal({ ...identity(), sessionId: '' } as TerminalIdentity)).toThrow('invalid terminal identity');
+  });
+
   it('coalesces output and retains sequence frames until ack', () => {
     const fs = new MemoryFs();
     const term = new RpcTerminal(identity(), { fs });

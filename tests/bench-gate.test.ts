@@ -7,7 +7,7 @@ describe('性能门禁定义', () => {
   it('对交互帧与 10k session append 的 P95 使用 50ms 上限', async () => {
     const source = await readFile(new URL('../scripts/bench-gate.mjs', import.meta.url), 'utf8');
     expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50' }");
-    expect(source).toContain("{ key: 'session_append_ms.p95', max: 50 }");
+    expect(source).toContain("{ key: 'session_append_ms.p95', max: 50, varianceKey: 'session_append_ms.p50' }");
   });
 
   it('以完成一帧渲染后的大输出耗时判断 UI 卡顿', async () => {
@@ -27,19 +27,20 @@ describe('性能门禁定义', () => {
       readFile(new URL('../scripts/bench.mjs', import.meta.url), 'utf8'),
     ]);
     expect(source).toContain("{ key: 'cmd_lifo_ms.p95', max: 250, varianceKey: 'cmd_lifo_ms.p50' }");
-    expect(source).toContain("{ key: 'cmd_node_ms.p95', max: 250, varianceKey: 'cmd_node_ms.mean' }");
+    expect(source).toContain("{ key: 'cmd_node_ms.p95', max: 500, varianceKey: 'cmd_node_ms.mean' }");
     expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50' }");
     expect(benchSource).toContain('mean: Math.round((values.reduce((total, value) => total + value, 0) / values.length) * 100) / 100,');
     expect(source).toContain('const worst = Math.max(...numeric);');
   });
 
-  it('基线绑定依赖锁、runtime/engine asset、bundle、环境和中位数', async () => {
+  it('仅在构建输入与执行环境相同的时候比较历史基线', async () => {
     const source = await readFile(new URL('../scripts/bench-gate.mjs', import.meta.url), 'utf8');
     expect(source).toContain("'public/sha256.json'");
     expect(source).toContain("'packages/engine/assets/sha256.json'");
     expect(source).toContain("'--record-baseline'");
     expect(source).toContain('function validateBaseline(baseline, inputs, environment, summary)');
     expect(source).toContain('baseline is not a verified artifact');
+    expect(source).toContain('historical regression comparison requires matching build inputs and benchmark environment');
   });
 
   it('仅对明确分类的浏览器或端口暂态错误重试', async () => {

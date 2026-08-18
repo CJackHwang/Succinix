@@ -12,6 +12,7 @@ import {
   writeBrowserFailureDiagnostics,
 } from './lib/chrome.mjs';
 import { connectPageCDP, evalValue } from './lib/cdp.mjs';
+import { verifyEditorUnicodeResizeAndLargeFile } from './lib/terminal-editor-e2e.mjs';
 import { run, sleep, waitForHttp } from './lib/harness.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -259,71 +260,17 @@ async function verifyNanoDirtyQuit(cdp, tag) {
   };
 }
 
-async function verifyUnicodeVi(cdp, path) {
-  await focus(cdp);
-  await insert(cdp, `vi ${path}`);
-  await enter(cdp);
-  await sleep(150);
-  const opened = await waitForText(cdp, `vi: /workspace/${path}`);
-  await insert(cdp, 'i界😀');
-  await sleep(100);
-  await key(cdp, 'Escape', 'Escape', 0, 27);
-  await sleep(100);
-  await insert(cdp, ':wq');
-  await sleep(100);
-  const exited = await exitRawProgram(cdp, () => enter(cdp));
-  const saved = exited && await command(cdp, `cat ${path}`, '界😀');
-  return { opened, exited, saved };
-}
-
-async function writeLargeEditorFixture(cdp, path, tag) {
-  const program = `node -e "for(let i=0;i<4096;i++)console.log('line-'+String(i).padStart(4,'0')+' 中文界😀')" > ${path}; echo ${tag}-large-ready`;
-  return command(cdp, program, `${tag}-large-ready`, 60000);
-}
-
-async function verifyLargeNano(cdp, path) {
-  await focus(cdp);
-  await insert(cdp, `nano ${path}`);
-  await enter(cdp);
-  await sleep(150);
-  const opened = await waitForText(cdp, `nano: /workspace/${path}`);
-  const resized = await evalValue(cdp, `(() => {
-    const term = window.__succinixBench.term;
-    term.resize(20, 10);
-    return { cols: term.cols, rows: term.rows };
-  })()`);
-  const narrowRedraw = await waitForText(cdp, 'line-0000 中...', 5000);
-  await focus(cdp);
-  await insert(cdp, 'X');
-  await sleep(150);
-  await key(cdp, 'o', 'KeyO', 2, 79);
-  await sleep(150);
-  await evalValue(cdp, `(() => {
-    const term = window.__succinixBench.term;
-    term.resize(80, 24);
-    return { cols: term.cols, rows: term.rows };
-  })()`);
-  await sleep(150);
-  await focus(cdp);
-  const exited = await exitRawProgram(cdp, () => key(cdp, 'x', 'KeyX', 2, 88));
-  const saved = exited && await command(cdp, `head -n 1 ${path}; tail -n 1 ${path}`, 'Xline-0000 中文界😀', 60000)
-    && await waitForText(cdp, 'line-4095 中文界😀', 10000);
-  return { opened, resized, narrowRedraw, exited, saved };
-}
-
-async function verifyEditorUnicodeResizeAndLargeFile(cdp, tag) {
-  const unicodePath = `${tag}-unicode.txt`;
-  const largePath = `${tag}-large.txt`;
-  const unicode = await verifyUnicodeVi(cdp, unicodePath);
-  const fixtureCreated = await writeLargeEditorFixture(cdp, largePath, tag);
-  const large = await verifyLargeNano(cdp, largePath);
+function editorDriver(cdp) {
   return {
-    unicode: unicode.opened && unicode.exited && unicode.saved,
-    resize: large.resized.cols === 20 && large.resized.rows === 10 && large.narrowRedraw,
-    large: fixtureCreated && large.opened && large.exited && large.saved,
-    fixtureCreated,
-    unicodeDetail: unicode,
-    largeDetail: large,
+    focus: () => focus(cdp),
+    insert: (text) => insert(cdp, text),
+    enter: () => enter(cdp),
+    key: (keyName, code, modifiers, virtualKeyCode) => key(cdp, keyName, code, modifiers, virtualKeyCode),
+    sleep,
+    waitForText: (marker, timeoutMs) => waitForText(cdp, marker, timeoutMs),
+    exitRawProgram: (action, timeoutMs) => exitRawProgram(cdp, action, timeoutMs),
+    command: (text, marker, timeoutMs) => command(cdp, text, marker, timeoutMs),
+    evalValue: (expression) => evalValue(cdp, expression),
   };
 }
 
@@ -601,7 +548,7 @@ async function runInteractiveChecks(cdp) {
   check(nanoDirtyQuit.discard, 'nano dirty quit can discard without overwriting the workspace file', nanoDirtyQuit);
   check(nanoDirtyQuit.cancel, 'nano dirty quit can cancel and continue editing before save', nanoDirtyQuit);
 
-  const editorCoverage = await verifyEditorUnicodeResizeAndLargeFile(cdp, tag);
+  const editorCoverage = await verifyEditorUnicodeResizeAndLargeFile(editorDriver(cdp), tag);
   check(editorCoverage.unicode, 'vi saves astral and wide Unicode through real xterm input', editorCoverage);
   check(editorCoverage.resize, 'editor redraw observes live xterm resize and column clipping', editorCoverage);
   check(editorCoverage.large, 'editor opens and saves a multi-thousand-line workspace file', editorCoverage);

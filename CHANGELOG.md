@@ -1,19 +1,21 @@
-# 更新记录
+# Changelog
 
-这里只保留当前版本对使用者和接入方有影响的变化。更早的开发过程、测试日志和逐提交细节由 Git 历史保存，不再作为产品文档维护。
+[简体中文](CHANGELOG.zh-CN.md)
+
+This changelog keeps changes that affect users and integrators. Git history keeps development logs, test output, and per-commit detail.
 
 ## 0.7.0
 
-### 这次有什么变化
+### What Changed
 
-- Succinix 现在以 `@succinix/engine` Cordis 插件形式接入第三方应用。
-- 普通插件使用 `fs`、`sandbox`、`terminals`、`sessionPersistence` 四个服务；宿主通过 `ctx.get('succinix', false)` 管理 WebContainer、实例和执行器。
-- 浏览器终端、Node、Python 和 Unix 命令共用一个 WebContainer 工作区。
-- 工作区使用新版快照保存机制；旧存储只会被识别，不会自动迁移或删除。
-- 引擎资产必须作为静态文件发布，第三方接入步骤见 [docs/SDK.md](docs/SDK.md)。
+- Succinix is now integrated as the `@succinix/engine` Cordis plugin.
+- Consumer plugins use `fs`, `sandbox`, `terminals`, and `sessionPersistence`; the host uses `ctx.get('succinix', false)` for WebContainer, instances, and execution.
+- The browser terminal, Node, Python, and Unix commands share one WebContainer workspace.
+- Workspaces use the current snapshot persistence; old storage is recognized but never automatically migrated or deleted.
+- Engine assets must be published as static files. See [Integration](docs/SDK.md).
 
-### 升级前先看
+### Read Before Upgrading
 
-- 从旧 SDK、旧服务命名或旧 RPC 客户端升级时，阅读 [docs/MIGRATION.md](docs/MIGRATION.md)。
-- 想确认能否接入时，阅读 [README.md](README.md) 和 [docs/FEATURES.md](docs/FEATURES.md)。
-- 需要严格验证打包产物时，阅读 [docs/cordis-contract.md](docs/cordis-contract.md)。
+- For old SDKs, old service names, or old RPC clients, read [Migration](docs/MIGRATION.md).
+- To decide whether Succinix fits, read [README](README.md) and [Features](docs/FEATURES.md).
+- To validate a packed integration, read the [Cordis contract](docs/cordis-contract.md).

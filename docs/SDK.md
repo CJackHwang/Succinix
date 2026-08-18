@@ -1,28 +1,28 @@
-# Succinix 接入说明
+# Succinix Integration
 
-## 这是什么
+[简体中文](SDK.zh-CN.md)
 
-`@succinix/engine` 是 DeepSeek Harness Cordis 的插件。安装后，应用得到一个浏览器内的项目运行环境：文件、命令、终端会话和保存的数据都围绕同一个 WebContainer 工作区工作。
+## What It Is
 
-## 有什么用
+`@succinix/engine` is a DeepSeek Harness Cordis plugin. It gives an application a browser project runtime where files, commands, terminal sessions, and saved data belong to one WebContainer workspace.
 
-你可以把一个可执行、可保存的项目终端交给自己的网页和 Cordis 插件，而不用分别维护浏览器文件、命令、进程和终端状态。
+## What It Is For
 
-公开能力分为两层：
+Your application and its Cordis plugins can use an executable, persistent project terminal without separately maintaining browser files, commands, process state, and terminals.
 
-| 需要做的事 | 使用哪个服务 |
+| Need | Service to use |
 | --- | --- |
-| 读写项目文件 | `ctx.fs` |
-| 生成受约束的 Lifo 命令参数 | `ctx.sandbox` |
-| 创建和管理终端会话 | `ctx.terminals` |
-| 保存插件自己的会话事件 | `ctx.sessionPersistence` |
-| 管理 WebContainer、实例、端口和执行器 | `ctx.get('succinix', false)` |
+| Read or write project files | `ctx.fs` |
+| Build constrained Lifo command arguments | `ctx.sandbox` |
+| Create and manage terminal sessions | `ctx.terminals` |
+| Persist a plugin's session events | `ctx.sessionPersistence` |
+| Manage WebContainer, instances, ports, or executor | `ctx.get('succinix', false)` |
 
-前四项是普通消费方应声明的服务。最后一项是同一 Cordis 上下文中的宿主接口，不是替代前四项的万能服务。
+The first four are the normal consumer services. The last is the host lifecycle seam in the same Cordis context; it does not replace those services.
 
-## 怎么接入
+## How To Integrate
 
-### 1. 安装并提供资产
+### 1. Install and publish assets
 
 ```bash
 npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
@@ -30,9 +30,9 @@ mkdir -p public/engine
 cp -R node_modules/@succinix/engine/assets/. public/engine/
 ```
 
-静态服务器必须能访问 `host.js`、`lifo-core.js`、`sha256.json` 和 `pyodide/`。页面还必须发送 `Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: credentialless`。
+The static server must expose `host.js`, `lifo-core.js`, `sha256.json`, and `pyodide/`. The page must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless`.
 
-### 2. 安装插件并启动实例
+### 2. Install the plugin and start an instance
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
@@ -60,30 +60,28 @@ const result = await host.executor.exec('node -e "console.log(1 + 1)"')
 console.log(result.stdout)
 ```
 
-`container.mode: 'external'` 表示 WebContainer 由你的应用创建；如果希望插件自行创建，把它改为 `'internal'`，然后调用 `host.boot()`，不要再调用 `attach()`。两种模式不能混用。
+`container.mode: 'external'` means the application creates WebContainer. To let the plugin create it, use `'internal'` and call `host.boot()` instead. The modes cannot be mixed.
 
-### 3. 在其他插件中使用服务
+### 3. Use services from another plugin
 
 ```ts
 export const inject = ['fs', 'sandbox', 'terminals', 'sessionPersistence']
 
 export function apply(ctx) {
-  // ctx.fs、ctx.sandbox、ctx.terminals、ctx.sessionPersistence 已可使用。
+  // ctx.fs, ctx.sandbox, ctx.terminals, and ctx.sessionPersistence are available.
 }
 ```
 
-服务是可选能力时，用 `ctx.get('fs', false)` 探测；不要依赖隐式全局变量。
+For optional services, probe with `ctx.get('fs', false)`. Do not rely on implicit globals.
 
-## 使用时要知道
+## Important Limits
 
-- `node`、`npm`、`npx` 使用真实 WebContainer Node；Python 使用内置 Pyodide；其余常见 Unix 命令由 Lifo 提供。它们共用文件。
-- `ctx.sandbox.confine()` 只生成受约束的 Lifo 参数，不会执行命令。真实 Node 子进程不能按单次调用隔离，因此会明确失败。
-- 终端会话按 `Agent` 所有者隔离。创建会话前用 `host.registerAgent(agent)` 登记，结束后注销；没有隐式 `guest` 所有者。
-- `dispose()` 默认只卸载当前 Cordis fiber，`shutdown()` 才会停止页面级 host。页面刷新或关闭时会执行尽力保存。
-- 端口是浏览器预览地址；实例隔离用于组织项目，不是安全边界。
+- `node`, `npm`, and `npx` use real WebContainer Node; Python uses Pyodide; other Unix commands use Lifo. They share files.
+- `ctx.sandbox.confine()` creates constrained Lifo arguments and does not execute a command. Real Node subprocesses cannot be isolated per call and fail explicitly.
+- Register an `Agent` with `host.registerAgent(agent)` before opening terminal sessions; unregister it when finished. There is no implicit `guest` owner.
+- `dispose()` normally unloads the Cordis fiber only. `shutdown()` stops the page-level host.
+- Ports are browser previews, and instance separation is not a security boundary.
 
-## 准确性依据
+Installed package `.d.ts` files are the complete API. The [Cordis contract](cordis-contract.md) is browser-verified against a packed third-party installation. Update its example and tests before changing public behavior.
 
-完整类型以安装包导出的 `.d.ts` 为准。仓库中的 [Cordis 契约](cordis-contract.md) 由独立示例在真实浏览器运行验证；需要改公开行为时，先改该示例和测试，再改这里。
-
-旧版本接入请看 [MIGRATION.md](MIGRATION.md)，自定义插件看 [PLUGIN.md](PLUGIN.md)，自己实现传输层才看 [PROTOCOL.md](PROTOCOL.md)。
+See [Migration](MIGRATION.md) for older integrations, [Third-party plugins](PLUGIN.md) for consumer plugins, and [Protocol](PROTOCOL.md) only when implementing a transport layer.

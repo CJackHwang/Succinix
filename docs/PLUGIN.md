@@ -1,32 +1,34 @@
-# 编写 Succinix 第三方插件
+# Writing A Succinix Plugin
 
-## 这是什么
+[简体中文](PLUGIN.zh-CN.md)
 
-这是给 Cordis 插件作者的说明。你的插件可以使用 Succinix 已经提供的文件、终端和会话保存能力，而不用自己再实现一套浏览器终端。
+## What It Is
 
-## 怎么开始
+This guide is for Cordis plugin authors. Your plugin can use Succinix file, terminal, and session-persistence services without building another browser terminal.
 
-先声明真正需要的服务：
+## How To Start
+
+Declare only the services you actually need:
 
 ```ts
 export const inject = ['fs', 'sandbox', 'terminals', 'sessionPersistence']
 ```
 
-只需要其中一部分就只声明那部分。服务可选时使用 `ctx.get('fs', false)`，未安装 Succinix 时应关闭对应功能或给出自己的处理方式。
+For an optional service, use `ctx.get('fs', false)`. If Succinix is absent, disable that feature or handle the absence explicitly.
 
-## 哪个能力该怎么用
+## Choose The Right Service
 
-| 需求 | 正确做法 | 不要做 |
+| Need | Do this | Do not do this |
 | --- | --- | --- |
-| 操作项目文件 | 用 `ctx.fs` 的目标、版本和读写方法 | 直接假设浏览器有另一份文件系统 |
-| 约束 Lifo 命令 | 用 `ctx.sandbox.confine(argv, policy)` 取得执行参数 | 把它当成真实 Node 子进程的安全隔离 |
-| 做交互工具 | 用 `ctx.terminals` 和登记过的 `Agent` | 在浏览器另写 Shell、编辑器或 TUI 状态 |
-| 保存插件会话 | 用 `ctx.sessionPersistence` 的追加事件 | 把可恢复状态塞进临时浏览器内存 |
-| 启动服务或查看端口 | 由宿主通过 `ctx.get('succinix', false)` 管理 | 把端口当成公网入站服务 |
+| Work with project files | Use `ctx.fs` targets, versions, and read/write methods | Assume the browser has a second filesystem |
+| Constrain a Lifo command | Use `ctx.sandbox.confine(argv, policy)` | Treat it as Node subprocess isolation |
+| Build an interactive tool | Use `ctx.terminals` with a registered `Agent` | Maintain browser-only shell, editor, or TUI state |
+| Keep plugin session data | Append events with `ctx.sessionPersistence` | Store recoverable state only in temporary browser memory |
+| Start services or inspect ports | Let the host use `ctx.get('succinix', false)` | Treat a port as a public inbound service |
 
-Succinix 的执行世界在 WebContainer 中。命令、文件、进程、服务和交互应用应在这里扩展；浏览器代码只负责显示、输入和不可避免的 Web API。
+WebContainer is Succinix's execution world. Extend commands, files, processes, services, and interactive applications there; browser code only renders, forwards input, and exposes unavoidable Web APIs.
 
-## 最小示例
+## Minimal Example
 
 ```ts
 import type { Context } from '@deepseek-ai/cordis'
@@ -40,15 +42,15 @@ export async function apply(ctx: Context) {
 }
 ```
 
-实际接口参数、错误码和终端所有权规则以 `@succinix/engine` 导出的类型为准。文件写入需要遵守版本和 sandbox policy；终端操作需要先登记 `Agent`，否则会被拒绝。
+The exported `@succinix/engine` types define parameters, errors, and terminal ownership. File writes must use versions and sandbox policies as required; terminal operations require a registered `Agent`.
 
-## 如何验证
+## Verify It
 
-仓库的 [cordis-app 示例](../examples/cordis-app/README.md) 只消费已打包的引擎，不导入仓库源码。改公开服务、生命周期、资产或类型后，运行：
+The [Cordis app example](../examples/cordis-app/README.md) consumes only the packed engine, not repository source. After changing a public service, lifecycle, asset, or type, run:
 
 ```bash
 npm run build:engine-package
 node scripts/cordis-app-e2e.mjs
 ```
 
-需要完整接入步骤看 [SDK.md](SDK.md)，旧代码升级看 [MIGRATION.md](MIGRATION.md)，传输细节看 [PROTOCOL.md](PROTOCOL.md)。
+For embedding steps see [Integration](SDK.md); for old code see [Migration](MIGRATION.md); for transport detail see [Protocol](PROTOCOL.md).

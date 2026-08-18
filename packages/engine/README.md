@@ -1,14 +1,16 @@
 # @succinix/engine
 
-`@succinix/engine` 是把 Succinix 接入 Cordis 应用的插件。它为网页应用提供浏览器内的项目工作区：可以管理文件、执行命令、创建终端会话并保存会话数据。
+[简体中文](README.zh-CN.md)
 
-## 有什么用
+`@succinix/engine` is the Cordis plugin for embedding Succinix in an application. It provides a browser project workspace that manages files, command execution, terminal sessions, and session persistence.
 
-你不需要自己实现文件系统、命令路由、终端和持久化。插件连接 WebContainer 后，Node、Python 和 Unix 命令会使用同一个工作区。
+## What It Is For
 
-## 怎么用
+You do not need to build a filesystem, command router, terminal, and persistence layer yourself. Once connected to WebContainer, Node, Python, and Unix commands use the same workspace.
 
-安装后，先把包内资产提供为应用的静态文件：
+## How To Use It
+
+Install the package and publish its assets as static files:
 
 ```bash
 npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
@@ -39,18 +41,18 @@ await host.shutdown()
 await fiber.dispose()
 ```
 
-应用内插件需要文件、命令约束、终端或会话保存时，声明：
+Application plugins needing files, confinement, terminals, or session persistence declare:
 
 ```ts
 export const inject = ['fs', 'sandbox', 'terminals', 'sessionPersistence']
 ```
 
-`ctx.get('succinix', false)` 用于宿主生命周期、实例、端口和执行器管理；日常能力优先使用上述四个服务。
+Use `ctx.get('succinix', false)` for host lifecycle, instances, ports, and executor management; use the four services for daily plugin work.
 
-## 接入前确认
+## Check Before Integrating
 
-- peer 依赖是 `@deepseek-ai/cordis ^4.0.1` 与 `@webcontainer/api ^1.6.4`。
-- 只支持 Chromium，页面必须启用 COOP/COEP。
-- 端口是浏览器预览地址，不是公网服务。
+- Peer dependencies are `@deepseek-ai/cordis ^4.0.1` and `@webcontainer/api ^1.6.4`.
+- Chromium only; the page needs COOP/COEP.
+- Ports are browser previews, not public services.
 
-完整字段与生命周期规则见 [SDK.md](../../docs/SDK.md)，旧版本升级见 [MIGRATION.md](../../docs/MIGRATION.md)。
+See [Integration](../../docs/SDK.md) for fields and lifecycle and [Migration](../../docs/MIGRATION.md) for older versions.

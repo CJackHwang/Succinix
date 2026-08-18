@@ -1,23 +1,25 @@
-# Cordis App 契约示例
+# Cordis App Contract Example
 
-## 这是什么
+[简体中文](README.zh-CN.md)
 
-这是一个独立第三方应用。它只使用打包后的 `@succinix/engine`，不导入 Succinix 源码，因此能证明实际发布物是否可被别人接入。
+## What It Is
 
-## 有什么用
+This is an independent third-party application. It uses only the packed `@succinix/engine`, never Succinix source, so it proves that another application can integrate the actual release artifact.
 
-它检查插件安装、四个 Cordis 服务、命令执行、文件、终端、会话保存、实例、端口、服务、快照、热更新和资产完整性。
+## What It Checks
 
-## 怎么运行
+It checks plugin installation, the four Cordis services, command execution, files, terminals, session persistence, instances, ports, services, snapshots, reload behavior, and asset integrity.
 
-在仓库根目录执行：
+## How To Run It
+
+From the repository root:
 
 ```bash
 npm run build:engine-package
 node scripts/cordis-app-e2e.mjs
 ```
 
-手动查看时：
+To inspect it manually:
 
 ```bash
 cd examples/cordis-app
@@ -26,4 +28,4 @@ npm run build
 npm run preview
 ```
 
-打开 `http://localhost:7895/`，等待结果摘要。示例会把包内 host、Lifo 和 Python 资产复制到自己的静态目录，模拟第三方应用的真实接入方式。
+Open `http://localhost:7895/` and wait for the result summary. The example copies packed host, Lifo, and Python assets into its own static directory, matching a real third-party integration.

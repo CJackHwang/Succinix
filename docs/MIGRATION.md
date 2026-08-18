@@ -1,22 +1,26 @@
-# Succinix 旧版本升级说明
+# Migrating To Succinix 0.7.0
 
-## 这是什么
+[简体中文](MIGRATION.zh-CN.md)
 
-这是给已经接入旧版 `@succinix/engine` 的应用的升级清单。0.7.0 是 Cordis 单轨插件：安装插件后使用四个顶层服务，而不是继续调用旧 SDK 或旧的单键服务。
+## What This Is
 
-## 最重要的变化
+This is the upgrade checklist for applications already using an older `@succinix/engine` integration. Version 0.7.0 is a Cordis plugin: consumer code uses four services, while the same-context host seam manages the execution world.
 
-| 旧做法 | 0.7.0 做法 |
+## Important Changes
+
+| Old approach | 0.7.0 approach |
 | --- | --- |
-| `createTerminalExecutor()` 或独立 `./terminal`、`./instance` 导出 | 安装插件后用 `host.ensureInstance()` |
-| 通过旧 `ctx.succinix.*` 命名空间取得运行能力 | 使用 `ctx.fs`、`ctx.sandbox`、`ctx.terminals`、`ctx.sessionPersistence` |
-| 把 `onServerReady`、`onServerClosed` 写在配置里 | 使用 `host.onServerReady()`、`host.onServerClosed()` 或 `succinix/*` 事件 |
-| 不提供 host 资产 | 将包内 assets 目录复制到应用静态目录并设置 URL |
-| 旧的批处理客户端 | 使用插件的执行器；手写传输时遵守 RPC v2 |
+| `createTerminalExecutor()` or the `./terminal` / `./instance` exports | Install the plugin and call `host.ensureInstance()` |
+| Use the old `ctx.succinix.*` namespace for everyday runtime work | Use `ctx.fs`, `ctx.sandbox`, `ctx.terminals`, and `ctx.sessionPersistence` |
+| Put `onServerReady` or `onServerClosed` in config | Subscribe with `host.onServerReady()`, `host.onServerClosed()`, or `succinix/*` events |
+| Do not publish host assets | Copy package assets to the application's static directory and set their URLs |
+| Old batch RPC client | Use the plugin executor; follow RPC v2 only for a custom transport |
 
-## 怎么升级
+`ctx.get('succinix', false)` remains available for host lifecycle, instances, ports, and the default executor. It is not a replacement for the four normal services.
 
-### 1. 替换依赖和资产
+## How To Upgrade
+
+### 1. Replace dependencies and assets
 
 ```bash
 npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
@@ -24,7 +28,7 @@ mkdir -p public/engine
 cp -R node_modules/@succinix/engine/assets/. public/engine/
 ```
 
-### 2. 用插件替换旧构造函数
+### 2. Replace old constructors with the plugin
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
@@ -45,26 +49,26 @@ await host.attach(await WebContainer.boot())
 await host.ensureInstance('default', { executor: {} })
 ```
 
-### 3. 改服务依赖
+### 3. Change service dependencies
 
 ```ts
 export const inject = ['fs', 'sandbox', 'terminals', 'sessionPersistence']
 ```
 
-文件操作交给 `ctx.fs`；命令约束交给 `ctx.sandbox`；终端会话交给 `ctx.terminals`；插件会话事件交给 `ctx.sessionPersistence`。宿主的执行器、实例、端口和服务仍通过 `ctx.get('succinix', false)` 取得。
+Use `ctx.fs` for files, `ctx.sandbox` for command confinement, `ctx.terminals` for sessions, and `ctx.sessionPersistence` for plugin session events. Use the host seam only for executor, instances, ports, and services.
 
-### 4. 核对生命周期
+### 4. Check lifecycle
 
-- 应用自己创建 WebContainer 时，使用 `external` + `host.attach(wc)`。
-- 希望插件创建 WebContainer 时，使用 `internal` + `host.boot()`。
-- `dispose()` 默认不会停止页面级 host；需要彻底停止时调用 `shutdown()`。
-- 配置只放可序列化数据。端口和命令事件改为订阅 `succinix/*` 或 host 方法。
+- When the application creates WebContainer, use `external` with `host.attach(wc)`.
+- When the plugin creates WebContainer, use `internal` with `host.boot()`.
+- `dispose()` normally leaves the page-level host alive; use `shutdown()` for a full stop.
+- Configuration holds serializable data. Subscribe to host methods or `succinix/*` for ports and command events.
 
-## 不能兼容的地方
+## Incompatible Areas
 
-- RPC v2 不与旧批处理客户端兼容。
-- `./terminal`、`./instance` 子路径和独立 SDK 导出已移除。
-- 真实 Node 子进程不能通过 `ctx.sandbox` 获得每次调用的安全隔离。
-- 页面级 host 不会因普通 fiber 热更新而重启；需要重启的配置变更会先关闭旧 host。
+- RPC v2 is not compatible with the old batch client.
+- `./terminal`, `./instance`, and standalone SDK exports are removed.
+- `ctx.sandbox` cannot provide per-call security isolation for real Node subprocesses.
+- A normal fiber reload does not restart the page-level host; a configuration change that requires restart closes the old host first.
 
-升级后运行 [cordis-app 示例](../examples/cordis-app/README.md) 或 `node scripts/cordis-app-e2e.mjs`。完整当前行为以 [SDK.md](SDK.md) 为准。
+Run the [Cordis app example](../examples/cordis-app/README.md) or `node scripts/cordis-app-e2e.mjs` after upgrading. [Integration](SDK.md) defines current behavior.

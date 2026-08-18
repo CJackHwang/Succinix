@@ -1,29 +1,31 @@
-# Succinix Cordis 契约
+# Succinix Cordis Contract
 
-## 这是什么
+[简体中文](cordis-contract.zh-CN.md)
 
-这是 `@succinix/engine@0.7.0` 的对外承诺清单。它不是产品介绍，而是一份能在真实浏览器中运行的兼容性检查：第三方只安装打包后的引擎、`@deepseek-ai/cordis` 和 `@webcontainer/api`，不读取本仓库源码。
+## What It Is
 
-## 检查什么
+This is the public compatibility contract for `@succinix/engine@0.7.0`. It is not product introduction: a real browser runs it with only the packed engine, `@deepseek-ai/cordis`, and `@webcontainer/api`, without repository source.
 
-| 范围 | 验证的承诺 |
+## What It Checks
+
+| Area | Promise |
 | --- | --- |
-| 插件与注入 | 入口是 `{ name: 'succinix', apply, Config }`，四个 dsh 服务可注入或显式探测 |
-| 服务表面 | 文件、命令约束、终端会话和会话保存符合公开类型 |
-| 执行与实例 | Node、Lifo、Pyodide Python 在同一工作区执行，多个实例复用页面级 host |
-| 保存与服务 | 快照、工作区、端口订阅和声明式服务能工作 |
-| 生命周期 | 热更新、需要重启的配置、模式冲突、停止和重新应用遵守生命周期规则 |
-| 发布资产 | `host.js`、`lifo-core.js` 与 `sha256.json` 的完整性可验证 |
+| Plugin and injection | Entry is `{ name: 'succinix', apply, Config }`; four dsh services can be injected or explicitly probed |
+| Service surface | File access, command confinement, terminal sessions, and session persistence match public types |
+| Execution and instances | Node, Lifo, and Pyodide Python run in one workspace; instances share the page-level host |
+| Persistence and services | Snapshots, workspace persistence, port subscriptions, and declarative services work |
+| Lifecycle | Reload, restart-needed configuration, mode conflicts, stop, and reapply obey lifecycle rules |
+| Published assets | `host.js`, `lifo-core.js`, and `sha256.json` can be verified |
 
-## 怎么验证
+## How To Verify
 
 ```bash
 npm run build:engine-package
 node scripts/cordis-app-e2e.mjs
 ```
 
-可执行用例在 [examples/cordis-app/src/contract.ts](../examples/cordis-app/src/contract.ts)。改公开类型、服务、生命周期、资产或事件时，先修改这个用例，再更新相关文档。
+The executable case is [examples/cordis-app/src/contract.ts](../examples/cordis-app/src/contract.ts). Change it before changing public types, services, lifecycle, assets, or events.
 
-## 为什么还有 contracts 目录
+## Why The `contracts` Directory Exists
 
-[`contracts/dsh-0.1.0-rc.6/`](contracts/dsh-0.1.0-rc.6/SOURCES.md) 是从 DeepSeek Harness 固定下来的服务形状快照。它由 `check-dsh-shapes` 校验，内容是精确类型证据，不适合改写成教程；新人应先读 [SDK.md](SDK.md)。当前 `succinix` 宿主入口仍可通过 `ctx.get('succinix', false)` 使用，但它不替代四个 dsh 服务。
+[`contracts/dsh-0.1.0-rc.6/`](contracts/dsh-0.1.0-rc.6/SOURCES.md) is a pinned DeepSeek Harness service-shape snapshot. `check-dsh-shapes` validates it. It is precise type evidence, not a tutorial; start with [Integration](SDK.md). `ctx.get('succinix', false)` remains the host seam, but it does not replace the four dsh services.

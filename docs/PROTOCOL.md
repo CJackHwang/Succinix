@@ -1,47 +1,47 @@
-# Succinix 传输协议说明
+# Succinix Transport Protocol
 
-## 这是什么
+[简体中文](PROTOCOL.zh-CN.md)
 
-这是浏览器控制层和 WebContainer 执行层之间的协议。正常接入请使用 `@succinix/engine` 的执行器和终端服务，不要手写这些文件；只有替换宿主或传输层时才需要本文。
+## What It Is
 
-## 有什么用
+This is the protocol between the browser control plane and the WebContainer execution plane. Normal integrations use the `@succinix/engine` executor and terminal services; read this only when replacing the host or transport layer.
 
-协议保证请求不会互相覆盖，并让命令、终端输入、输出和实例身份都落在同一个 WebContainer 执行世界中。浏览器不保存第二份 Shell、文件或编辑器状态。
+## What It Is For
 
-## 怎么工作
+The protocol prevents requests from overwriting each other and keeps commands, terminal I/O, and instance identity in the same WebContainer execution world. The browser does not keep a second shell, filesystem, or editor state.
 
-### 批处理命令
+## How It Works
 
-一条命令按下面顺序传递：
+### Batch commands
 
 ```text
-浏览器写 /cmd.json
-host 接收后写 /ack-<id>.json
-host 执行后写 /result-<id>.json
-浏览器读取并删除 ack 与 result
+Browser writes /cmd.json
+Host receives it and writes /ack-<id>.json
+Host executes it and writes /result-<id>.json
+Browser reads and removes the acknowledgement and result
 ```
 
-`/cmd.json` 是单槽投递口，一次只接收一条尚未确认的请求。结果文件按请求 id 独立命名，不能改回共享结果文件。
+`/cmd.json` is a one-slot submission point: it accepts one unacknowledged request at a time. Results are named by request ID and must never become a shared result file.
 
-每个请求必须带 RPC 版本、请求 id、boot nonce、命令名和实例 id；客户端只接受这些身份字段全部匹配的确认与结果。公开命令包括执行、后台启动、进程列表、终止、前台中断、读取或设置工作目录、存活检查和退出握手。具体字段和类型以 `src/engine/client.ts` 与包导出类型为准。
+Every request carries the RPC version, request ID, boot nonce, command name, and instance ID. The client accepts an acknowledgement or result only when all identity fields match. Public operations include execution, background start, process listing, termination, foreground interrupt, working-directory reads or writes, liveness checks, and exit handshake. Fields and types are defined by `src/engine/client.ts` and exported package types.
 
-### 命令路由
+### Command routing
 
-- `node`、`npm`、`npx` 使用真实 WebContainer Node 子进程。
-- `python`、`python3`、`pip`、`pip3` 使用内置 Pyodide 运行时。
-- 其余命令交给同一实例的 Lifo 用户态。
+- `node`, `npm`, and `npx` use real WebContainer Node subprocesses.
+- `python`, `python3`, `pip`, and `pip3` use the built-in Pyodide runtime.
+- Other commands use Lifo userland in the same instance.
 
-它们共享文件和会话工作目录。通用 Node/Python 子进程交互 stdin 仍不支持，不要把 Lifo 交互终端宣传为通用 PTY。
+They share files and session working directory. Generic interactive stdin for real Node or Python subprocesses is still unavailable; a Lifo interactive terminal is not a general PTY.
 
-### 交互终端
+### Interactive terminals
 
-交互终端有独立的实例/会话邮箱，用来传递输入、输出、尺寸和生命周期帧。它连接 Lifo 的公开终端接口；浏览器只转发设备事件。第三方应通过 `ctx.terminals` 或宿主的终端服务创建会话，不应直接读写邮箱文件。
+Interactive terminals use a separate per-instance, per-session mailbox for input, output, size, and lifecycle frames. It connects to Lifo's public terminal API; the browser only forwards device events. Third parties create sessions with `ctx.terminals` or the host terminal service and must not read or write mailbox files directly.
 
-## 约束和边界
+## Constraints
 
-- 结果、确认和终端帧都必须校验实例和 boot nonce，旧页面或旧 host 的消息不能结算新请求。
-- 进程和端口视图按实例组织，但不是权限系统。
-- 端口仅供浏览器预览；没有真实入站网络。
-- host 会清理超时未领取的结果文件；调用方仍必须设置自己的超时和重试策略。
+- Results, acknowledgements, and terminal frames validate instance identity and boot nonce. Messages from an old page or host cannot settle a new request.
+- Process and port views are organized by instance, not permissions.
+- Ports are browser previews; there is no real inbound networking.
+- The host removes expired unclaimed result files; callers still need their own timeout and retry policy.
 
-协议或公开行为变更时，先更新 [Cordis 契约](cordis-contract.md) 的外部示例，再运行 `node scripts/cordis-app-e2e.mjs`。日常接入看 [SDK.md](SDK.md)。
+For a protocol or public-behavior change, update the [Cordis contract](cordis-contract.md) example first, then run `node scripts/cordis-app-e2e.mjs`. For normal embedding, read [Integration](SDK.md).

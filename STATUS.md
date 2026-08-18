@@ -9,7 +9,7 @@
 
 ## 二、本次变更影响范围
 
-- 拆分超出 CI 行数限制的宿主终端和交互编辑器测试模块，保持 `terminal.ts` 原有导出路径不变。
+- 拆分超出 CI 行数限制的宿主终端和交互编辑器测试模块，保持 terminal.ts 原有导出路径不变。
 - 修复基准门禁：每个环境仍执行绝对预算与稳定性检查，历史回归只在构建输入和执行环境同时匹配时比较。
 - 修复浏览器门禁的固定端口误连；部署自检使用独立 preview/DevTools 端口，终端交互门禁完成清理后明确退出。
 - 未改变 `@succinix/engine` 的 peer 契约、RPC v2、Lifo terminal seam、实例隔离、service snapshot 或 package integrity 接口。

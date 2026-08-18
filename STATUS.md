@@ -3,31 +3,32 @@
 ## 一、架构健康度
 
 - 模块总数：核心 12 个（`app`、`commands`、`engine`（含 `host`、`python-daemon`、`ruby-runtime`）、`host`、`instance`、`persist`、`pkg`、`plugin`、`services`、`terminal`、`userland`、`theme`）。
-- host epoch、终端回压、实例 canonicalization、服务生命周期、staging restore、进程退出清理和交互终端调度均有源码、单测及真实浏览器门禁证据。
-- 本轮没有新增跨模块违规调用；`check:plugin-boundaries`、engine package export/asset 校验和完整 Cordis 外部契约均通过。
+- host epoch、终端回压、实例 canonicalization、服务生命周期、staging restore、进程退出清理和交互终端调度均有源码及单测证据。
+- Cordis 运行时唯一基线为 DeepSeek Harness 的 `@deepseek-ai/cordis@4.0.1`；根依赖图不再包含上游 `cordis` 或 `@cordisjs/*` 平行链。
 
 ## 二、本次变更影响范围
 
-- 修复审计清单 A-01 至 A-08、B-01 至 B-17、C-01 至 C-05 的实现缺口、回归测试、终端门禁稳定性和 staging restore 元数据过滤。
-- 重新生成并复核 `docs/benchmark-baseline-v0.7.0.json`，基线绑定当前 package、依赖、运行时资产、bundle hash 和 Chromium 环境。
-- 更新开发审计清单的最终验收证据；RPC v2、Lifo terminal seam、实例隔离、service snapshot 和 package integrity 接口契约未被削弱。
+- 移除 6 个未使用的上游 Cordis 开发依赖及其 30 个传递包，收窄浏览器探针至 Harness 运行时。
+- 重新生成 `docs/benchmark-baseline-v0.7.0.json`，基线绑定当前 package、锁文件、运行时资产、bundle hash 和 Chromium 环境。
+- 未改变 `@succinix/engine` 的 peer 契约、RPC v2、Lifo terminal seam、实例隔离、service snapshot 或 package integrity 接口。
 
 ## 三、已知风险点
 
 - 平台限制仍有效：仅 Chromium 桌面环境；不提供真实内核、apt、权限位、原生二进制、入站网络或通用 Node/Python 子进程 PTY。
 - WebContainer、micropip 和虚拟 preview 依赖浏览器/运行时提供方；这些是设计边界，不是本轮门禁失败。
 - benchmark 指标是当前 macOS + Chromium 环境的性能样本，不代表其他设备的绝对性能。
+- 本轮 `test:e2e` 与 `test:bench:soak` 均在 Chrome 清理阶段悬挂：前者已通过 deploy 与 terminal-interactive，后者在浏览器压力运行后无计算活动但未退出。两项不能视为本轮通过，需先修复浏览器进程回收再重跑。
 
 ## 四、下次最该做的事
 
-1. 任何修改 host、终端、运行时资产或依赖后，重新运行三轮 benchmark 并重新记录基线。
-2. 发布前继续在 CI Chromium 环境运行 `npm run test:e2e` 与 `npm run test:bench:soak`，确认平台差异没有改变门禁结果。
+1. 修复 `test:e2e` 和 `test:bench:soak` 的 Chrome 清理悬挂，再重跑完整浏览器门禁。
+2. 后续只以 DeepSeek Harness 发布的 `@deepseek-ai/cordis` 与其 `master` 源码作为 Cordis 对齐基线。
 
 <!-- STATUS_EVIDENCE
 {
   "schemaVersion": 2,
-  "head": "877fa55ee0e975188f77cc4db150dcab0bace6cd",
-  "recordedAt": "2026-08-18T15:58:00.000Z",
+  "head": "72ed861521c2acbf3cae3069733f85a3b3ef32b8",
+  "recordedAt": "2026-08-18T20:08:41.000Z",
   "environment": {
     "node": "v22.23.1",
     "platform": "darwin",
@@ -38,8 +39,8 @@
       "command": "npx tsc -p tsconfig.json --noEmit",
       "result": "passed",
       "exitCode": 0,
-      "completedAt": "2026-08-18T15:50:00.000Z",
-      "outputSha256": "a8f1079b6fb00886162865c19f0bf97038f3303c9989f7bbc0b77b6409eaab10",
+      "completedAt": "2026-08-18T20:08:41.000Z",
+      "outputSha256": "a7ea8c73e233ee1db113ffeb44465097c9b9669a06a6610529ae80166f928034",
       "summary": "TypeScript type check completed without diagnostics."
     },
     {
@@ -108,11 +109,11 @@
     },
     {
       "command": "npm run test:e2e",
-      "result": "passed",
-      "exitCode": 0,
-      "completedAt": "2026-08-18T15:42:00.000Z",
-      "outputSha256": "52cd153c66fb9890b571b85d2f7e618189bc25b651fd95b0668213d7cd52d09c",
-      "summary": "Deploy 76/0, terminal interactive, 14 scenarios 92/0, language verification 32/0, instance routing, and Cordis contract all passed."
+      "result": "failed",
+      "exitCode": 143,
+      "completedAt": "2026-08-18T20:03:00.000Z",
+      "outputSha256": "5680a175e06f50abf2870513b3ad1ef44368ba53a222f1d397ac15dd368dc20f",
+      "summary": "Deploy self-test and terminal-interactive completed, then the benchmark child stalled during Chrome cleanup and the process was terminated."
     },
     {
       "command": "npm run test:bench",
@@ -124,11 +125,11 @@
     },
     {
       "command": "npm run test:bench:soak",
-      "result": "passed",
-      "exitCode": 0,
-      "completedAt": "2026-08-18T15:51:00.000Z",
-      "outputSha256": "78ef5a7ba187bfcf6f9f86f7cbb690d431320972b7a35eeb69cf6bfa97c17eba",
-      "summary": "10k RPC, 50k terminal frames, 262144-byte burst, interactive, and 100-release/respawn/orphan checks passed."
+      "result": "failed",
+      "exitCode": 143,
+      "completedAt": "2026-08-18T20:07:00.000Z",
+      "outputSha256": "ab4cef3f5edc068d15a57ecec5931b105b6f8ae95890451ebafbc39ca78c67b9",
+      "summary": "The browser pressure run became idle during Chrome cleanup and was terminated before the soak gate could report completion."
     }
   ]
 }

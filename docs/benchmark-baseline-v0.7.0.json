@@ -1,9 +1,7 @@
 {
   "schemaVersion": 1,
-  "status": "invalidated",
-  "invalidatedAt": "2026-08-18T13:25:00.000Z",
-  "invalidationReason": "Runtime host and production bundle hashes changed after audit repairs; record a new baseline only after three successful benchmark runs in one environment.",
-  "recordedAt": "2026-08-17T22:53:17.018Z",
+  "status": "verified",
+  "recordedAt": "2026-08-18T15:37:58.774Z",
   "method": "Three independent headless Chrome runs; medians and per-run p95 values are retained in this artifact.",
   "inputs": {
     "package": "succinix@0.7.0",
@@ -40,18 +38,18 @@
     },
     "runtimeAssets": {
       "public": {
-        "host.js": "837fe4e763e1846b3b1b34f631450d2ae626785e3a08cac955e7a6d51b60c774",
+        "host.js": "5b906806acc53b87fffcc8e52a3142c6e159871c5a6f054aa6f397438c0a2092",
         "lifo-core.js": "a9c694722ff20878184973bcf04434a57305a1e86cf7c8107580321ed6db13df"
       },
       "engine": {
-        "host.js": "837fe4e763e1846b3b1b34f631450d2ae626785e3a08cac955e7a6d51b60c774",
+        "host.js": "5b906806acc53b87fffcc8e52a3142c6e159871c5a6f054aa6f397438c0a2092",
         "lifo-core.js": "a9c694722ff20878184973bcf04434a57305a1e86cf7c8107580321ed6db13df"
       }
     },
     "bundles": {
-      "indexHtml": "0d48efb058a1090f0ad81a1b0850e8fcdc433991db083c5c64dd8661b2ece230",
-      "main": "ce47d855b596e8a3f2d09325b5426eab2b21c88b029e73d7b8e37895b26e453f",
-      "host": "837fe4e763e1846b3b1b34f631450d2ae626785e3a08cac955e7a6d51b60c774",
+      "indexHtml": "97b9aa02448022e3a948496d366328d116c9574c75d581c85b3cb56373a287be",
+      "main": "f393806383b536bb1f0e524a7bfbdeaafd4e293a82c7a870c3003b3ccac6b15f",
+      "host": "5b906806acc53b87fffcc8e52a3142c6e159871c5a6f054aa6f397438c0a2092",
       "lifoCore": "a9c694722ff20878184973bcf04434a57305a1e86cf7c8107580321ed6db13df"
     }
   },
@@ -68,93 +66,93 @@
   "metrics": {
     "cmd_lifo_ms.p95": {
       "samples": [
-        65.25,
-        67.66,
-        64.09
+        68.9,
+        56.84,
+        58.25
       ],
-      "median": 65.25,
+      "median": 58.25,
       "stabilityKey": "cmd_lifo_ms.p50",
       "stabilitySamples": [
-        53.82,
-        53.68,
-        53.92
+        52.74,
+        52.82,
+        52.43
       ],
-      "maxDeviationPct": 0.26
+      "maxDeviationPct": 0.59
     },
     "cmd_node_ms.p95": {
       "samples": [
-        113.71,
-        118.98,
-        141.99
+        118.2,
+        112.41,
+        112.91
       ],
-      "median": 118.98,
+      "median": 112.91,
       "stabilityKey": "cmd_node_ms.mean",
       "stabilitySamples": [
-        80.72,
-        80.64,
-        86.19
+        81.89,
+        80.36,
+        81.33
       ],
-      "maxDeviationPct": 6.78
+      "maxDeviationPct": 1.19
     },
     "snapshot1000.snapshotMs": {
       "samples": [
-        216.93499994277954,
-        202.95500004291534,
-        204.24500000476837
+        206.71999990940094,
+        212.8550000190735,
+        201.40000009536743
       ],
-      "median": 204.25,
+      "median": 206.72,
       "stabilityKey": "snapshot1000.snapshotMs",
       "stabilitySamples": [
-        216.93499994277954,
-        202.95500004291534,
-        204.24500000476837
+        206.71999990940094,
+        212.8550000190735,
+        201.40000009536743
       ],
-      "maxDeviationPct": 6.21
+      "maxDeviationPct": 2.97
     },
     "xterm_big.renderP95": {
       "samples": [
-        15.87,
-        15.91,
-        15.74
+        16.07,
+        16.74,
+        15.89
       ],
-      "median": 15.87,
+      "median": 16.07,
       "stabilityKey": "xterm_big.renderP95",
       "stabilitySamples": [
-        15.87,
-        15.91,
-        15.74
+        16.07,
+        16.74,
+        15.89
       ],
-      "maxDeviationPct": 0.82
+      "maxDeviationPct": 4.17
     },
     "interactive_key_to_frame_ms.p95": {
       "samples": [
-        26.07,
-        24.11,
-        23.82
+        23.23,
+        23.13,
+        22.95
       ],
-      "median": 24.11,
+      "median": 23.13,
       "stabilityKey": "interactive_key_to_frame_ms.p50",
       "stabilitySamples": [
-        20.4,
-        20.69,
-        20.25
+        19.78,
+        19.84,
+        20.06
       ],
-      "maxDeviationPct": 1.42
+      "maxDeviationPct": 1.11
     },
     "session_append_ms.p95": {
       "samples": [
-        1.4,
-        1.37,
-        1.34
+        1.38,
+        1.41,
+        1.39
       ],
-      "median": 1.37,
+      "median": 1.39,
       "stabilityKey": "session_append_ms.p95",
       "stabilitySamples": [
-        1.4,
-        1.37,
-        1.34
+        1.38,
+        1.41,
+        1.39
       ],
-      "maxDeviationPct": 2.19
+      "maxDeviationPct": 1.44
     }
   }
 }

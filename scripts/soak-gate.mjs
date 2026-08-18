@@ -127,7 +127,7 @@ function frameExpression() {
         if (terminal.sentInputSequence >= targetInput && terminal.receivedOutputSequence > initial.output && output.includes(marker)) return;
         await pause(20);
       }
-      throw new Error('terminal input/output frame delivery timed out (input=' + terminal.sentInputSequence + ', output=' + terminal.receivedOutputSequence + ', marker=' + marker + ')');
+      throw new Error('terminal input/output frame delivery timed out (input=' + terminal.sentInputSequence + ', output=' + terminal.receivedOutputSequence + ', marker=' + marker + ', outputTail=' + JSON.stringify(output.slice(-1200)) + ')');
     };
     try {
       for (let start = 0; start < total; start += batchSize) {

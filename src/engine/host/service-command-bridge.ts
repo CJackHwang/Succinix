@@ -5,6 +5,7 @@ import type { Command } from '@lifo-sh/core';
 import { PROCESS_TERMINATION_GRACE_MS, killProcess, registerProcess } from '../host-procs.js';
 import { mergedEnv } from './config.js';
 import { requestBrowserControl } from './control.js';
+import { CONTROL_DEFAULT_TIMEOUT_MS } from '../control-protocol.js';
 import {
   createSystemctlCommand,
   SERVICE_ENABLEMENT_ROOT,
@@ -151,7 +152,10 @@ export function createServiceCommandBridge(
       ctx.vfs.unlink(marker);
     }
     try {
-      await requestControl('snapshot', instanceId, { timeoutMs: 500, args: { mode: 'save' } });
+      // Enablement must be durable before the command returns: callers may
+      // reload immediately, and a large snapshot can exceed the old 500 ms
+      // best-effort window.
+      await requestControl('snapshot', instanceId, { timeoutMs: CONTROL_DEFAULT_TIMEOUT_MS, args: { mode: 'save' } });
     } catch {
       // SDK 嵌入可经自己的快照服务显式持久化。
     }

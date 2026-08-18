@@ -12,6 +12,7 @@ import {
 } from '../src/engine/host/service-world.js';
 import { registerRealBinaryCommands } from '../src/engine/host/real-binaries.js';
 import { createServiceCommandBridge } from '../src/engine/host/service-command-bridge.js';
+import { TerminalBackpressureError } from '../src/terminal/transport-protocol.js';
 
 const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
 
@@ -253,6 +254,26 @@ describe('execution-world service bridge', () => {
     expect(serviceEnablementMarker('api')).toBe('/etc/succinix/service-state/api.enabled');
   });
 
+  it('waits for enablement snapshots to finish before returning', async () => {
+    const control = vi.fn(async () => ({ saved: true }));
+    const manager = {
+      status: vi.fn(() => ({ name: 'api', description: 'API', loaded: true, active: 'inactive', sub: 'dead', enabled: false, pid: null, startedAt: null, exitCode: null })),
+      enable: vi.fn(() => ({ ok: true, message: 'enabled api' })),
+      daemonReload: vi.fn(),
+    };
+    const command = createServiceCommandBridge(manager as never, 'default', control as never);
+    const result = contextWithVfs(['enable', 'api']);
+    result.vfs.mkdir('/etc/systemd/system', { recursive: true });
+    result.vfs.writeFile('/etc/systemd/system/api.service', 'ExecStart=node api.js\n');
+
+    expect(await command({ ...result.ctx, vfs: result.vfs } as never)).toBe(0);
+    expect(result.vfs.readFileString(serviceEnablementMarker('api'))).toBe('enabled\n');
+    expect(control).toHaveBeenCalledWith('snapshot', 'default', expect.objectContaining({
+      timeoutMs: 30_000,
+      args: { mode: 'save' },
+    }));
+  });
+
   it.each([
     ['beforeStart throws', 'start', 'throw-before'],
     ['manager start fails', 'start', 'result-failure'],
@@ -358,6 +379,29 @@ describe('execution-world service bridge', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('turns terminal output backpressure into a completed real-binary command', async () => {
+    const child = new EventEmitter() as unknown as ChildProcess;
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    Object.assign(child, { pid: 3011, stdout, stderr, kill: vi.fn(() => true) });
+    spawnMock.mockImplementationOnce(() => child);
+    const commands = new Map<string, (ctx: Record<string, unknown>) => Promise<number>>();
+    registerRealBinaryCommands({
+      commands: { register: (name: string, handler: (ctx: Record<string, unknown>) => Promise<number>) => { commands.set(name, handler); } },
+      kernel: { vfs: new VFS(), serviceManager: null },
+    } as never, 'backpressure-test');
+    const run = commands.get('node')!({
+      args: ['-e', 'console.log("large")'],
+      cwd: '/workspace',
+      stdout: { write: () => { throw new TerminalBackpressureError(1_200_000, 1_048_000); } },
+      stderr: { write: () => {} },
+    });
+
+    stdout.emit('data', Buffer.from('large'));
+    child.emit('close', 0);
+    expect(await run).toBe(0);
   });
 
   it('keeps SDK service definitions and inspection inside Lifo units', async () => {

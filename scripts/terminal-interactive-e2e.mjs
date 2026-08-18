@@ -128,9 +128,25 @@ async function command(cdp, text, marker, timeoutMs = 30000) {
   await focus(cdp);
   await insert(cdp, text);
   await enter(cdp);
-  const output = await waitForText(cdp, marker, timeoutMs);
-  const returned = await waitForOccurrences(cdp, SHELL_PROMPT, promptCount + 1, timeoutMs);
-  return output && returned;
+  if (!marker) {
+    const returned = await waitForOccurrences(cdp, SHELL_PROMPT, promptCount + 1, timeoutMs);
+    if (returned) await sleep(200);
+    return returned;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const output = await terminalText(cdp);
+    const markerAt = output.lastIndexOf(marker);
+    if (markerAt >= 0 && output.indexOf(SHELL_PROMPT, markerAt + marker.length) >= 0) {
+      // The prompt is rendered before the host scheduler releases its
+      // interactive lock; let the completion microtask settle before the
+      // next CDP input frame is submitted.
+      await sleep(200);
+      return true;
+    }
+    await sleep(150);
+  }
+  return false;
 }
 
 async function exitRawProgram(cdp, action, timeoutMs = 30000) {

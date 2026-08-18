@@ -19,6 +19,7 @@ import { createProjectCommand } from './project-world.js';
 import { requestBrowserControl } from './control.js';
 import { registerRuntimeCommands } from './runtime-commands.js';
 import { USERLAND_DENYLIST, USERLAND_PROFILE, defaultUserlandCapabilities, deniedCommandCapability } from '../../userland/index.js';
+import { TerminalBackpressureError } from '../../terminal/transport-protocol.js';
 import type { runGitCommand } from './git-world.js';
 
 type LifoSandbox = Awaited<ReturnType<typeof import('../lifo-core.js').Sandbox.create>>;
@@ -79,13 +80,23 @@ export function registerRealBinaryCommands(
     return new Promise<number>((resolve) => {
       child.on('close', (code) => {
         ctx.signal?.removeEventListener('abort', onAbort);
-        ctx.stdout.write(out.stdout());
-        ctx.stderr.write(withEaccesHint(out.stderr()));
+        out.flush();
+        try {
+          ctx.stdout.write(out.stdout());
+          ctx.stderr.write(withEaccesHint(out.stderr()));
+        } catch (error) {
+          // A terminal device may refuse an oversized final write while
+          // emitting its backpressure control frame. The child is complete;
+          // preserve shell progress instead of escaping from this callback.
+          if (!(error instanceof TerminalBackpressureError)) throw error;
+        }
         resolve(code ?? -1);
       });
       child.on('error', (e: Error) => {
         ctx.signal?.removeEventListener('abort', onAbort);
-        ctx.stderr.write(String(e));
+        try { ctx.stderr.write(String(e)); } catch (error) {
+          if (!(error instanceof TerminalBackpressureError)) throw error;
+        }
         resolve(-1);
       });
     });

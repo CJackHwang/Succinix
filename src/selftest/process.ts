@@ -29,10 +29,22 @@ export async function runProcess(ctx: TestContext): Promise<void> {
     `runtime=${te3.runtime} ${String(te3.stdout ?? '').trim().slice(0, 50)}`
   );
 
+  const tableProbe = await client.spawn('node -e "setInterval(()=>{},1000)"');
   const te4 = await client.terminal('ps');
   const procs: Array<Record<string, unknown>> = Array.isArray(te4.processes) ? te4.processes : [];
-  const nodeProc = procs.find((pr) => String(pr.cmd ?? '').startsWith('node'));
-  verdict(term, 'Process table', 'ps lists node child', !!nodeProc && Number(nodeProc.pid) > 0, nodeProc ? `pid=${nodeProc.pid} "${nodeProc.cmd}" [${nodeProc.status}]` : 'no node child found');
+  const probePid = Number(tableProbe.pid);
+  const nodeProc = procs.find((pr) => Number(pr.pid) === probePid && pr.status === 'running');
+  verdict(
+    term,
+    'Process table',
+    'ps lists running node child',
+    tableProbe.ok === true && probePid > 0 && !!nodeProc,
+    nodeProc ? `pid=${nodeProc.pid} "${nodeProc.cmd}" [${nodeProc.status}]` : `pid=${probePid || '?'} not found as running`,
+  );
+  if (probePid > 0) {
+    await client.terminal(`kill ${probePid}`);
+    await sleep(300);
+  }
 
   const te5 = await client.terminal('cat /workspace/browser-wrote.txt | wc -c');
   verdict(term, 'Executor', 'lifo routing (cat|wc)', te5.ok && te5.runtime === 'lifo' && String(te5.stdout ?? '').trim() === '74', `runtime=${te5.runtime} stdout=${String(te5.stdout ?? '').trim()}`);
@@ -77,24 +89,21 @@ export async function runProcess(ctx: TestContext): Promise<void> {
     `runtime=${shellChain.runtime} lines=${chainLines.length}`
   );
 
-  try {
-    await client.terminal('node -e "setInterval(()=>{},1000)"', undefined, 1500); // 预期超时：命令未结束
-  } catch {
-    /* 预期行为：浏览器侧先超时，host 子进程仍在进程表里 */
-  }
+  const longSpawn = await client.spawn('node -e "setInterval(()=>{},1000)"');
+  const longPid = Number(longSpawn.pid);
   const psAfterStart = await client.terminal('ps');
   const longProc = (psAfterStart.processes ?? []).find(
-    (pr: Record<string, unknown>) => String(pr.cmd ?? '').startsWith('node') && pr.status === 'running'
+    (pr: Record<string, unknown>) => Number(pr.pid) === longPid && pr.status === 'running'
   );
-  if (longProc) {
-    const k = await client.terminal(`kill ${longProc.pid}`);
+  if (longSpawn.ok === true && longPid > 0 && longProc) {
+    const k = await client.terminal(`kill ${longPid}`);
     verdict(term, 'Process table', 'kill long-running node', k.ok && k.killed === true, `pid=${longProc.pid} ${k.message ?? ''}`);
     await sleep(300);
     const psAfterKill = await client.terminal('ps');
-    const after = (psAfterKill.processes ?? []).find((pr: Record<string, unknown>) => pr.pid === longProc.pid);
-    verdict(term, 'Process table', 'kill marks exited', !after || after.status === 'exited', JSON.stringify(after ?? `pid=${longProc.pid} no longer in table`));
+    const after = (psAfterKill.processes ?? []).find((pr: Record<string, unknown>) => Number(pr.pid) === longPid);
+    verdict(term, 'Process table', 'kill marks exited', !after || after.status === 'exited', JSON.stringify(after ?? `pid=${longPid} no longer in table`));
   } else {
-    verdict(term, 'Process table', 'kill long-running node', false, 'no long-running node child found via ps');
+    verdict(term, 'Process table', 'kill long-running node', false, `pid=${longPid || '?'} no long-running node child found via ps`);
   }
 
   // ─── T15: spawn 后台 http 服务完整链路 ───

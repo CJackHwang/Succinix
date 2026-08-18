@@ -274,6 +274,36 @@ describe('binary persistence v2', () => {
     }
   });
 
+  it('ignores generated runtime directories present in the manifest during staging validation', async () => {
+    const previousIndexedDB = globalThis.indexedDB;
+    Object.assign(globalThis, { indexedDB: fakeIndexedDB() });
+    const source = new FakeFS();
+    await source.writeFile('/saved.txt', 'snapshot');
+    await source.mkdir('/.succinix-runtime', { recursive: true });
+    const target = new FakeFS();
+    const container = {
+      fs: source as unknown as FileSystemAPI,
+      export: async () => new Uint8Array([9]),
+      mount: async (_data: Uint8Array, options?: { mountPoint?: string }) => {
+        const root = options?.mountPoint ?? '/';
+        if (root.includes('.succinix-restore-stage-')) {
+          await target.writeFile(`${root}/saved.txt`, 'snapshot');
+          await target.mkdir(`${root}/.succinix-runtime`, { recursive: true });
+          return;
+        }
+        await target.writeFile('/saved.txt', 'snapshot');
+      },
+    };
+    try {
+      const persist = createPersist({ container, binary: { dbName: `persist-v2-stage-runtime-${Math.random()}` } });
+      await persist.save(source as unknown as FileSystemAPI, true);
+      await expect(persist.load(target as unknown as FileSystemAPI)).resolves.not.toThrow();
+      expect(target.raw('/saved.txt')).toBe('snapshot');
+    } finally {
+      Object.assign(globalThis, { indexedDB: previousIndexedDB });
+    }
+  });
+
   it('maps fs-space scopeRoot to the container workdir for export while keeping mount at the scope root', async () => {
     const previousIndexedDB = globalThis.indexedDB;
     Object.assign(globalThis, { indexedDB: fakeIndexedDB() });

@@ -1,75 +1,29 @@
-# Succinix / dsh Cordis Contract Snapshot
+# Succinix Cordis 契约
 
-This document records the authoritative integration contract for
-`@succinix/engine@0.7.0`. The executable snapshot is
-[`examples/cordis-app/src/contract.ts`](../examples/cordis-app/src/contract.ts),
-run in a real browser by
-[`scripts/cordis-app-e2e.mjs`](../scripts/cordis-app-e2e.mjs). The demo depends
-only on the packed engine, `@deepseek-ai/cordis`, and `@webcontainer/api`; it
-never imports Succinix repository source.
+## 这是什么
 
-## Contract areas
+这是 `@succinix/engine@0.7.0` 的对外承诺清单。它不是产品介绍，而是一份能在真实浏览器中运行的兼容性检查：第三方只安装打包后的引擎、`@deepseek-ai/cordis` 和 `@webcontainer/api`，不读取本仓库源码。
 
-The contract suite covers the required dsh-native areas:
+## 检查什么
 
-| # | Area | Checks |
-| --- | --- | --- |
-| 1 | Plugin shape and loading | root export is `{ name: 'succinix', apply, Config }`; fiber reaches `ACTIVE` |
-| 2 | dsh service consumption | `inject: ['fs', 'sandbox', 'terminals', 'sessionPersistence']` resolves; uninjected `ctx.get(key, false)` is explicit fallback |
-| 3 | Service surface | `ctx.fs` (12 primitives + `sandboxMode`), `ctx.sandbox.confine`, `ctx.terminals` registry, `ctx.sessionPersistence`; lifecycle and observability live behind `succinix` |
-| 4 | Runtime execution | real Node, Lifo, and packaged Pyodide Python commands in the container |
-| 5 | Multi-instance single host | `ensureInstance` reuses the page host; `startedAt` and `wc` stay stable |
-| 6 | Snapshot / workspace | save, restore, flush, list, and explicit `persist.force` work on the shared container filesystem |
-| 7 | Ports and services | `succinix/server-ready` subscription, `host.ports.ready`, declarative service start/status/stop |
-| 8 | Reload semantics | `reconfigure` and `fiber.update` both increment `configRevision`; hot `fiber.update` preserves the host, restart-required `fiber.update` shuts it down before reapply, and services can be restored after reload |
-| 9 | Mode mismatch and teardown | `attach`/`boot` mismatch throws `ERR_MODE_MISMATCH`; shutdown, fiber dispose, and reapply behave correctly |
-| 10 | Asset integrity | `sha256.json` matches the served `host.js`; `lifo-core.js` manifest entry is present |
+| 范围 | 验证的承诺 |
+| --- | --- |
+| 插件与注入 | 入口是 `{ name: 'succinix', apply, Config }`，四个 dsh 服务可注入或显式探测 |
+| 服务表面 | 文件、命令约束、终端会话和会话保存符合公开类型 |
+| 执行与实例 | Node、Lifo、Pyodide Python 在同一工作区执行，多个实例复用页面级 host |
+| 保存与服务 | 快照、工作区、端口订阅和声明式服务能工作 |
+| 生命周期 | 热更新、需要重启的配置、模式冲突、停止和重新应用遵守生命周期规则 |
+| 发布资产 | `host.js`、`lifo-core.js` 与 `sha256.json` 的完整性可验证 |
 
-The migration surface from [MIGRATION.md](MIGRATION.md) is also executed as a
-contract check via `examples/cordis-app/src/migration.ts`.
-
-## Type-level contract
-
-The published package must include:
-
-- dsh `Context` augmentation for `fs`, `sandbox`, `terminals`, and
-  `sessionPersistence`;
-- typed `succinix/*` events for state, server-ready/closed, command, instance,
-  workspace, and process events;
-- typed `succinix` seam for container lifecycle, instance management,
-  ports, services, capabilities, and observability;
-- exported types for `SuccinixConfig`, `SuccinixHostService`, dsh service
-  interfaces, events, ports, services, capabilities, and terminal
-  output/session contracts.
-
-The old single-key `succinix` service augmentation is removed. The contract
-demo typechecks against the packed package, so a missing or stale
-augmentation fails the build.
-
-## Running the contract
+## 怎么验证
 
 ```bash
-npm run build:engine-package   # rebuild packages/engine
+npm run build:engine-package
 node scripts/cordis-app-e2e.mjs
 ```
 
-The driver builds the package, installs the demo's local dependencies if
-needed, builds the demo, starts Vite preview on port 7895, and runs the
-contract in headless Chrome. The gate is **all checks passed, zero failed**.
+可执行用例在 [examples/cordis-app/src/contract.ts](../examples/cordis-app/src/contract.ts)。改公开类型、服务、生命周期、资产或事件时，先修改这个用例，再更新相关文档。
 
-## Keeping the snapshot authoritative
+## 为什么还有 contracts 目录
 
-When the service surface, events, capabilities, lifecycle semantics, or asset
-layout change:
-
-1. update `examples/cordis-app/src/contract.ts` first;
-2. update this document's area table if a category changes;
-3. run `node scripts/cordis-app-e2e.mjs`;
-4. keep the demo and the packed package in sync.
-
-## Related documents
-
-- [SDK.md](SDK.md) — integration reference
-- [PLUGIN.md](PLUGIN.md) — third-party plugin authoring
-- [MIGRATION.md](MIGRATION.md) — 0.4.0/0.5.0 to 0.6.0 and 0.6.0 to 0.7.0 migration
-- [PROTOCOL.md](PROTOCOL.md) — file-RPC wire protocol
+[`contracts/dsh-0.1.0-rc.6/`](contracts/dsh-0.1.0-rc.6/SOURCES.md) 是从 DeepSeek Harness 固定下来的服务形状快照。它由 `check-dsh-shapes` 校验，内容是精确类型证据，不适合改写成教程；新人应先读 [SDK.md](SDK.md)。当前 `succinix` 宿主入口仍可通过 `ctx.get('succinix', false)` 使用，但它不替代四个 dsh 服务。

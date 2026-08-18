@@ -1,5 +1,7 @@
 # dsh 0.1.0-rc.6 Contract Snapshot
 
+> 给维护者：这是锁定的上游类型与许可快照，用来校验 Succinix 的服务形状，不是产品接入教程。日常接入先读 [SDK.md](../../SDK.md)。不要翻译、删改或覆盖目录内的上游类型；需要升级时新增版本目录。
+
 This directory vendors the official service-definition type surface consumed by
 Succinix 0.6.0. It is the immutable baseline for the dsh-native migration; do
 not overwrite it in place when a newer dsh release appears. Create a new

@@ -27,33 +27,35 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **Interactive applications use Lifo's native terminal seam.** `@lifo-sh/core` exports `ITerminal` and exposes command input/raw mode through `CommandContext.stdin` and `setRawMode`; its internal `TerminalStdin` backs that public command contract. Succinix must connect browser xterm to that in-WebContainer seam through thin terminal transport and preserve streaming output plus live `cols`/`rows`; it must not implement `vi`, `nano`, or third-party TUIs as parallel browser applications. Third-party packages must not import the non-root-exported `TerminalStdin` implementation directly.
 - **Built-in and third-party interactive tools follow the same path.** `vi`, `nano`, future REPL/TUI tools, and third-party Lifo packages run inside the WebContainer userland, use the same terminal-session protocol and lifecycle, and appear in the same process/capability views. No special UI-only package class is allowed.
 
-## Cordis Single-Track (0.6.0+)
+## Cordis Single-Track (0.7.0+)
 
-- `@succinix/engine@0.6.0` is a Cordis plugin; the root export is
-  `{ name: 'succinix', apply, Config }`. There is no separate SDK API line and
-  no `plugin-*` second package.
-- Consumers must declare `inject: ['succinix']` or use `ctx.get('succinix', false)`;
-  do not rely on implicit globals or top-level `ctx.mixin`.
-- All services are exposed under `ctx.succinix` (state, container, executor,
-  terminal, snapshot, persist, workspace, ports, services, capabilities,
-  instance). See `docs/SDK.md` for the integration reference and
-  `docs/cordis-contract.md` for the authoritative executable contract.
+- `@succinix/engine@0.7.0` is one Cordis plugin. Its root export is
+  `{ name: 'succinix', apply, Config }`; there is no separate SDK line or
+  `plugin-*` companion package.
+- Normal consumer plugins explicitly inject only the dsh services they use:
+  `fs`, `sandbox`, `terminals`, and `sessionPersistence`. Optional services are
+  discovered with `ctx.get('<key>', false)`, never implicit globals or top-level
+  `ctx.mixin`.
+- `ctx.get('succinix', false)` is the same-context host seam for lifecycle,
+  instances, ports, services, snapshots and the default executor. It does not
+  replace the four dsh services. See `docs/SDK.md` and the executable
+  `docs/cordis-contract.md`.
 - Only `src/plugin/` may import `cordis`; `src/engine`, `src/terminal`,
-  `src/instance`, `src/persist`, and `src/services` must stay Cordis-free.
-- `./terminal` and `./instance` are no longer package exports; use
-  `ctx.succinix.terminal.create` / `ctx.succinix.ensureInstance`.
-- `onServerReady` / `onServerClosed` / `onCommand` are not config callbacks;
-  consume `ctx.succinix.onServerReady`, `ctx.succinix.onServerClosed`, and
-  `succinix/*` events instead.
-- The page-level HostManager is a module singleton; fiber reload must not
-  restart the host. `shutdown()` or page unload is the only hard host teardown.
-- Rebuild the engine package with `node scripts/build-engine-package.mjs` after
-  touching `src/plugin/`; it regenerates `packages/engine/assets/sha256.json`
-  and validates the exports snapshot.
-- Current integration docs are `docs/SDK.md`, `docs/PLUGIN.md`,
+  `src/instance`, `src/persist`, and `src/services` stay Cordis-free.
+- `./terminal` and `./instance` are not package exports. Use
+  `host.terminal.open(...)` and `host.ensureInstance(...)` after getting the
+  host seam.
+- Server and command callbacks are not configuration fields. Subscribe through
+  `host.onServerReady`, `host.onServerClosed`, or typed `succinix/*` events.
+- The page-level HostManager is a module singleton. Fiber reload must not
+  restart it; only `shutdown()` or page unload performs hard host teardown.
+- Rebuild with `node scripts/build-engine-package.mjs` after touching
+  `src/plugin/`; it regenerates `packages/engine/assets/sha256.json` and checks
+  the package exports.
+- Current integration documents are `docs/SDK.md`, `docs/PLUGIN.md`,
   `docs/MIGRATION.md`, and `docs/cordis-contract.md`.
-- Actual npm publish and deprecation of `0.4.0` / `0.1.x` are release-owner
-  actions; do not publish unless the user explicitly requests it.
+- Publishing and deprecating old versions are release-owner actions. Do not
+  publish unless the user explicitly requests it.
 
 ## Explicitly Not Implemented (do not force)
 

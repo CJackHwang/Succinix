@@ -1,37 +1,29 @@
-# Cordis App Contract Demo
+# Cordis App 契约示例
 
-Standalone external consumer for `@succinix/engine@0.7.0`. It depends only on
-the packed engine package (via `file:../../packages/engine`),
-`@deepseek-ai/cordis`, and `@webcontainer/api`. It does not import Succinix
-repo source.
+## 这是什么
 
-The demo verifies the published artifact contract in a real browser:
+这是一个独立第三方应用。它只使用打包后的 `@succinix/engine`，不导入 Succinix 源码，因此能证明实际发布物是否可被别人接入。
 
-- Cordis plugin loading with `inject: ['fs', 'sandbox', 'terminals',
-  'sessionPersistence']`
-- the internal `succinix` seam for boot/attach/ensureInstance and
-  observability facades
-- node, lifo, and python execution
-- `ctx.fs` write/read/edit and structured error codes
-- `ctx.sandbox` lifo confinement and fail-closed real Node subprocesses
-- `ctx.terminals` owner-scoped spawn/read/signal/kill registry
-- `ctx.sessionPersistence` append/list/readRaw event log
-- multi-instance reuse of the page host
-- snapshot save/restore and workspace flush/list
-- explicit `persist.force` execution
-- port subscription and declarative services
-- fiber reload without host restart for hot fields, restart-required shutdown,
-  and `configRevision` increments
-- shutdown, dispose, and reapply recovery
-- asset SHA-256 integrity
+## 有什么用
 
-```sh
-npm run build:engine-package   # from the repo root
+它检查插件安装、四个 Cordis 服务、命令执行、文件、终端、会话保存、实例、端口、服务、快照、热更新和资产完整性。
+
+## 怎么运行
+
+在仓库根目录执行：
+
+```bash
+npm run build:engine-package
+node scripts/cordis-app-e2e.mjs
+```
+
+手动查看时：
+
+```bash
 cd examples/cordis-app
 npm install
 npm run build
 npm run preview
 ```
 
-Open `http://localhost:7895/` and wait for the summary line. The e2e driver is
-[`scripts/cordis-app-e2e.mjs`](../../scripts/cordis-app-e2e.mjs).
+打开 `http://localhost:7895/`，等待结果摘要。示例会把包内 host、Lifo 和 Python 资产复制到自己的静态目录，模拟第三方应用的真实接入方式。

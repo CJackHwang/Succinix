@@ -29,31 +29,31 @@
 - **交互应用使用 Lifo 原生终端 seam。** `@lifo-sh/core` 根入口导出 `ITerminal`，并通过 `CommandContext.stdin` 与 `setRawMode` 公开命令输入/raw mode；内部 `TerminalStdin` 为该公开契约提供实现。Succinix 必须通过轻薄终端运输将浏览器 xterm 接入 WebContainer 内 seam，并保留流式输出与实时 `cols`/`rows`；不得将 `vi`、`nano` 或第三方 TUI 实现为并行浏览器应用。第三方 package 不得直接导入未从根入口导出的 `TerminalStdin` 实现。
 - **内置与第三方交互工具走同一条路径。** `vi`、`nano`、未来 REPL/TUI 与第三方 Lifo package 都运行于 WebContainer userland，使用同一终端 session 协议和生命周期，并进入同一进程/capability 视图。禁止另设 UI-only package 类型。
 
-## Cordis 单轨（0.6.0+）
+## Cordis 单轨（0.7.0+）
 
-- `@succinix/engine@0.6.0` 是 Cordis 插件；根导出为
-  `{ name: 'succinix', apply, Config }`。没有独立 SDK API 线，也没有第二个
+- `@succinix/engine@0.7.0` 是唯一的 Cordis 插件，根导出为
+  `{ name: 'succinix', apply, Config }`。没有独立 SDK 线或第二个
   `plugin-*` 包。
-- 消费方必须声明 `inject: ['succinix']`，或用 `ctx.get('succinix', false)`；
-  不依赖隐式全局或顶层 `ctx.mixin`。
-- 所有服务都在 `ctx.succinix` 下（state、container、executor、terminal、
-  snapshot、persist、workspace、ports、services、capabilities、instance）。
-  集成参考见 `docs/SDK.md`，权威可执行契约见 `docs/cordis-contract.md`。
+- 普通消费插件只显式声明需要的 dsh 服务：`fs`、`sandbox`、`terminals`、
+  `sessionPersistence`。可选服务用 `ctx.get('<key>', false)` 探测；不依赖
+  隐式全局或顶层 `ctx.mixin`。
+- `ctx.get('succinix', false)` 是同一 Cordis 上下文中的宿主入口，用于生命
+  周期、实例、端口、服务、快照和默认执行器；它不替代四个 dsh 服务。接入见
+  `docs/SDK.md`，可执行契约见 `docs/cordis-contract.md`。
 - 只有 `src/plugin/` 可以 import `cordis`；`src/engine`、`src/terminal`、
   `src/instance`、`src/persist`、`src/services` 必须保持 Cordis-free。
-- `./terminal` 与 `./instance` 不再是包导出；改用
-  `ctx.succinix.terminal.create` / `ctx.succinix.ensureInstance`。
-- `onServerReady` / `onServerClosed` / `onCommand` 不是配置回调；改用
-  `ctx.succinix.onServerReady`、`ctx.succinix.onServerClosed` 与
-  `succinix/*` 事件。
-- 页面级 HostManager 是模块单例；fiber reload 不得重启 host。`shutdown()` 或
-  页面卸载是唯一的硬关闭路径。
+- `./terminal` 与 `./instance` 不是包导出。取得宿主入口后使用
+  `host.terminal.open(...)` 和 `host.ensureInstance(...)`。
+- 端口和命令回调不是配置字段。使用 `host.onServerReady`、
+  `host.onServerClosed` 或有类型的 `succinix/*` 事件订阅。
+- 页面级 HostManager 是模块单例；fiber reload 不得重启 host。只有
+  `shutdown()` 或页面卸载会硬关闭 host。
 - 改动 `src/plugin/` 后用 `node scripts/build-engine-package.mjs` 重建引擎包；
-  它会重新生成 `packages/engine/assets/sha256.json` 并校验 exports 快照。
+  它会重新生成 `packages/engine/assets/sha256.json` 并校验包导出。
 - 当前集成文档为 `docs/SDK.md`、`docs/PLUGIN.md`、`docs/MIGRATION.md`、
   `docs/cordis-contract.md`。
-- 实际 npm publish 与 `0.4.0` / `0.1.x` deprecate 属 release-owner 动作；
-  用户未明确要求时不发布。
+- 实际 npm publish 与旧版本 deprecate 属 release-owner 动作；用户未明确
+  要求时不发布。
 
 ## 明确未实现（不要硬造）
 

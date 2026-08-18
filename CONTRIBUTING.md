@@ -1,102 +1,51 @@
-# Contributing to Succinix
+# 参与 Succinix
 
-Thanks for your interest in contributing. This project aims for a professional, production-grade browser-native Linux environment. Please read [AGENTS.md](AGENTS.md) first — it codifies the design rules every contribution must follow.
+## 这是什么
 
-## Development Setup
+这是一份给贡献者的工作说明。开始编码前先读 [AGENTS.md](AGENTS.md)：它定义了不能破坏的架构、界面和提交规则。
 
-Requirements: Node.js 20+, npm.
+## 怎么开始
+
+需要 Node.js 22+ 和 npm：
 
 ```bash
 npm install
-npm run dev          # start the dev server on http://localhost:7892
+npm run dev
 ```
 
-The dev server is configured with the `Cross-Origin-Opener-Policy` / `Cross-Origin-Embedder-Policy` headers that WebContainers require. Do not change the port or remove these headers.
+打开 `http://localhost:7892`。开发服务器已经配置 WebContainer 必需的 COOP/COEP 响应头和端口 `7892`，不要随意改动。
 
-## Project Layout
+## 代码放在哪里
 
-```
-src/
-  main.ts            # entry: xterm device, boot orchestration, v0.6 app-shell compatibility
-  boot.ts            # boot sequence, system info, self-checks (demo ?instance=/?user= paths)
-  commands.ts        # v0.6 browser control commands (help/ports/db/...); v0.7 standard commands move into Lifo
-  tests.ts           # self-test suite (?test=1)
-  engine/            # TerminalExecutor engine (decoupled, reusable — see README Ecosystem)
-    index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
-    client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
-    host.ts          # TerminalExecutor daemon, runs inside WebContainer
-    host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
-    host-procs.ts    # unified process registry
-  terminal/          # terminal SDK (UI-free session + parameterized boot; packaged as @succinix/engine/terminal)
-  instance/          # instance factory (createSuccinixInstance; packaged as @succinix/engine/instance)
-scripts/build-host.mjs
-```
+| 目录 | 负责什么 |
+| --- | --- |
+| `src/plugin/` | Cordis 插件、服务和生命周期；只有这里可以导入 Cordis |
+| `src/engine/` | WebContainer host、RPC、命令路由和运行时适配 |
+| `src/terminal/` | 终端启动与浏览器设备层 |
+| `src/instance/`、`src/persist/`、`src/services/` | 实例、快照和后台服务 |
+| `src/commands/`、`src/userland/` | 内置命令和执行世界扩展 |
+| `tests/` | 单元和契约行为测试 |
+| `scripts/` | 构建、检查和浏览器验证 |
 
-## Design & Coding Standards
+## 贡献时记住
 
-See [AGENTS.md](AGENTS.md) for the full rules. Highlights:
+- WebContainer 是执行世界；不要在浏览器另建文件系统、命令、进程表或编辑器。
+- `/cmd.json` 到独立 `/result-<id>.json` 的 RPC 不能改成共享结果文件。
+- `node`、`npm`、`npx` 走真实 Node；Lifo 承担其他 Unix 命令；它们必须共享文件。
+- UI 输出为英文、无 emoji、使用既定暗琥珀主题和 JetBrains Mono。
+- 多实例是组织边界，不是权限或安全系统；不要补假登录、`chmod` 或原生二进制模拟。
 
-- **UI language**: all user-facing output is English.
-- **No emoji**: never use emoji or pictographic symbols in UI text, output, or comments that render in the terminal. Use ASCII status markers (`[  OK  ]`, `[FAIL]`, `[SKIP]`).
-- **Theme**: dark-amber palette, no green accents. See AGENTS.md for exact color values.
-- **Font**: JetBrains Mono (bundled via `@fontsource/jetbrains-mono`, no CDN).
-- **Code comments**: Chinese is fine for developer-facing comments; identifiers are English.
-- **TypeScript**: strict mode is required.
-- **Production feel**: restrained, professional. No toy-like styling.
+## 怎么验证和提交
 
-## Protocol & Architecture Constraints
-
-These invariants must not be broken:
-
-- **File RPC**: `/cmd.json` -> `/result-<id>.json`. Each request gets its own result file. Never revert to a single shared result file (it caused a lost-response race, see commit history).
-- **Routing**: commands starting with `node`, `npm`, or `npx` go to a real Node.js child process; everything else goes to the Lifo sandbox.
-- **Unified filesystem**: the browser `wc.fs`, Node child processes, and Lifo all share one filesystem via WebContainer's virtualized `node:fs`. Do not introduce a filesystem bridge.
-- **Database**: tinbase must be started with `--engine wasm` (no `--memory` — data persists in the workspace snapshot); installation timeouts must pass the host-side `{ timeout: 120000 }` option (client wait 150000).
-- **Multi-instance / multi-user**: organizational isolation only — per-instance/per-user state, snapshots and process views; never a security boundary. Do not add a login ritual or fake permission bits.
-- **Execution world**: WebContainer/Lifo is the source of truth for commands, runtimes, packages, services, editors, TUIs, processes, and mutable userland state. The browser is only the control/device plane (boot, xterm, keyboard/resize events, unavoidable Web APIs, and thin transport).
-- **Interactive path**: v0.6 uses the browser app shell plus headless Lifo/file RPC. For v0.7, connect xterm to Lifo's in-container `ITerminal` and public `CommandContext.stdin`/`setRawMode` seam, and run interactive tools in WebContainer userland; do not build parallel browser-side editors or TUI implementations.
-- **Generic child-process stdin**: remains unsupported until a separate host transport is implemented and verified. Lifo-native terminal support must not be described as generic Node/Python child-process PTY support.
-
-## Quality Gates
-
-All of the following must pass before a pull request is merged:
+日常改动至少运行与范围相符的检查。改代码通常先跑：
 
 ```bash
-npx tsc -p tsconfig.json --noEmit   # 0 errors
-node scripts/build-host.mjs         # host bundle builds
-npm run build                       # production build succeeds
+npx tsc -p tsconfig.json --noEmit
+node scripts/build-host.mjs
+npm run build
+npm run lint
+npm run test
+npm run check:docs
 ```
 
-Runtime verification (manual, in a browser):
-
-1. `npm run dev` and open `http://localhost:7892`.
-2. Confirm the boot sequence and self-checks complete, then the prompt appears.
-3. Run the full self-test suite via `http://localhost:7892/?test=1`.
-4. Spot-check a real Node command (`node -e "console.log(1+1)"`) and a Lifo command (`grep` on a file) in the terminal.
-5. Ensure no emoji appear anywhere in the UI output.
-
-## Commit Conventions
-
-Use [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-feat: add port forwarding registry
-fix(host): avoid result overwrite race
-docs: update architecture diagram
-refactor(tests): adopt self-test format
-chore: bump dependencies
-```
-
-Keep commits focused and atomic. Reference the relevant TASK file when applicable.
-
-## Pull Request Process
-
-1. Create a feature branch from `main` (`git checkout -b feat/your-change`).
-2. Implement with tests where applicable; run the quality gates above.
-3. Push and open a pull request describing the change, why it matters, and how you verified it.
-4. Keep the diff reviewable — split large changes into multiple PRs.
-5. A maintainer will review; address feedback and re-run the gates.
-
-## Questions
-
-Open an issue for bugs and feature requests. For design questions, refer to [AGENTS.md](AGENTS.md) and the [README](README.md) architecture section.
+影响公开插件、浏览器执行或发布物时，继续运行 `npm run check:engine-package`、`npm run check:plugin-boundaries` 和 `npm run test:e2e`。提交前审查差异，按具体路径暂存；提交信息使用简体中文，例如 `fix(终端): 修复结果文件清理`。完整门禁与 Git 纪律以 [AGENTS.md](AGENTS.md) 为准。

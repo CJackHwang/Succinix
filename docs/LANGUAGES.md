@@ -11,7 +11,7 @@ Succinix 在浏览器里提供几个可直接使用的运行时。它们都使�
 | Node.js / npm / npx | 前端、Node 服务、TypeScript 工具链 | 使用真实 WebContainer Node；全局 npm 安装不可用，请在项目内安装依赖 |
 | Python / pip | 脚本、数据处理、支持的 Python 包 | 基于 Pyodide；用 `python -c` 或脚本文件运行，不提供通用 REPL 或 `subprocess` |
 | Unix 命令 | 文件处理、文本筛选、管道和项目操作 | 由 Lifo 提供，和 Node/Python 共用文件 |
-| Ruby | 运行已支持的 Ruby WASM 脚本 | 首次启动较慢，不提供 gem 安装 |
+| Ruby | 在独立 Succinix 应用中运行已支持的 Ruby WASM 脚本 | 首次启动较慢，不提供 gem 安装；引擎 npm 包不携带 Ruby 资产，第三方宿主需自行提供 |
 | WASI | 运行已编译的 WASI 模块 | 可以运行，不能在环境内编译 C、Rust 或 Go |
 
 ## 怎么用

@@ -106,9 +106,9 @@ function evidenceFailures(evidence, headContext) {
       failures.push(`environment.${key} must be a non-empty string`);
     }
   }
-  if (evidence.environment?.node !== process.version) failures.push(`environment.node must equal the current Node version ${process.version}`);
-  if (evidence.environment?.platform !== process.platform) failures.push(`environment.platform must equal the current platform ${process.platform}`);
-  if (evidence.environment?.arch !== process.arch) failures.push(`environment.arch must equal the current architecture ${process.arch}`);
+  // Evidence is committed from one machine and checked on another. The
+  // recorded environment identifies where the commands ran; it is not a
+  // portability constraint on the runner performing this structural check.
   if (!Array.isArray(evidence.commands) || evidence.commands.length === 0) {
     failures.push('commands must contain at least one command result');
   } else {

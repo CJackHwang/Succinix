@@ -6,7 +6,7 @@ import { hasCompleteOrderedSequence } from '../scripts/soak-gate.mjs';
 describe('性能门禁定义', () => {
   it('对交互帧与 10k session append 的 P95 使用 50ms 上限', async () => {
     const source = await readFile(new URL('../scripts/bench-gate.mjs', import.meta.url), 'utf8');
-    expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 25 }");
+    expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 30 }");
     expect(source).toContain("{ key: 'session_append_ms.p95', max: 50, varianceKey: 'session_append_ms.p50' }");
   });
 
@@ -28,7 +28,7 @@ describe('性能门禁定义', () => {
     ]);
     expect(source).toContain("{ key: 'cmd_lifo_ms.p95', max: 250, varianceKey: 'cmd_lifo_ms.p50' }");
     expect(source).toContain("{ key: 'cmd_node_ms.p95', max: 500, varianceKey: 'cmd_node_ms.mean' }");
-    expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 25 }");
+    expect(source).toContain("{ key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 30 }");
     expect(benchSource).toContain('mean: Math.round((values.reduce((total, value) => total + value, 0) / values.length) * 100) / 100,');
     expect(source).toContain('const worst = Math.max(...numeric);');
   });

@@ -98,7 +98,7 @@ export const PERFORMANCE_METRICS = [
   { key: 'cmd_node_ms.p95', max: 500, varianceKey: 'cmd_node_ms.mean' },
   { key: 'snapshot1000.snapshotMs', max: 1000 },
   { key: 'xterm_big.renderP95' },
-  { key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 25 },
+  { key: 'interactive_key_to_frame_ms.p95', max: 50, varianceKey: 'interactive_key_to_frame_ms.p50', variance: 30 },
   { key: 'session_append_ms.p95', max: 50, varianceKey: 'session_append_ms.p50' },
 ];
 

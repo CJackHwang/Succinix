@@ -18,6 +18,15 @@ Design rules for anyone (human or AI agent) modifying this project. English text
 - **tinbase:** must start with `--engine wasm`（no `--memory` — data persists in the workspace snapshot; the in-browser install timeout is host-side `{ timeout: 120000 }`, client wait `150000`).
 - **`scripts/build-host.mjs`:** `@lifo-sh/ui` stays external. Produces two in-container bundles: `public/host.js` (lightweight host daemon — RPC loop, process table, node subprocesses) and `public/lifo-core.js` (the ~1 MB `@lifo-sh/core` kernel, loaded lazily via `import('./lifo-core.js')` on first Lifo command). Rebuild with `node scripts/build-host.mjs` after touching files under `src/engine/host/`, `src/engine/host-procs.ts`, or `src/engine/lifo-core.ts`.
 
+## WebContainer-Native Architecture (normative)
+
+- **WebContainer is the execution world and capability source of truth.** Lifo is not a browser-side imitation: `lifo-core.js` is dynamically imported by `node host.js` inside WebContainer, and its `/workspace` mount delegates to the same virtualized `node:fs` tree used by real Node and Python runtimes.
+- **Extend the execution world; do not assemble a parallel browser-side Linux.** New shells, commands, packages, services, runtimes, editors, TUIs, and third-party extensions belong in the WebContainer/Lifo userland whenever physically possible. They must share the existing filesystem, cwd/env, instance, process, service, package, persistence, and capability models.
+- **The browser is the control/device plane.** Browser code may boot WebContainer, render xterm, collect keyboard/resize events, expose unavoidable Web APIs, and transport data across the browser↔WebContainer boundary. That transport must stay thin and must not create a second command implementation, filesystem, process table, service registry, package state, or editor state outside the execution world.
+- **Standard Unix names are execution-world commands.** Do not add new browser-local implementations that shadow standard commands. Browser-only management stays under the `succinix ...` namespace; v0.7 moves existing standard-name local handlers into Lifo/host adapters where necessary.
+- **Interactive applications use Lifo's native terminal seam.** `@lifo-sh/core` exports `ITerminal` and exposes command input/raw mode through `CommandContext.stdin` and `setRawMode`; its internal `TerminalStdin` backs that public command contract. Succinix must connect browser xterm to that in-WebContainer seam through thin terminal transport and preserve streaming output plus live `cols`/`rows`; it must not implement `vi`, `nano`, or third-party TUIs as parallel browser applications. Third-party packages must not import the non-root-exported `TerminalStdin` implementation directly.
+- **Built-in and third-party interactive tools follow the same path.** `vi`, `nano`, future REPL/TUI tools, and third-party Lifo packages run inside the WebContainer userland, use the same terminal-session protocol and lifecycle, and appear in the same process/capability views. No special UI-only package class is allowed.
+
 ## Cordis Single-Track (0.6.0+)
 
 - `@succinix/engine@0.6.0` is a Cordis plugin; the root export is
@@ -55,7 +64,7 @@ Browser-environment limits are accepted as-is. Do not build simulations with no 
 - **Real kernel / apt / native binaries.** Physically impossible in the sandbox. Succinix is a browser-native Linux (JS runtime + Lifo userland).
 - **Inbound external networking.** Ports are virtual previews; tunnels are outbound bridges, not real inbound.
 - **Direct external `curl` without CORS.** Use `https://r.jina.ai/<url>`-style proxies.
-- **Interactive stdin (REPL-style processes).** Unreliable in WebContainer (verified); file-based RPC replaces it.
+- **Generic child-process stdin is not available today.** The current Succinix host uses file RPC and headless `Sandbox.commands.run()`, so arbitrary real Node/Python child-process REPLs are unsupported. This is a current transport limitation, not permission to build browser-side substitutes: interactive userland work must use the WebContainer-native Lifo terminal seam above. Do not claim generic child-process PTY support until it is independently implemented and verified.
 - **symlinks / hard links.** Not supported by the Lifo VFS.
 - **Firefox / Safari / mobile.** WebContainers does not support them; the environment-check error page explains requirements instead.
 - **Precise OS-level memory/CPU stats.** Only estimates are available; always mark with `~` and an `(estimated ...)` footnote. Never present estimates as exact.

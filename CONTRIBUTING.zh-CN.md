@@ -19,9 +19,9 @@ dev server 已配置 WebContainers 所需的 `Cross-Origin-Opener-Policy` / `Cro
 
 ```
 src/
-  main.ts            # 入口：xterm 终端、REPL、boot 编排（组装层）
+  main.ts            # 入口：xterm 设备、boot 编排、v0.6 应用 Shell 兼容层
   boot.ts            # 启动序列、系统信息、自检（demo ?instance=/?user= 路径）
-  commands.ts        # 浏览器侧命令（help/ports/db/...）
+  commands.ts        # v0.6 浏览器控制命令（help/ports/db/...）；v0.7 将标准命令迁入 Lifo
   tests.ts           # 自检套件（?test=1）
   engine/            # TerminalExecutor 引擎（已解耦、可复用——见 README 生态）
     index.ts         # 公开 API：createTerminalExecutor / bootEngineHost / waitForHostReady + 类型
@@ -55,6 +55,9 @@ scripts/build-host.mjs
 - **统一文件系统（unified filesystem）**：浏览器的 `wc.fs`、Node 子进程与 Lifo 经 WebContainer 虚拟化的 `node:fs` 共享同一个文件系统。不要引入文件系统桥。
 - **数据库（database）**：tinbase 必须以 `--engine wasm` 启动（**不带 `--memory`**——数据持久于工作区快照）；安装超时必须传主机侧 `{ timeout: 120000 }` 选项（客户端等待 150000）。
 - **多实例 / 多用户**：仅组织性隔离——按实例/用户分割状态、快照与进程视图；**绝非安全边界**。不添加登录仪式，不伪造权限位。
+- **执行世界**：WebContainer/Lifo 是命令、运行时、包、服务、编辑器、TUI、进程及可变 userland 状态的事实源。浏览器只是控制/设备平面（启动、xterm、键盘/resize 事件、必要 Web API 与轻薄传输）。
+- **交互路径**：v0.6 使用浏览器应用 Shell 与 headless Lifo/文件 RPC。v0.7 将 xterm 接入 Lifo 容器内的 `ITerminal` 与公开 `CommandContext.stdin`/`setRawMode` seam，交互工具运行在 WebContainer userland；不得在浏览器侧并行实现编辑器或 TUI。
+- **通用子进程 stdin**：在单独的 host 传输实现并验证前仍不支持。Lifo 原生终端能力不得表述为通用 Node/Python 子进程 PTY 支持。
 
 ## 质量门禁
 

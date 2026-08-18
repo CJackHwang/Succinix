@@ -17,9 +17,9 @@ The dev server is configured with the `Cross-Origin-Opener-Policy` / `Cross-Orig
 
 ```
 src/
-  main.ts            # entry: xterm terminal, REPL, boot orchestration (assembly layer)
+  main.ts            # entry: xterm device, boot orchestration, v0.6 app-shell compatibility
   boot.ts            # boot sequence, system info, self-checks (demo ?instance=/?user= paths)
-  commands.ts        # browser-side commands (help/ports/db/...)
+  commands.ts        # v0.6 browser control commands (help/ports/db/...); v0.7 standard commands move into Lifo
   tests.ts           # self-test suite (?test=1)
   engine/            # TerminalExecutor engine (decoupled, reusable — see README Ecosystem)
     index.ts         # public API: createTerminalExecutor / bootEngineHost / waitForHostReady + types
@@ -53,6 +53,9 @@ These invariants must not be broken:
 - **Unified filesystem**: the browser `wc.fs`, Node child processes, and Lifo all share one filesystem via WebContainer's virtualized `node:fs`. Do not introduce a filesystem bridge.
 - **Database**: tinbase must be started with `--engine wasm` (no `--memory` — data persists in the workspace snapshot); installation timeouts must pass the host-side `{ timeout: 120000 }` option (client wait 150000).
 - **Multi-instance / multi-user**: organizational isolation only — per-instance/per-user state, snapshots and process views; never a security boundary. Do not add a login ritual or fake permission bits.
+- **Execution world**: WebContainer/Lifo is the source of truth for commands, runtimes, packages, services, editors, TUIs, processes, and mutable userland state. The browser is only the control/device plane (boot, xterm, keyboard/resize events, unavoidable Web APIs, and thin transport).
+- **Interactive path**: v0.6 uses the browser app shell plus headless Lifo/file RPC. For v0.7, connect xterm to Lifo's in-container `ITerminal` and public `CommandContext.stdin`/`setRawMode` seam, and run interactive tools in WebContainer userland; do not build parallel browser-side editors or TUI implementations.
+- **Generic child-process stdin**: remains unsupported until a separate host transport is implemented and verified. Lifo-native terminal support must not be described as generic Node/Python child-process PTY support.
 
 ## Quality Gates
 

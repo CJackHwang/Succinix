@@ -20,6 +20,15 @@
 - **tinbase：** 必须以 `--engine wasm` 启动（不要 `--memory` —— 数据持久于工作区快照 snapshot；浏览器内安装超时为主机侧 `{ timeout: 120000 }`，客户端等待 `150000`）。
 - **`scripts/build-host.mjs`：** `@lifo-sh/ui` 保持外部依赖。产出两个容器内 bundle：`public/host.js`（轻量 host 守护进程 daemon —— RPC 循环、进程表、node 子进程）与 `public/lifo-core.js`（约 1 MB 的 `@lifo-sh/core` 内核，首个 Lifo 命令时经 `import('./lifo-core.js')` 懒加载 lazy-inject）。改动 `src/engine/host/` 下文件、`src/engine/host-procs.ts` 或 `src/engine/lifo-core.ts` 后用 `node scripts/build-host.mjs` 重新构建。
 
+## WebContainer 原生架构（规范性）
+
+- **WebContainer 是执行世界和能力的唯一事实源。** Lifo 不是浏览器侧的仿制层：`lifo-core.js` 由 WebContainer 内的 `node host.js` 动态加载，它的 `/workspace` 挂载与真实 Node/Python 运行时共用同一棵虚拟化 `node:fs`。
+- **补充执行世界，不在浏览器外层并行拼装 Linux。** 只要环境物理上可行，新 shell、命令、包、服务、运行时、编辑器、TUI 与第三方扩展都必须存在于 WebContainer/Lifo userland，并共用文件系统、cwd/env、实例、进程、服务、包、持久化与 capability 模型。
+- **浏览器只是控制/设备平面。** 浏览器代码可启动 WebContainer、渲染 xterm、采集键盘/resize 事件、暴露必要 Web API，并运输浏览器↔WebContainer 数据。运输必须保持轻薄，不得在执行世界外另造命令实现、文件系统、进程表、服务 registry、包状态或编辑器状态。
+- **标准 Unix 名称属于执行世界。** 不得新增覆盖标准命令的浏览器本地实现。纯浏览器管理功能使用 `succinix ...` 命名空间；v0.7 必要时将现有标准名称 local handler 迁入 Lifo/host adapter。
+- **交互应用使用 Lifo 原生终端 seam。** `@lifo-sh/core` 根入口导出 `ITerminal`，并通过 `CommandContext.stdin` 与 `setRawMode` 公开命令输入/raw mode；内部 `TerminalStdin` 为该公开契约提供实现。Succinix 必须通过轻薄终端运输将浏览器 xterm 接入 WebContainer 内 seam，并保留流式输出与实时 `cols`/`rows`；不得将 `vi`、`nano` 或第三方 TUI 实现为并行浏览器应用。第三方 package 不得直接导入未从根入口导出的 `TerminalStdin` 实现。
+- **内置与第三方交互工具走同一条路径。** `vi`、`nano`、未来 REPL/TUI 与第三方 Lifo package 都运行于 WebContainer userland，使用同一终端 session 协议和生命周期，并进入同一进程/capability 视图。禁止另设 UI-only package 类型。
+
 ## Cordis 单轨（0.6.0+）
 
 - `@succinix/engine@0.6.0` 是 Cordis 插件；根导出为
@@ -55,7 +64,7 @@
 - **真实内核 / apt / 原生二进制。** 沙箱内物理不可行。Succinix 是浏览器原生 Linux（JS 运行时 + Lifo 用户态）。
 - **入站外部网络（inbound networking）。** 端口是虚拟 preview；隧道是出站桥接，不是真实入站。
 - **无 CORS 的直接外部 `curl`。** 请用 `https://r.jina.ai/<url>` 风格代理。
-- **交互式 stdin（REPL 风格进程）。** WebContainer 中不可靠（已实测）；以文件 RPC 替代。
+- **通用子进程 stdin 当前不可用。** 现有 Succinix host 使用文件 RPC 与 headless `Sandbox.commands.run()`，因此任意真实 Node/Python 子进程 REPL 仍不支持。这是当前运输限制，不是在浏览器侧造替代品的理由：交互 userland 必须使用上述 WebContainer 原生 Lifo 终端 seam。通用子进程 PTY 未独立实现并验证前，不得宣称支持。
 - **符号链接 / 硬链接（symlink）。** Lifo VFS 不支持。
 - **Firefox / Safari / 移动端。** WebContainers 不支持它们；环境检查错误页说明要求而非降级。
 - **精确的 OS 级内存/CPU 统计。** 仅有估算值；始终标 `~` 并加 `(estimated ...)` 脚注。绝不把估算当精确值。

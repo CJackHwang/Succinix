@@ -1,475 +1,100 @@
 # Succinix
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.0-black.svg)](package.json)
-[![CI](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml/badge.svg)](https://github.com/CJackHwang/Succinix/actions/workflows/ci.yml)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+Succinix 是一个放在浏览器里的项目终端运行环境。它给网页应用接入一个已经配置好的工作区、终端、命令执行和文件持久化能力，不需要自己再拼一套模拟终端。
 
-**A browser-native Linux: a full-screen Unix terminal powered by WebContainer + Lifo, with a unified TerminalExecutor that routes `node|npm|npx` to a real Node.js runtime and everything else to a Lifo Unix userland — sharing one filesystem.**
+## 这是什么
 
-> Language: **English** | [简体中文](docs/README.zh-CN.md)
+它运行在 WebContainer 中：Node.js、Python 和常用 Unix 命令看到的是同一份项目文件。浏览器只负责显示终端和接收输入，命令、文件、进程和服务都在同一个运行环境里工作。
 
-Open a browser tab, boot into a Linux-like environment, and use Unix tools, Node.js, process management, port forwarding, and a Postgres database (tinbase) without installing anything.
+Succinix 也可以作为 Cordis 插件嵌入第三方应用。对接方得到的是一个可执行、可保存的浏览器项目环境，而不是一组需要自行组合的底层零件。
 
-### Execution-world architecture
+## 有什么用
 
-WebContainer is Succinix's execution world and the single source of truth for userland
-capabilities. `node host.js` and the lazily loaded `lifo-core.js` run inside the same
-WebContainer, and Lifo mounts the shared virtualized `node:fs` tree used by Node and Python.
-The browser is only the control/device plane: it boots WebContainer, renders xterm, collects
-keyboard/resize events, and transports data across the boundary. New commands, runtimes,
-packages, services, editors, TUIs, and third-party extensions must be implemented inside the
-WebContainer/Lifo userland whenever possible, rather than as parallel browser-side features.
+- 在浏览器中创建、编辑和运行项目，无需本机安装 Node.js 或 Python。
+- 使用 `node`、`npm`、`npx`、`python`、`pip` 及常见 Unix 命令处理项目文件。
+- 启动开发服务并打开浏览器预览地址。
+- 刷新页面后保留工作区、设置和已保存的快照。
+- 把同一套终端、文件和运行环境交给自己的 Cordis 插件或网页应用使用。
 
-The current host uses Lifo's headless `commands.run()` path and therefore does not yet provide
-generic child-process interactive stdin. The v0.7 plan extends Lifo's exported `ITerminal` and
-public `CommandContext.stdin`/`setRawMode` seam through a thin in-WebContainer terminal transport so built-in and third-party
-interactive tools share the same userland, process, filesystem, instance, and persistence model.
-See [docs/PLAN-v0.7.0.md](docs/PLAN-v0.7.0.md).
+已知边界：仅支持 Chromium 浏览器；端口是浏览器预览地址，不是公网入站服务；Python 适合执行脚本，不提供通用交互式 REPL；没有原生二进制、`apt` 或真实权限隔离。
 
----
+## 怎么用
 
-## Features
-
-- **Full-screen terminal experience** — a centered DOM boot splash with system self-checks and graceful environment-exit (shows a professional error page instead of degrading), then an interactive shell (`guest@succinix:~$`).
-- **Interactive terminal keys (v0.6 current app shell)** — **Ctrl+C** interrupts a running command and discards queued commands (a `node`/`npm`/`npx` run is killed via the `interrupt` protocol; pure Lifo commands and background services are not touched), **Up/Down arrows** browse command history (session memory), **Tab** completes built-in command names and file paths (multiple candidates are listed), and **Ctrl+L** clears the screen. The prompt follows the session cwd: `cd /workspace/proj` turns `guest@succinix:~$` into `guest@succinix:~/proj$` (`~` = the workspace root). v0.7 moves this human-shell responsibility into the WebContainer Lifo Shell through the native terminal seam; see [docs/PLAN-v0.7.0.md](docs/PLAN-v0.7.0.md).
-- **Unified command execution** — one terminal entry point:
-  - `node`, `npm`, `npx` and project binaries run on a **real Node.js process** (WebContainer).
-  - `python` / `python3` / `pip` / `pip3` run on a **built-in Pyodide runtime** (Python 3.14.2, Pyodide 314.0.4) — a resident daemon packaged as a system asset (zero install, cannot be broken by user `npm install`), injected lazily on first use. `python -c "<code>"` and `python <script.py>` are supported; `pip` maps to Pyodide's **micropip** (pip-installed wheels — including compiled `.so` packages — persist across refresh via `/.pyodide/site-packages` under the binary snapshot); the generic Python REPL is not supported by the current headless/file-RPC host (the v0.7 Lifo terminal path does not imply generic child-process PTY support).
-  - Everything else (`grep`, `sed`, `awk`, `cat`, `tar`, `curl`, pipes, redirects, ...) runs on **Lifo**, a clean-room TypeScript implementation of Unix.
-- **Session working directory (fusion)** — `cd` in the Lifo sandbox now drives a **session cwd** that the host persists (`/etc/succinix.cwd`, survives refresh) and applies to every real Node/Python child process (`spawn cwd`). `pwd` shows the session cwd, `node`/`python` see the same directory — no more `cd /ws/proj && npm install` installing into the container root. `cd /` returns to the workspace root (`~`); `cd` to a missing directory keeps the session cwd unchanged. `lang` lists the built-in runtimes and versions.
-- **Shared filesystem** — the browser (`wc.fs`) and Lifo commands operate on the *same* files. No bridge code; WebContainer virtualizes `node:fs` for processes, and Lifo consumes it via `NativeFsProvider`.
-- **Process management** — `ps` / `kill` over a unified process table (real child processes + tracked state), including background `spawn`. Each `ps` entry carries a `scope` field (`system` / `container` / `unknown`, plus `containerId` for `container`) — **a heuristic** derived from the command string and the process launch cwd (`cd /workspace/c-<id> && ...` prefix), meant for **UI display and query filtering only, not a security boundary**: a user process whose command merely *looks* like a system process (e.g. `node /usr/lib/succinix/fake.js`) is classified `system`. Do not rely on it for permission / isolation / kill-interception decisions (see [docs/PROTOCOL.md](docs/PROTOCOL.md)).
-- **Port management** — services are detected via WebContainer `server-ready` events and listed by `ports` with their preview URLs.
-- **Database** — `db start` boots a real Postgres (tinbase, PGlite/WASM engine) inside the container; `db status` / `db stop` manage it.
-- **Persistence (v0.7)** — the workspace (files, config, env, settings, workspaces, pip site-packages) is exported as a binary generation to the IndexedDB database `succinix-persist-v2` (≤256 KiB chunks + SHA-256 manifest + last-known-good pointer) and restored on boot; refresh never loses user files. `snapshot` command for status / manual save / reset. The v0.6 store is detected and reported as `legacy snapshot detected`, never migrated or deleted. `node_modules`/`dist`/`.git` trees are excluded from the export; the tinbase database store (`.tinbase`, PGlite/WASM) is excluded from the restore — tinbase data persists across `db stop`/`db start` in a session but **not** across a browser refresh (refresh recreates a fresh store).
-- **Multi-instance embedding (0.6.0+)** — `?instance=<id>` starts the app as a named instance: per-instance state files, snapshots, services/ports views and process views (`ps` filtering, cross-instance `kill` rejected). Two tabs with different ids are fully isolated (separate hosts + IndexedDB keys).
-- **Multi-user semantics (0.6.0+)** — `?user=<id>` (alias of `?instance=<id>`) additionally seeds a per-user home (`/workspace/users/<id>`): the session starts in the home, the prompt renders it as `~`, `whoami` shows the user, and state/snapshots/process views are per-user. **Organizational isolation, not a security boundary** — there is no real kernel or permission model; the standalone app stays `guest`-only (see AGENTS.md).
-- **Memory management** — `free` / `top` give a memory overview (device + JS heap; sandbox estimates are honestly labeled), `reboot` restarts the system with a browser reload (persisted data survives), `shutdown` powers off, and `cache` / `cache clear` report and clean rebuildable caches without touching `/workspace`.
-- **Workspace split** — `workspace` manages multiple isolated workspaces: each lives in its own `/ws/<name>` directory with its own files and state; `create` / `switch` / `rm` manage them, and the current workspace is recorded in `/ws/.current` (persists across refreshes). The default `main` workspace is initialized on first boot.
-- **System configuration** — `env` manages persistent environment variables (`/etc/succinix.env`, merged into real Node child processes at spawn time) and `settings` manages persistent system settings (`/etc/succinix.settings`): the tinbase port (`preview-port`, default 3001), the initial workspace (`default-workspace`, default `main`), and the terminal font size (`font-size`, applied live). Both files ride the snapshot so they survive refreshes.
-- **Service management** — `service` and `systemctl` manage named background services through the same Lifo `ServiceManager` and process/port registries. Unit definitions live in `/etc/systemd/system/*.service`; `enable`/`disable` mirror snapshot-backed markers at `/workspace/.succinix-service-state/*.enabled`, and boot restores those markers into the execution-world manager. This is declarative boot restart, not a PID 1 daemon (no crash self-healing).
-- **System log (journald-style)** — a persistent log written to `/var/log/succinix.log` on the container FS (rides the snapshot, so it survives refreshes), formatted `2026-08-05T04:00:00Z [level] message`. It captures boot events (`BOOT`), command executions (`INFO` with `cmd`/`exit`/`runtime`), service events (`INFO`/`WARN`), snapshot events (`INFO`) and errors (`ERROR`). `log` reads it (`log` last 20, `log -n <count>`, `log boot` BOOT-only, `log clear`); the file auto-truncates to a ~200 KB tail when oversized. Interactive `log -f` (tail -f) is intentionally not implemented (POC).
-- **Package management** — `pkg` unifies the two real package channels behind one apt-style interface: **lifo** (`lifo list` / `lifo install` / `lifo remove` / `lifo search` — Lifo extension packages such as `lifo-pkg-git`, `lifo-pkg-ffmpeg`) and **npm** (real Node npm for the full ecosystem). Source is auto-detected: a package whose `lifo-pkg-<name>` exists on npm installs via lifo, otherwise via npm; on a name conflict lifo wins (tool packages). `pkg list` merges both channels with a `SOURCE` column, `pkg search` merges both searches, `pkg install`/`remove` echo the real command output and never swallow failures. The npm installed list is read from the `node_modules` **top-level directories only** (a "top-level direct-install" simplification — the container's preinstalled runtime dependencies appear too, and the dependency tree is not parsed).
-- **Git HTTPS workflow** — `git init/status/add/rm/commit/log/diff/branch/checkout/clone/fetch/pull/push` run through Isomorphic Git in the WebContainer host. HTTPS is the only remote transport; SSH fails closed with exit 126. Set `GIT_HTTP_TOKEN` in the live shell for authenticated remotes; it is never written to snapshots or command logs.
-- **Virtual network view** — `netstat` renders the port registry as a virtual listening-port table (`Proto  Local Address  State`, `tcp 127.0.0.1:<port> LISTEN`; `netstat -p` adds the associated process, matched by port number in the process command, `-` when unmatched) and `ip addr` shows the browser's virtual network identity (`lo: virtual loopback`, `eth0: <preview-domain> (virtual)`). Everything is honestly labeled `virtual` — no fabricated interfaces, IPs, or connections.
-- **System information & login banner** — `uname` reports the honest browser-native system identity (`Succinix 0.7.0 js-runtime+webcontainer <api-version> <arch>`; kernel identified as `js-runtime+webcontainer`, never impersonating a Linux kernel; `-a` adds hostname/OS, `-r` is the `@webcontainer/api` runtime version, `-m` is the UA-derived architecture) and `motd` shows/edits the login banner at `/etc/succinix.motd` (persisted with snapshots; the default welcome line is printed on every boot and restored by `motd reset`).
-- **Self-test mode** — `?test=1` runs a system-diagnostics self-check in the browser.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    subgraph Browser["Browser tab"]
-        XT["xterm.js (JetBrains Mono, dark-amber theme)"]
-        TC["TerminalClient — file RPC over the shared filesystem<br/>/cmd.json { id, cmd, opts }<br/>/result-&lt;id&gt;.json { id, ok, exitCode, stdout, stderr, runtime }"]
-        XT -- "terminal(command)" --> TC
-    end
-
-    WC["WebContainer (COOP/COEP, virtualized node:fs)"]
-
-    subgraph Host["node host.js — TerminalExecutor (persistent daemon, PID 1)"]
-        RT["prefix dispatch"]
-        NODE["node | npm | npx → child_process.spawn (real Node.js)"]
-        PY["python | python3 | pip | pip3 → resident Pyodide daemon (python-daemon.js)"]
-        LIFO["everything else → Lifo sandbox.commands.run (Unix tools)"]
-        PS["ps / kill — unified process registry"]
-        CWD["cwd / setCwd — session cwd (cd-synced, persisted)"]
-        SP["spawn — background long-running processes"]
-    end
-
-    TC -- "file RPC" --> WC
-    WC -- "shared node:fs" --> Host
-
-    RT --> NODE
-    RT --> PY
-    RT --> LIFO
-    RT --> PS
-    RT --> CWD
-    RT --> SP
-```
-
-Key design decision: **the filesystem is the single source of truth.** Because WebContainer exposes the container filesystem to processes via `node:fs`, and Lifo mounts `process.cwd()` through `NativeFsProvider`, browser, Node processes and Lifo all see one filesystem. There is no filesystem bridge to maintain.
-
-## Quick Start
-
-Requirements: a modern Chromium-based browser (Chrome/Edge) with cross-origin isolation (COOP/COEP headers) and `SharedArrayBuffer` support. No server-side infrastructure needed for local development.
+### 直接运行
 
 ```bash
-npm install          # install dependencies
-npm run dev          # start Vite dev server (COOP/COEP headers preconfigured)
-# open http://localhost:7892
+npm install
+npm run dev
 ```
 
-The page boots Succinix: system self-checks, then a shell prompt. Type `help` for available commands.
+打开 `http://localhost:7892`，出现提示符后输入 `help`。一个最小项目流程如下：
 
-### Build & checks
+```text
+npm create vite@latest demo
+cd demo
+npm install
+npm run dev
+```
+
+在终端中用 `ports` 查看已启动服务的预览地址。常用命令：
+
+- `snapshot save`：立即保存工作区。
+- `workspace create <名称>`：新建独立工作区。
+- `db start`：启动浏览器内的 Postgres 数据库。
+- `succinix doctor`：检查当前环境是否可用。
+
+### 嵌入自己的应用
+
+安装插件和运行环境依赖：
 
 ```bash
-npx tsc -p tsconfig.json --noEmit   # type check (0 errors required)
-node scripts/build-host.mjs         # bundle the in-container host (host.js + lifo-core.js + python Pyodide daemon)
-npm run build                       # production build
-node scripts/verify-deploy.mjs      # deploy-readiness gate (build + preview + COOP/COEP + ?test=1)
+npm install @succinix/engine@0.7.0 @deepseek-ai/cordis @webcontainer/api
 ```
 
-### Testing
-
-Succinix has a layered test setup that runs locally and in CI (GitHub Actions). No new runtime dependencies were added for testing — e2e reuses the existing CDP scripts (`verify-deploy` / `bench` / `scenarios`), and unit tests use mock filesystem / IndexedDB / network.
-
-- **Lint** — `npm run lint` (ESLint flat config in `eslint.config.js`). `typescript-eslint` recommended + project rules: `no-explicit-any` (error), no leftover `console.log` (warn; `console.warn`/`error` allowed for the degradation-log convention, host-side files exempt), no unused vars/imports. Gate: **0 errors**.
-- **Typecheck** — `npm run typecheck` (`tsc -p tsconfig.json --noEmit`). Gate: **0 errors**.
-- **Unit tests** — `npm run test` (Vitest, node environment) covers the pure-logic modules `src/log.ts`, `src/persist/index.ts`, `src/services/index.ts`, `src/pkg/index.ts`, `src/motd.ts`, `src/config.ts`, `src/engine/host-route.ts`, `src/engine/client.ts` against in-memory mocks (see `tests/`); `src/commands/index.ts` pure functions (workspace/uname/netstat/port-matching/label) are also unit-tested. `npm run test:coverage` adds the v8 coverage gate: **≥70%** statements/branches/functions/lines on the coverage-included files.
-- **Test-mode URLs are developer hooks (P6-19)** — `?test=1`, `?bench=1` and `?scenario=1` are **test-only**: they expose internal handles on `window` (`__succinixResult` / `__succinixBench` / `__succinixScenario`, the last being able to drive real commands) and must never appear in production links. Normal visits carry no query string and expose nothing.
-- **e2e** — `npm run test:e2e` builds once, then runs the CDP scripts sequentially against `vite preview` in headless Chrome:
-  1. `scripts/verify-deploy.mjs` — deploy-readiness gate + `?test=1` self-test (gate **≥71 passed, 0 failed**);
-  2. `scripts/bench.mjs` — performance benchmark (JSON output);
-  3. `scripts/scenarios.mjs` — the 14 real-workflow scenario suite (S1–S14; definitions split across `scripts/scenarios/`);
-  4. `scripts/lang-verify.mjs` — the language-ecosystem verification suite (TASK25);
-  5. `scripts/instance-demo.mjs` — multi-instance + multi-user demo (dual-tab, R3);
-  6. `scripts/instance-routing.mjs` — same-page instance routing (R5);
-  7. `scripts/cordis-app-e2e.mjs` — an external `@succinix/engine` consumer verifies the published dsh-key contract.
-  Playwright is intentionally not used: the CDP scripts keep the pipeline zero-dependency and identical to local runs.
-- **CI** — `.github/workflows/ci.yml` runs lint → typecheck → unit tests (with coverage) → build → `verify-deploy` (headless self-test) on every push/PR; the full e2e gate lives in `.github/workflows/e2e-full.yml` (source/script changes, deploy gate retried once on the known scenario flake); a scheduled nightly job runs the heavy `scenarios` + `lang-verify` + `instance-demo` suite. See the CI badge at the top of this file.
-- **pre-commit (optional, zero-dependency)** — `npm run setup:hooks` writes a `.git/hooks/pre-commit` that runs `tsc --noEmit` and ESLint on the changed files only (`scripts/pre-commit.sh`). It is **not forced**: skipping `setup:hooks` leaves the project fully commit-ready.
-
-### Dependencies & audit
-
-Dependency policy: **report-only, no automatic upgrades** (upgrades are evaluated separately to avoid regressions). Audit results as of the TASK17 final round (2026-08-05):
-
-- `npm audit` → **0 vulnerabilities** (all direct + transitive dependencies clean).
-- `npm outdated` → only **`@lifo-sh/core` 0.10.8 → 0.10.9** has a newer release; everything else is current. Not upgraded (policy), pending separate evaluation.
-- `public/host.js` is esbuild-minified (`minify: true` in `scripts/build-host.mjs`); the host daemon stays small (~16.5 KB) while `@lifo-sh/core` is bundled separately into `public/lifo-core.js` (~1 MB) and lazy-imported on the first Lifo command. Plain `minify` is used because the full `?test=1` suite passes against the minified bundle (Lifo has no `Function.name` dependency that breaks under name-minification).
-
-### Self-test mode
-
-```bash
-# open http://localhost:7892/?test=1
-```
-
-Runs the full diagnostics suite (filesystem, routing, process lifecycle, ports, config, services, logs, packages, smoke) inside the centered boot-splash overlay, then prints the summary into the terminal and drops you into the shell.
-
-### Deployment (Vercel)
-
-Succinix is a **pure static site** (Vite → `dist/`): no backend and no server-side state — workspaces, files, config and settings live in the browser's IndexedDB and ride the snapshot (the tinbase database store is excluded; see Persistence). It deploys to any static host that can send custom response headers; the one-click path is Vercel.
-
-**Why COOP/COEP matters.** WebContainer requires cross-origin isolation. Without the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` headers the page fails the boot environment check and shows the error page instead of the terminal. `vercel.json` ships these headers for **every** path (including `assets/*` and `host.js`), matching the dev and preview servers. Skipping them is the #1 cause of a "white screen + environment error page" on deployment.
-
-**One-click deploy (Vercel):**
-
-1. Push this repository to GitHub / GitLab / Bitbucket.
-2. In the Vercel dashboard, **Import Project** → pick the repo. Vercel auto-detects Vite (`framework: vite`, `buildCommand: npm run build`, `outputDirectory: dist` from `vercel.json`).
-3. Deploy. Optionally add a custom domain, e.g. `succinix.alibicore.com` or a `cjack.me` subdomain.
-
-CLI equivalent (requires a Vercel account/token):
-
-```bash
-npm i -g vercel
-vercel login
-vercel --prod
-```
-
-**Local deploy-readiness verification** (no Vercel token needed). `vite preview` serves the built `dist/` the same way Vercel does, so this is the "static artifact is deployable" proof:
-
-```bash
-npm run build
-node scripts/verify-deploy.mjs
-# starts vite preview, asserts COOP/COEP on /, /host.js and the JS bundle,
-# then runs ?test=1 in headless Chrome — PASSED requires >=71 passed and 0 failed
-```
-
-**Data scoping.** IndexedDB is isolated **per origin**. Changing the deployment domain = starting a fresh system: workspaces, files and database data do **not** migrate between domains. Refresh on the same domain is safe (the snapshot restores); only a domain change resets the system. This also applies to Vercel preview deployments: each preview gets its own unique URL (a distinct origin), so every preview environment has its own separately-scoped IndexedDB — data does not carry over between preview deployments either.
-
-## Usage
-
-### Built-in commands (handled in the browser)
-
-| Command        | Description                                              |
-| -------------- | -------------------------------------------------------- |
-| `help`         | Show command help                                        |
-| `clear`        | Clear the screen (`Ctrl+L` also works)                   |
-| `sysinfo`      | Show browser-detected system information                 |
-| `ports`        | List ready service ports with preview URLs               |
-| `db start`     | Start the tinbase database (auto-installs if missing)    |
-| `db status`    | Show database status (port registry + process table)     |
-| `db stop`      | Stop the database                                       |
-| `version`      | Show version                                            |
-| `whoami`       | Show current user (`guest`; the user id in `?user=` mode) |
-| `snapshot`     | Persistence status; `snapshot now` saves, `snapshot clear --yes` resets |
-| `free`         | Show memory overview (device + JS heap; sandbox estimates marked `~`)    |
-| `top`          | Live process table — 3 snapshots 2s apart, then exits                    |
-| `reboot`       | Restart Succinix (browser reload; persisted data survives)                |
-| `shutdown`     | Power off (you can close this tab)                                       |
-| `cache`        | Show cache usage; `cache clear` cleans rebuildable caches                |
-| `workspace`    | List workspaces; `create` / `switch` / `rm` manage isolated workspaces  |
-| `env`          | List / set (`env KEY=value`) / unset (`env -u KEY`) environment variables, persisted in `/etc/succinix.env` |
-| `settings`     | View / set / reset (`settings reset KEY`) system settings, persisted in `/etc/succinix.settings` |
-| `service`      | List services (state + port); `start` / `stop` / `status` / `enable` / `disable <name>` use the Lifo `ServiceManager` and `/etc/systemd/system/*.service` units. Enablement is snapshot-backed (declarative restart, not a daemon) |
-| `log`          | Show recent system-log entries (last 20) from `/var/log/succinix.log`; `log -n <count>` last N, `log boot` BOOT-only, `log clear` empties the file |
-| `pkg`          | Package management: `pkg list` (lifo + npm merged with `SOURCE`), `pkg search <term>` (both channels), `pkg install <name>` (lifo if `lifo-pkg-<name>` exists, else npm), `pkg remove <name>` (via the installed source), `pkg info <name>` |
-| `netstat`      | List virtual listening ports (port registry as `tcp 127.0.0.1:<port> LISTEN`); `netstat -p` adds the associated process (matched by port number in the process command, `-` when unmatched) |
-| `ip addr`      | Show virtual network identity — `lo: virtual loopback`, `eth0: <preview-domain> (virtual)`; no fabricated interfaces or IPs |
-| `uname`        | Show system identity: summary line (`Succinix <version> js-runtime+webcontainer <api-version> <arch>`); `uname -a` all fields, `-r` runtime version, `-m` architecture (from UA, `unknown` if absent) |
-| `motd`         | View the login banner (`/etc/succinix.motd`); `motd <text>` sets it (persisted), `motd reset` restores the default |
-| `lang`         | List built-in language runtimes: `lang` (table), `lang python` → `Python 3.14.2 (Pyodide 314.0.4)`, `lang node`, `lang typescript` |
-| `pwd`          | Show the session working directory (host-maintained, `cd`-synced, applied to node/python children) |
-
-### Host commands (TerminalExecutor, unified routing)
-
-| Command                 | Route   | Description                                   |
-| ----------------------- | ------- | --------------------------------------------- |
-| `node ...` / `npm ...` / `npx ...` | Node | Real Node.js child process; when the command contains **shell metacharacters** (`&&`, `\|`, `>`, `2>&1`, ...) the whole chain runs through the **Lifo shell** (pipes/chains/redirects parsed there; each node/npm/npx segment is forwarded back to the real binary), result `runtime=lifo` |
-| `python ...` / `python3 ...` / `pip ...` / `pip3 ...` | Python | Built-in resident Pyodide daemon (`python -c "<code>"` / `python <script.py>` / `python -m pip <cmd>`, `pip` maps to micropip); when the command contains **shell metacharacters** the whole chain runs through the **Lifo shell** (pipes/redirects parsed there; each python/pip segment is forwarded to the same resident daemon), result `runtime=lifo` |
-| `grep`, `cat`, `tar`, `curl`, ...   | Lifo | Unix tools, pipes, redirects            |
-| `ps`                    | —       | List the unified process table                |
-| `kill <pid>`            | —       | Terminate a process (SIGTERM)                 |
-| `cwd` / `setCwd <dir>` / `ping` / `exit` | — | Protocol commands (cwd = session cwd)    |
-
-## Verified Behavior
-
-Result of the browser runtime verification suite (see `src/selftest/index.ts`): **76 passed, 0 failed, 5 skipped** (2026-08-10 run, against the minified host bundle; the Python runtime runs on the resident **Pyodide 314.0.4** daemon — Python 3.14.2, `pip` via micropip, and the pip/pyparsing self-test checks are included). The skips are known boundaries (external network, symlink fallback, device-memory stats), never silent failures. In `?test=1` mode the summary line and any failure list are additionally printed to the terminal after the boot overlay fades (self-test results stay visible).
-
-- Shared filesystem: browser -> Lifo and Lifo -> browser reads/writes work.
-- Routing: `node -e "console.log(21*2)"` -> `42` (`runtime=node`); `npm --version` -> real npm version; `grep`/`cat`/`wc` -> `runtime=lifo`.
-- Shell fusion (TASK24): node-prefixed commands with shell metacharacters fall back to the Lifo shell — `node -e "console.log(21*2)" | grep 42` -> `42` (`runtime=lifo`), `node --version && npm --version` -> both real versions on two lines; each node/npm/npx segment in the chain runs the real binary (forwarded from the Lifo shell, not the in-browser JS interpreter). Escaped quotes in `node -e` are preserved (`node -e "console.log(\"hi\")"` -> `hi`); an unterminated quote reports `unterminated quote in command` instead of silently truncating.
-- Python pipes (TASK24 复审): python commands with shell metacharacters are no longer silently truncated at the pipe — `python -c "print(1)" | grep 2` -> empty (`runtime=lifo`), `python -c "print(42)" | grep 42` -> `42`; each python/pip segment in the chain runs the same resident Pyodide daemon.
-- Env merge (TASK24 复审): `env FOO=bar` truly reaches child processes — a `node -e "console.log(process.env.FOO)"` child reports `bar` (the env file lives under `process.cwd()/etc/succinix.env`, matching the browser write path).
-- Session cwd persistence (TASK24 复审): `cd`'s session cwd is persisted to `process.cwd()/etc/succinix.cwd` (previously the read-only virtual root — lost on refresh) and restored on host start, so `pwd` / node / python cwd survive a refresh.
-- Process lifecycle: `spawn` a background service, `ps` shows it, `kill` transitions it to `exited`.
-- Port registry: `server-ready` events surface preview URLs.
-- Database: tinbase (PGlite/WASM) boots and serves.
-- Memory: device memory / JS heap stats reported by the browser (`free` can render).
-- Config: `env` set/get/delete lifecycle and `settings` write/reset persist to `/etc/succinix.*`.
-- Services: `service` lists the built-in tinbase unit; a temporary echo server can be started, observed `running` (the shared process table + port registry), stopped, and removed with zero residue; `service enable`/`disable` update the snapshot-backed unit enablement marker.
-- Logs: command executions are recorded with `exit`/`runtime`, boot events are recorded as `BOOT` entries, and `log clear` empties the log file (asserted by the self-test suite).
-- Packages: `pkg list` renders the two-channel table (NAME / SOURCE / VERSION); `pkg search git` hits `lifo-pkg-git` (network-dependent — skipped on failure, per the known-boundary convention).
-- Network view: `netstat` renders the port registry as a virtual listening-port table and `netstat -p` associates a spawned echo server (port 3456) with its process; after `kill` the port disappears from the table. `ip addr` prints the virtual loopback and preview domain, honestly labeled `(virtual)`.
-- System info: `uname` renders the honest system line (`Succinix <version> js-runtime+webcontainer <api-version> <arch>`) and the `-a`/`-r`/`-m` forms; the `-r`/`-m` flag parsing is additionally asserted through the command-dispatch path (not just the builders). `motd` set → read-back → reset leaves `/etc/succinix.motd` at its default (zero residue).
-- Smoke: all 25 safe built-in commands (help/clear/sysinfo/version/whoami/ports/pwd/lang/db status/db stop/snapshot/free/top/cache/workspace/env/settings/service/log/pkg/netstat/ip addr/uname -a/motd/shutdown) dispatch through the browser handler without error; `reboot` and `db start` are excluded from the automated smoke (destructive/heavy side effects).
-- Languages (TASK27): `python -c "print(6*7)"` returns `42` via the built-in **Pyodide 314.0.4** daemon (Python 3.14.2); the full stdlib import matrix (json/csv/re/math/os/sqlite3/subprocess/collections/datetime/hashlib/urllib) is green and extended-stdlib imports are self-tested; `python3 --version` reports Python 3.14.2; `lang` lists node/python/typescript and `lang python` reports the bundled version. Python reads/writes the shared FS (browser + node see the same file), `python -m pip install pyparsing` → import works (micropip), and the `?test=1` suite asserts all of it. See the **[Language Ecosystem — Verified Support Matrix](docs/LANGUAGES.md)** for the authoritative, measurement-backed matrix.
-- Session cwd (TASK23): `cd /workspace` syncs the host session cwd and a `node -e "console.log(process.cwd())"` child follows it; `cd` into a missing directory keeps the session cwd unchanged. (TASK24: `/workspace` is the Lifo VFS view — real node/python subprocesses spawn in the mapped host directory, so `process.cwd()` inside a child reports the real path such as `/home/<wc-id>/proj`; `pwd`/`cwd` still report the Lifo view `/workspace/...`.)
-- EACCES hint (TASK24): `npm i -g` hitting the read-only `/usr/local` appends an actionable hint (`hint: /usr/local is read-only for guest. Install locally: npm i <pkg>  (or set a user prefix: npm config set prefix ~/.npm-global)`) to the error output; permission semantics are unchanged.
-- Language regression (TASK25, scenario S14): the 5 user-measured pits are locked against regression — `node --version && npm --version` chain, `node -e` nested-quote file writes (preserved through tsc), `npm i -g` EACCES + hint, `cd`-synced npm installs (packaged into the project dir, not the root), and python true pipes.
-- Stability: the RPC client serializes requests over the single-slot `/cmd.json` channel (no more parallel-channel race), retries read-only commands (ping/ps/cwd) once on transport failure, and the browser watchdog re-injects + respawns `host.js` after 2 consecutive failed pings.
-
-## Languages
-
-Succinix ships two **built-in language runtimes** (system assets, zero user install) and can
-execute precompiled WASI modules; every claim below is **measurement-backed** by
-`scripts/lang-verify.mjs` (real browser execution) — see the authoritative
-**[docs/LANGUAGES.md](docs/LANGUAGES.md)** matrix (中文: **[docs/LANGUAGES.zh-CN.md](docs/LANGUAGES.zh-CN.md)**).
-
-| Language | Command | Status | Notable facts (measured) |
-| -------- | ------- | ------ | ------------------------ |
-| **Python** | `python` / `python3` / `pip` / `pip3` | ✅ built-in | 3.14.2 Pyodide 314.0.4; 11/11 stdlib imports; sqlite3/json real; **pip via micropip** (pure-Python and compiled wheels persist across refresh — v0.7 binary snapshot), no REPL, subprocess imports but can't spawn |
-| **Node.js** | `node` | ✅ built-in | 22.22.3; real binaries; `node -e` quote preservation; full TS toolchain (typescript/tsx/vitest) |
-| **npm** | `npm` | ✅ built-in | 10.8.2; local installs into session cwd; global → EACCES + hint |
-| **TypeScript** | `npx tsc` / `tsx` | ✅ via npm | tsc → node → vitest full loop (S13/S14) |
-| **Ruby** | — | ⚠️ probe only | `@ruby/wasm-wasi` v2 runs in-container (`6*7` → 42); not integrated |
-| **C / Rust / Go** | — | ❌ absent | no compilers (`which gcc/rustc/go` → not found) |
-| **WASI** | `node:wasi` | ✅ | precompiled WASI modules run under `node:wasi` |
-
-The full matrix, ecosystem replacement-degree assessment, and every known boundary are in
-**[docs/LANGUAGES.md](docs/LANGUAGES.md)**; the `lang` command lists the built-in runtimes and
-versions interactively.
-
-## Known Boundaries
-
-These are environmental constraints, not bugs:
-
-- **CORS**: `curl` to sites without CORS headers fails (`exit 7`). Use a CORS-friendly proxy, e.g. `curl https://r.jina.ai/<url>`.
-- **Symlinks**: not supported by the Lifo VFS (`ln` reports the limitation).
-- **No package manager / native binaries**: there is no `apt`; native executables cannot run. Succinix is a browser-native Linux.
-- **Generic child-process stdin**: not currently available. The current host uses file RPC and headless Lifo execution, so arbitrary Node/Python REPLs remain unsupported. This does not justify browser-side replacement applications; v0.7 adds a WebContainer-native Lifo terminal transport for explicitly interactive userland commands.
-- **Streaming cross-runtime pipes**: cross-runtime pipes are buffered (fine for agent-style "run then read" workflows).
-- **`/workspace` is a Lifo VFS view; real node/python children see real paths**: the browser filesystem root (`wc.fs` `/`) and Lifo's `/workspace` both map to the host process cwd (`/home/<wc-id>`), and the container root `/` is a read-only system view. `pwd`/`cwd` report the Lifo view (`/workspace/...`), while `process.cwd()` inside a node/python child reports the real mapped path (`/home/<wc-id>/...`). They point at the same directory.
-- **Watchdog probe can be swallowed by a queued command**: the host liveness watchdog writes a direct `ping` probe to the single-slot `/cmd.json` channel; if a user command is enqueued in the same ~120 ms host-poll window it overwrites the probe, so that probe times out and the watchdog skips the round (neutral, not counted as a failure). This only delays liveness detection by one 30 s cycle in the rare overlap case; it does not kill a healthy host.
-- **Single-command output is capped at 1 MB**: to bound container memory and result-file size, each command's `stdout`/`stderr` keeps at most the last ~1 MB of output (large dumps are truncated to their tail). Normal use (`seq 1 5000`, `cat` mid-size files, `npm install` logs) is far below the cap.
-- **Snapshot dedup is blind to same-size content edits (bounded window)**: the auto-snapshot dedupes on directory structure + total bytes, so an edit that changes content but not size (e.g. `sed -i 's/foo/bar/'` with equal-length `foo`/`bar`, or `vi` overwriting in place) is not detected by the structure gate. Browser-side writes (`env`/`settings`/`motd`/`workspace switch`/service enablement markers) force a save immediately and are safe. Edits made through the shell (Lifo/node) are caught by the auto-snapshot's **30 s maximum-age force**: even when the signature is unchanged, a full save is forced every ~30 s, so an equal-length edit survives a tab crash as long as it was made more than ~30 s before the crash. The residual loss window is an equal-length shell edit made in the last ~30 s immediately followed by a crash with no `pagehide`/`beforeunload` (OOM kill, OS reclaim).
-- **Declarative service enablement (not a daemon)**: `service enable` updates the snapshot-backed unit marker and boot restores it into the Lifo `ServiceManager`. There is no crash detection or self-healing — if a service exits after boot, restart it manually (`service start <name>`).
-- **`log -f` (tail -f) not implemented**: generic interactive streaming output is deferred in the current host (POC; headless file RPC is the active path). Use `log` / `log -n <count>` instead. `log clear` wipes `/var/log/succinix.log` and is therefore not itself recorded in the log.
-- **Log append is a read-modify-write (backlog)**: WebContainer's `FileSystemAPI` has no `appendFile`, so each `log` write reads the whole `/var/log/succinix.log`, appends one line, and writes it back — O(file size) per entry. Within the ~200 KB auto-truncation cap this is acceptable for a POC; the backlog item (P4-14) is to switch to true append when the API provides it, or to sharded files. This is the first part of the log system that would need work at high command volume.
-- **Python REPL is not implemented**: the built-in python runtime is command-oriented (`python -c "<code>"`, `python <script.py>`, `python -m pip <cmd>`). The current host has no generic child-process terminal transport; v0.7's Lifo-native terminal seam does not automatically make arbitrary Python REPLs supported. `pip` **is** available via Pyodide's **micropip** (pip-installed wheels persist across refresh via `/.pyodide/site-packages`; the v0.7 binary snapshot carries compiled `.so` files too, so `numpy` stays importable without re-installing). `python -m <module>` runs via `runpy.run_module` (only `-m pip` is special-cased). `subprocess` imports but cannot spawn — Pyodide raises `OSError: [Errno 138] emscripten does not support processes` (see [docs/LANGUAGES.md](docs/LANGUAGES.md)).
-- **First `python` command is slow**: the Pyodide runtime (~13 MB of JS + wasm + stdlib) is lazily injected into the container on first use, and the resident daemon does a one-time `loadPyodide`, so the first `python` command can take a few seconds; subsequent commands reuse the instance and are fast. It never depends on a user `npm install` (system asset), so it cannot be broken by user actions.
-- **External inbound networking**: services are reachable via virtual preview URLs, not from the public internet.
-- **Services claim processes by command string**: `service stop` (and `db stop`) locate a service by matching its rendered command against the process table, not by PID lineage. A manually started process running the same command may be matched and killed. `service start` likewise reports "already running" if a process with that command is found.
-- **Built-in tinbase service needs one install step**: the preset `service` definition (`tinbase`) runs `npx tinbase start --port ${PORT} --engine wasm`, which requires tinbase to be installed in the container. Run `db start` once first to complete the in-container install before using `service start tinbase`.
-- **lifo packages are session-scoped; npm packages persist**: `lifo install` places packages in the Lifo runtime's in-memory global module directory, so they exist for the current host session and are recreated when the host restarts (a full refresh boots a fresh Lifo kernel). npm packages install into `/node_modules` on the shared filesystem and persist with the workspace snapshot. `pkg list` merges both; the source rule is "lifo if `lifo-pkg-<name>` exists on npm, otherwise npm; lifo wins on a name conflict".
-- **`pkg` installs need registry access**: `pkg install`/`search`/`info` hit the npm registry (via `lifo search` / real npm). When the registry is unreachable the command reports the reason and does not pretend to succeed.
-- **Multi-user is organizational isolation, no permission bits**: the standalone app stays single-user (`guest` is the only user; `?user=<id>`/`?instance=<id>` embed mode partitions directories, state and process views per user/instance — **not a security boundary**, no real kernel or permission model). Permission-bit management (`chmod` semantics) is not simulated — simulated modes would add no real value.
-- **Chromium-only**: WebContainers requires a Chromium-based browser (Chrome/Edge). Firefox, Safari, and mobile browsers are not supported; the environment-check error page explains the requirements instead of degrading.
-- **Deployment hosts must send custom response headers**: WebContainer's cross-origin isolation requires the COOP/COEP headers configured in `vercel.json`. Hosts that cannot set custom response headers (e.g. some object-storage/CDN static hosting) cannot run Succinix. Vercel's free plan supports custom headers via `vercel.json`.
-- **No Content-Security-Policy header (evaluated, deferred)**: a CSP is not currently sent. WebContainer's internals need `worker-src blob:` (worker bootstrap), `script-src` with `wasm-unsafe-eval` (Lifo/Pyodide), and `connect-src` to the npm registry / Pyodide CDN; a strict CSP risks breaking the runtime. It was evaluated and deliberately deferred rather than shipped unverified (P6-18) — revisit with a `?test=1` + `verify-deploy` pass before enabling.
-
-## Project Structure
-
-```
-src/
-  main.ts            # entry: Cordis host assembly (xterm device, boot orchestration, v0.6 shell compatibility)
-  boot-steps.ts      # boot sequence, system info detection, env pre-check
-  boot-ui.ts         # centered DOM boot overlay renderer (splash/logs/env-fail page)
-  app/               # xterm assembly, output, local commands, logging, snapshot, watchdog, dev hooks
-  host/              # app-level Cordis plugins (terminal, commands, snapshot, watchdog, selftest, container)
-  commands/          # v0.6 browser control commands; v0.7 standard commands move into Lifo/host adapters
-  config.ts          # system configuration: /etc/succinix.env + /etc/succinix.settings I/O & defaults
-  motd.ts            # login banner: /etc/succinix.motd I/O & default
-  services/          # execution-world service client/types; units and lifecycle live in Lifo ServiceManager
-  log.ts             # journald-style system log: /var/log/succinix.log append/read/clear/BOOT-filter
-  pkg/               # package management: pkg list/search/install/remove/info over lifo + npm channels
-  persist/           # snapshot persistence: exclusions/collect/signature/IndexedDB
-  selftest/          # self-test suite (?test=1)
-  engine/            # TerminalExecutor engine — decoupled, reusable (see Ecosystem)
-    index.ts         # internal core barrel consumed by src/plugin (not a package export)
-    client.ts        # file-RPC client, TerminalClient (was terminal-client.ts)
-    host/            # TerminalExecutor daemon, runs inside WebContainer (config/rpc/run/spawn/ps-kill/main)
-    host-route.ts    # host pure logic: routing / path mapping / per-instance filtering + kill authorization
-    host-procs.ts    # unified process registry (was host-procs.ts)
-    lifo-core.ts     # lazy @lifo-sh/core kernel entry (bundled to public/lifo-core.js)
-    python-daemon/       # resident Pyodide 314.0.4 daemon CLI (loader/rpc/pip/main, bundled to public/pyodide/python-daemon.js)
-    python-daemon-client.ts # host-side daemon lifecycle + JSON-line protocol client
-    python-assets.ts    # lazy Pyodide asset injection (first-use, ~13 MB)
-  terminal/          # terminal core consumed by the host terminal facade (no ./terminal export)
-  instance/          # instance factory consumed by host.ensureInstance (no ./instance export)
-  plugin/            # dsh Cordis plugin entry: services, lifecycle, events, capabilities, HostManager
-scripts/
-  build-host.mjs     # esbuild bundle of the in-container host (host.js + lazy lifo-core.js)
-  build-engine-package.mjs  # build the publishable @succinix/engine package (packages/engine/, no publish)
-  verify-deploy.mjs  # deploy-readiness gate: build + preview + COOP/COEP + ?test=1 self-test
-  verify-bootgate.mjs  # boot-gate verification: no input during boot, step-counted boot log (CDP)
-  bench.mjs          # headless-Chrome performance benchmark (JSON output)
-  scenarios.mjs      # 14 real-workflow scenario suite (headless Chrome + CDP; S14 = language regression)
-  scenarios/         # scenario definitions split by suite: smoke / services / filesystem / kernel / languages (O11)
-  lang-verify.mjs    # language-ecosystem verification (TASK27; real browser execution)
-  instance-demo.mjs  # multi-instance + multi-user demo (dual-tab, R3)
-  instance-routing.mjs  # same-page instance routing (R5)
-  cordis-app-e2e.mjs # external @succinix/engine consumer verifies the published contract
-  run-e2e.mjs        # npm run test:e2e: build once + run the 7 CDP steps above sequentially
-  check-plugin-boundaries.mjs  # plugin boundary gate: engine/terminal/instance stay Cordis-free
-  check-dsh-shapes.mjs  # dsh shape gate: vendored dsh surface vs src/plugin/dsh-types.ts
-  check-dsh-keys.mjs   # legacy-key gate: forbid stale ctx.succinix* tokens outside the allowlist
-  pre-commit.sh      # optional pre-commit: tsc + eslint on changed files (zero-dependency)
-  setup-hooks.mjs    # npm run setup:hooks: wire .git/hooks/pre-commit to pre-commit.sh
-tests/
-  log.test.ts        # Vitest unit tests for src/log.ts (mock FS)
-  persist.test.ts    # ... src/persist/index.ts (exclusion/signature/force/empty-dirs, mock FS + fake IDB)
-  services.test.ts   # ... src/services/index.ts (parse/port-render/state, mock client)
-  pkg.test.ts        # ... src/pkg/index.ts (source detection/command construction, mock network)
-  motd.test.ts       # ... src/motd.ts
-  config.test.ts     # ... src/config.ts
-  helpers/fakes.ts   # in-memory FileSystemAPI / fake IndexedDB / scriptable terminal client
-eslint.config.js     # ESLint flat config (typescript-eslint recommended + project rules)
-vitest.config.ts     # Vitest config + v8 coverage gate (>=70% on core pure-logic modules)
-.github/workflows/
-  ci.yml             # CI: lint → typecheck → unit tests (coverage) → build → verify-deploy; nightly scenarios
-  e2e-full.yml       # full e2e gate: verify-deploy/bench/scenarios/lang-verify/instance-demo/instance-routing/cordis-app
-public/
-  host.js            # lightweight in-container host daemon (generated)
-  lifo-core.js       # @lifo-sh/core kernel bundle, lazily imported by host.js (generated)
-```
-
-## Ecosystem
-
-Succinix's command-execution engine is **decoupled from the Succinix app
-itself**, and ships as **`@succinix/engine@0.7.0`**, a single Cordis plugin for
-`@deepseek-ai/cordis@4.0.1`. There is no standalone SDK API line: consumers
-apply the plugin, then use the dsh services under `ctx.fs`, `ctx.sandbox`,
-`ctx.terminals`, and `ctx.sessionPersistence`. A consumer's page boots a
-WebContainer and gets a shared-filesystem shell with a real Node runtime
-(`node|npm|npx`), a built-in Pyodide Python, and a Lifo Unix userland
-(everything else) — without building any of that itself.
+把插件装进 Cordis，连接应用已经启动的 WebContainer，然后执行项目命令：
 
 ```ts
-import { Context } from '@deepseek-ai/cordis';
-import engine from '@succinix/engine';
+import { Context } from '@deepseek-ai/cordis'
+import engine from '@succinix/engine'
+import { WebContainer } from '@webcontainer/api'
 
-const ctx = new Context();
+const ctx = new Context()
 const fiber = ctx.plugin(engine, {
   container: { mode: 'external' },
-  defaultInstance: { instanceId: 'default' },
-});
-await fiber;
+  defaultInstance: {
+    instanceId: 'default',
+    persistence: { dbName: 'my-app', storeKey: 'default' },
+  },
+})
+await fiber
 
-const host = ctx.get('succinix', false)!;
-await host.boot();
-await host.ensureInstance('default', { executor: {} });
-
-// ctx.fs, ctx.sandbox, ctx.terminals, and ctx.sessionPersistence are
-// available; host.executor, host.terminal, host.snapshot, host.ports, and
-// host.services sit behind the internal succinix seam.
+const wc = await WebContainer.boot()
+const host = ctx.get('succinix', false)!
+await host.attach(wc)
+await host.ensureInstance('default', { executor: {} })
+await host.executor.exec('npm run dev')
 ```
 
-### dsh Plugin API
+应用内的 Cordis 插件按需声明 `fs`、`sandbox`、`terminals`、`sessionPersistence` 服务；只有需要管理 Succinix 生命周期、实例或端口时才使用 `ctx.get('succinix', false)`。
 
-| Service | What it does |
-| --- | --- |
-| `ctx.fs` | dsh file system: 12 primitives, 13 `FS_*` codes, `sandboxMode` |
-| `ctx.sandbox` | dsh sandbox provider: synchronous `confine`, node fail-closed |
-| `ctx.terminals` | dsh owner-scoped PTY registry with exact `Agent` owners |
-| `ctx.sessionPersistence` | dsh event-sourced JSONL session log |
-| `host` (`succinix`) | Internal lifecycle seam: `boot` / `attach` / `ensureInstance`, `executor`, `terminal`, `snapshot`, `persist`, `workspace`, `ports`, `services`, `capabilities`, `dispose` / `shutdown` |
+## 文档
 
-Consumers declare `inject: ['fs', 'sandbox', 'terminals',
-'sessionPersistence']` or probe with `ctx.get('fs', false)`. The published
-`.d.ts` augments `Context['fs']`, `Context['sandbox']`,
-`Context['terminals']`, `Context['sessionPersistence']`, and the `succinix/*`
-event map.
+- [能力说明](docs/FEATURES.md)：适合先判断能不能解决你的问题。
+- [语言与运行时](docs/LANGUAGES.md)：适合确认某个运行时是否可用及其限制。
+- [接入参考](docs/SDK.md)：适合把 Succinix 接入 Cordis 应用。
+- [第三方插件](docs/PLUGIN.md)：适合编写使用 Succinix 服务的插件。
+- [迁移说明](docs/MIGRATION.md)：适合从旧版本接入方式升级。
+- [协议与契约](docs/PROTOCOL.md) / [Cordis 契约](docs/cordis-contract.md)：仅在实现宿主、传输层或严格兼容时阅读。
 
-### Protocol & integration docs
+## 开发校验
 
-- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — the authoritative file-RPC wire contract: request/response shapes, command routing, process model, port events, timeouts.
-- **[docs/SDK.md](docs/SDK.md)** — the 0.7.0 dsh Cordis plugin integration reference: install, config, dsh services, host seam, capabilities, lifecycle, hot reload, container modes.
-- **[docs/PLUGIN.md](docs/PLUGIN.md)** — how third-party Cordis plugins consume or extend Succinix.
-- **[docs/cordis-contract.md](docs/cordis-contract.md)** — the authoritative contract snapshot and its browser runner.
-- **[docs/MIGRATION.md](docs/MIGRATION.md)** — migration from the 0.4.0 standalone SDK and 0.5.0 single-key forms.
-- **[docs/LANGUAGES.md](docs/LANGUAGES.md)** — the measurement-backed language support matrix.
+```bash
+npx tsc -p tsconfig.json --noEmit
+node scripts/build-host.mjs
+npm run build
+npm run lint
+npm run test
+npm run check:docs
+```
 
-### Vision
-
-The engine is the same code that powers the Succinix terminal, behind a clean
-Cordis boundary: core logic stays Cordis-free, the wire protocol is
-documented, and no app-layer dependency leaks into `src/engine/`. Any
-Chromium-based frontend that already boots a WebContainer can add a dsh
-execution world sharing its own files by applying `@succinix/engine`.
-
-## Development Archive
-
-`docs/tasks/TASK*.md` document this project's incremental development history (each task's requirements, retention rules, and quality gates). They are kept in the repository as a **historical development archive** and are not part of the shipped product.
-
-## Documentation
-
-- **Supported features & capabilities** — [English](docs/FEATURES.md) · [简体中文](docs/FEATURES.zh-CN.md)
-- **Language support matrix** — [English](docs/LANGUAGES.md) · [简体中文](docs/LANGUAGES.zh-CN.md)
-- **File RPC protocol** — [English](docs/PROTOCOL.md) · [简体中文](docs/PROTOCOL.zh-CN.md)
-- **SDK / plugin integration** — [English](docs/SDK.md) · [简体中文](docs/SDK.zh-CN.md)
-- **Cordis plugin integration** — [English](docs/PLUGIN.md)
-- **Migration guide** — [English](docs/MIGRATION.md)
-- **Contract snapshot** — [English](docs/cordis-contract.md)
-- **Agent & design guidelines** — [English](AGENTS.md) · [简体中文](AGENTS.zh-CN.md)
-- **Changelog** — [English](CHANGELOG.md) · [简体中文](CHANGELOG.zh-CN.md)
-- **Contributing** — [English](CONTRIBUTING.md) · [简体中文](CONTRIBUTING.zh-CN.md)
-
-## Roadmap
-
-- [x] POC: Lifo inside WebContainer with shared filesystem
-- [x] TerminalExecutor v1: unified routing + process table
-- [x] Product shell: full-screen terminal, boot sequence, ports, tinbase
-- [x] Production-grade interface: English UI, dark-amber theme, JetBrains Mono, system self-checks
-- [x] Boot splash: centered DOM overlay, responsive layout, graceful environment-exit
-- [x] Persistence layer: files/state persisted to IndexedDB, restored on boot (no data loss on refresh)
-- [x] Memory management: `free`/`top`-style commands, cache cleanup, reboot to reclaim memory
-- [x] Workspace split: multiple virtual directories with isolated state (like Sunam workspaces)
-- [x] Virtual network view: `netstat` virtual listening-port table + `ip addr` honest virtual identity
-- [x] dsh single-track engine: `@succinix/engine@0.7.0` with `ctx.fs` / `ctx.sandbox` / `ctx.terminals` / `ctx.sessionPersistence`
-- [ ] SunamAI integration: replace `shell_run` engine with TerminalExecutor — **deferred** (planned as TASK8; not scheduled)
-- [ ] Optional: WebSocket tunnel for external access
-
-## License
-
-MIT © 2026 [CJackHwang](https://github.com/CJackHwang). See [LICENSE](LICENSE).
-
-## Acknowledgements
-
-- [Lifo](https://github.com/lifo-sh) — the TypeScript Unix userland (MIT).
-- [WebContainers](https://webcontainers.io) by StackBlitz — Node.js runtime in the browser.
-- [xterm.js](https://xtermjs.org/) — terminal emulation (MIT).
-- [tinbase](https://github.com/tinbase/tinbase) — browser Postgres (PGlite/WASM).
-- [Vite](https://vitejs.dev/) — build tooling (MIT).
+发布前还需要执行仓库中的完整质量门禁；详见 `AGENTS.md`。

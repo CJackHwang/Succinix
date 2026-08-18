@@ -16,7 +16,7 @@ The current v0.6 host uses headless `Sandbox.commands.run()` for batch execution
 interactive path connects xterm to Lifo's in-container `ITerminal` and public
 `CommandContext.stdin`/`setRawMode` seam. Third-party
 interactive tools must use that same seam and declare `execution: 'batch' | 'interactive' | 'both'`
-in their capability/package metadata. See [PLAN-v0.7.0.md](PLAN-v0.7.0.md).
+in their capability/package metadata. The package and command registration rules below are the current 0.7.0 contract.
 
 ## Plugin contract
 

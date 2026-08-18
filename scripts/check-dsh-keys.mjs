@@ -10,12 +10,11 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DEFAULT_SCOPES = ['src', 'tests', 'examples', 'docs'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage', '.git', '.codex', '.agents']);
 const TOKEN_RE = /ctx\.succinix(?:State|Plugins)?\b/g;
-// Historical records and the plan itself are allowed to describe the old surface.
+// Changelog and migration records may describe the removed surface.
 const ALLOWED_PATHS = new Set([
   'CHANGELOG.md',
   'CHANGELOG.zh-CN.md',
-  'docs/PLAN-dsh-native.md',
-  'docs/PLAN-cordis.md',
+  'docs/MIGRATION.md',
 ]);
 
 function filesUnder(dir, out = []) {

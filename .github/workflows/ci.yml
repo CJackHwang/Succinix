@@ -1,12 +1,8 @@
 name: CI
 
+# Automatic CI triggers are paused. Run manually through workflow_dispatch when needed.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    # 每晚跑重场景套件（nightly-scenarios job 仅 schedule 触发）
-    - cron: '17 4 * * *'
+  workflow_dispatch:
 
 jobs:
   # 快路径：tsc/lint/unit/build/verify-deploy + 规模/静态/文档完整性。
@@ -68,8 +64,8 @@ jobs:
       - name: Dependency audit (no high or critical vulnerabilities)
         run: npm run audit:deps
 
-  # 场景套件重（14 场景，含数据库/服务自启/持久化压力/TS 生态/语言防回归），
-  # nightly 独立跑（push 门禁由 e2e-full.yml 覆盖，nightly 保留作深度回归）。
+  # 场景套件重（14 场景，含数据库/服务自启/持久化压力/TS 生态/语言防回归）。
+  # 保留原任务定义；自动 schedule 已暂停。
   nightly-scenarios:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
